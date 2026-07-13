@@ -5,6 +5,7 @@ pub mod init;
 pub mod link;
 pub mod project_validation;
 pub mod resolution;
+mod state;
 pub mod validation;
 mod wikilink;
 pub mod writes;
@@ -16,7 +17,8 @@ pub use context::{
 pub use init::{InitError, InitRequest, InitResult, initialize_project};
 pub use link::{LinkError, LinkRequest, LinkResult, link_project};
 pub use project_validation::{
-    NoteTypeValidation, ProjectValidationError, ProjectValidationReport, validate_project,
+    NoteTypeValidation, ProjectValidationError, ProjectValidationReport, ProjectionValidation,
+    validate_project,
 };
 pub use resolution::{
     NoteClass, ProjectSource, ResolutionEnvironment, ResolveError, ResolveRequest, ResolvedProject,

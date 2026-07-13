@@ -15,6 +15,7 @@ use crate::resolution::{
     RootConfig, canonicalize_directory, load_project_registry, load_root_config, resolve_root,
     validate_slug,
 };
+use crate::state::{PROJECT_STATE_FILE, render_empty_project_state};
 use crate::validation::{
     ProjectRegistry, ProjectRegistryEntry, ValidationError, parse_project_registry,
 };
@@ -56,6 +57,7 @@ pub struct InitResult {
     pub registry: PathBuf,
     pub repository_dir: PathBuf,
     pub project_dir: PathBuf,
+    pub state: PathBuf,
     pub pointer: PathBuf,
     pub template_files: usize,
 }
@@ -303,6 +305,7 @@ fn initialize_locked(
             registry: prepared.registry.clone(),
             repository_dir: prepared.repository_dir.clone(),
             project_dir: prepared.project_dir.clone(),
+            state: prepared.project_dir.join(PROJECT_STATE_FILE),
             pointer: prepared.pointer.clone(),
             template_files: prepared.scaffold.template_files,
         })
@@ -470,6 +473,11 @@ fn build_scaffold_plan(
 
     let template_files = templates.files.len();
     let mut files = BTreeMap::new();
+    insert_scaffold_file(
+        &mut files,
+        PathBuf::from(PROJECT_STATE_FILE),
+        render_empty_project_state(),
+    )?;
     insert_scaffold_file(&mut files, config.project.index.clone(), Vec::new())?;
     insert_scaffold_file(&mut files, config.project.roadmap.clone(), Vec::new())?;
     for (relative, contents) in templates.files {

@@ -31,6 +31,9 @@ fn validate_prints_a_compact_plain_text_report() {
     let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
     assert!(stdout.contains("valid: example"));
     assert!(stdout.contains("canonical notes: 6"));
+    assert!(stdout.contains("immutable events: 3"));
+    assert!(stdout.contains("projection: index — 1 sources"));
+    assert!(stdout.contains("projection: roadmap — 2 sources"));
     assert!(stdout.contains("wikilinks: 1"));
     assert!(stdout.contains("note type: session (event) — 1"));
 }
@@ -60,6 +63,9 @@ fn validate_json_is_machine_readable() {
         serde_json::from_slice(&output.stdout).expect("parse validate JSON");
     assert_eq!(value["project"], "example");
     assert_eq!(value["canonical_notes"], 6);
+    assert_eq!(value["immutable_events"], 3);
+    assert_eq!(value["projections"]["index"]["sources"], 1);
+    assert_eq!(value["projections"]["roadmap"]["sources"], 2);
     assert_eq!(value["wikilinks"], 1);
     assert_eq!(value["note_types"]["entity"]["class"], "entity");
 }

@@ -4,6 +4,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::str;
 
 use serde::Serialize;
 
@@ -11,6 +12,7 @@ use crate::resolution::{
     NoteClass, ResolveError, ResolveRequest, load_project_registry, load_root_config,
     resolve_project,
 };
+use crate::state::{CanonicalNoteEvidence, PROJECT_STATE_FILE, validate_project_state};
 use crate::validation::{
     ValidationError, parse_leading_frontmatter_bytes, validate_configured_note,
 };
@@ -23,6 +25,12 @@ pub struct NoteTypeValidation {
     pub notes: usize,
 }
 
+/// Checked source count for one configured derived projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProjectionValidation {
+    pub sources: usize,
+}
+
 /// Deterministic summary returned after a selected project passes validation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProjectValidationReport {
@@ -31,8 +39,11 @@ pub struct ProjectValidationReport {
     pub project_dir: PathBuf,
     pub repository_dir: PathBuf,
     pub registry: PathBuf,
+    pub state: PathBuf,
     pub registry_projects: usize,
     pub canonical_notes: usize,
+    pub immutable_events: usize,
+    pub projections: BTreeMap<String, ProjectionValidation>,
     pub wikilinks: usize,
     pub note_types: BTreeMap<String, NoteTypeValidation>,
 }
@@ -49,6 +60,10 @@ pub enum ProjectValidationError {
         path: PathBuf,
         message: String,
     },
+    InvalidState {
+        path: PathBuf,
+        message: String,
+    },
     FileSystem {
         operation: &'static str,
         path: PathBuf,
@@ -62,7 +77,7 @@ impl ProjectValidationError {
         match self {
             Self::Resolve(source) => source.exit_code(),
             Self::InvalidDocument { source, .. } => source.exit_code(),
-            Self::InvalidWikilink { .. } => 4,
+            Self::InvalidWikilink { .. } | Self::InvalidState { .. } => 4,
             Self::FileSystem { .. } => 6,
         }
     }
@@ -86,6 +101,13 @@ impl fmt::Display for ProjectValidationError {
                     path.display()
                 )
             }
+            Self::InvalidState { path, message } => {
+                write!(
+                    formatter,
+                    "validation failed at {}: invalid project state: {message}",
+                    path.display()
+                )
+            }
             Self::FileSystem {
                 operation,
                 path,
@@ -104,7 +126,7 @@ impl Error for ProjectValidationError {
         match self {
             Self::Resolve(source) => Some(source.as_ref()),
             Self::InvalidDocument { source, .. } => Some(source.as_ref()),
-            Self::InvalidWikilink { .. } => None,
+            Self::InvalidWikilink { .. } | Self::InvalidState { .. } => None,
             Self::FileSystem { source, .. } => Some(source),
         }
     }
@@ -136,33 +158,71 @@ pub fn validate_project(
         &resolved.project_dir.join(&config.project.templates),
         &resolved.project_dir,
     )?;
-    for path in [&config.project.index, &config.project.roadmap] {
-        require_file(&resolved.project_dir.join(path), &resolved.project_dir)?;
-    }
+    let index = require_file(
+        &resolved.project_dir.join(&config.project.index),
+        &resolved.project_dir,
+    )?;
+    let roadmap = require_file(
+        &resolved.project_dir.join(&config.project.roadmap),
+        &resolved.project_dir,
+    )?;
+    let state = require_file(
+        &resolved.project_dir.join(PROJECT_STATE_FILE),
+        &resolved.project_dir,
+    )?;
 
     let mut canonical_notes = 0;
     let mut wikilinks = 0;
+    let mut evidence = Vec::new();
     let mut note_types = BTreeMap::new();
     for (name, note_type) in &config.project.note_types {
         let folder = resolved.project_dir.join(&note_type.folder);
         let folder = require_directory(&folder, &resolved.project_dir)?;
-        let (notes, links) = validate_note_tree(
+        let validated = validate_note_tree(
             &resolved.root,
             &folder,
             &resolved.project,
             name,
+            note_type.class,
             &note_type.required_fields,
         )?;
-        canonical_notes += notes;
-        wikilinks += links;
+        let note_count = validated.notes.len();
+        canonical_notes += note_count;
+        wikilinks += validated.wikilinks;
+        evidence.extend(validated.notes);
         note_types.insert(
             name.clone(),
             NoteTypeValidation {
                 class: note_type.class,
-                notes,
+                notes: note_count,
             },
         );
     }
+
+    let index_source = read_validation_file(&index, "read index projection")?;
+    let roadmap_source = read_validation_file(&roadmap, "read roadmap projection")?;
+    let state_source = read_validation_file(&state, "read project state")?;
+    let state_text =
+        str::from_utf8(&state_source).map_err(|error| ProjectValidationError::InvalidState {
+            path: state.clone(),
+            message: format!("project state is not valid UTF-8: {error}"),
+        })?;
+    let state_validation = validate_project_state(
+        state_text,
+        &resolved.project_dir,
+        &index_source,
+        &roadmap_source,
+        &evidence,
+    )
+    .map_err(|message| ProjectValidationError::InvalidState {
+        path: state.clone(),
+        message,
+    })?;
+    let projections = state_validation
+        .projection_sources
+        .into_iter()
+        .map(|(name, sources)| (name, ProjectionValidation { sources }))
+        .collect();
 
     Ok(ProjectValidationReport {
         root: resolved.root,
@@ -170,11 +230,19 @@ pub fn validate_project(
         project_dir: resolved.project_dir,
         repository_dir: resolved.repository_dir,
         registry: resolved.registry,
+        state,
         registry_projects: registry.projects.len(),
         canonical_notes,
+        immutable_events: state_validation.immutable_events,
+        projections,
         wikilinks,
         note_types,
     })
+}
+
+struct ValidatedNoteTree {
+    notes: Vec<CanonicalNoteEvidence>,
+    wikilinks: usize,
 }
 
 fn validate_note_tree(
@@ -182,12 +250,14 @@ fn validate_note_tree(
     directory: &Path,
     project: &str,
     note_type: &str,
+    class: NoteClass,
     required_fields: &[String],
-) -> Result<(usize, usize), ProjectValidationError> {
+) -> Result<ValidatedNoteTree, ProjectValidationError> {
     let paths = canonical_note_paths(directory)?;
     let mut wikilinks = 0;
-    for path in &paths {
-        let source = fs::read(path).map_err(|source| ProjectValidationError::FileSystem {
+    let mut notes = Vec::with_capacity(paths.len());
+    for path in paths {
+        let source = fs::read(&path).map_err(|source| ProjectValidationError::FileSystem {
             operation: "read canonical note",
             path: path.clone(),
             source,
@@ -204,9 +274,25 @@ fn validate_note_tree(
                 source: Box::new(source),
             },
         )?;
-        wikilinks += validate_wikilinks(root, path, parsed.body)?;
+        wikilinks += validate_wikilinks(root, &path, parsed.body)?;
+        notes.push(CanonicalNoteEvidence {
+            path,
+            class,
+            source,
+        });
     }
-    Ok((paths.len(), wikilinks))
+    Ok(ValidatedNoteTree { notes, wikilinks })
+}
+
+fn read_validation_file(
+    path: &Path,
+    operation: &'static str,
+) -> Result<Vec<u8>, ProjectValidationError> {
+    fs::read(path).map_err(|source| ProjectValidationError::FileSystem {
+        operation,
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 fn validate_wikilinks(

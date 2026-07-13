@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use akasha_core::{ResolutionEnvironment, ResolveRequest, validate_project};
 
+mod support;
+
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 struct TempDir(PathBuf);
@@ -82,6 +84,12 @@ fn fixture(name: &str) -> Fixture {
         "---\nschema_version: 1\nentity: core\nkind: subsystem\nstatus: active\nreviewed: 2026-07-13\n---\n\n# Core\n",
     )
     .expect("write entity");
+    support::write_project_state(
+        &project_dir,
+        &["events/sessions/2026-07-13.md"],
+        &["entities/core.md"],
+        &[],
+    );
 
     let request = ResolveRequest {
         root_override: Some(root.clone()),
@@ -156,6 +164,9 @@ fn validates_the_configured_layout_and_canonical_notes() {
     assert_eq!(report.project, "example");
     assert_eq!(report.registry_projects, 1);
     assert_eq!(report.canonical_notes, 2);
+    assert_eq!(report.immutable_events, 1);
+    assert_eq!(report.projections["index"].sources, 1);
+    assert_eq!(report.projections["roadmap"].sources, 0);
     assert_eq!(report.wikilinks, 0);
     assert_eq!(report.note_types["session"].notes, 1);
     assert_eq!(report.note_types["entity"].notes, 1);
@@ -175,6 +186,12 @@ fn validates_full_vault_relative_wikilinks_and_ignores_code() {
          ```md\n[[missing/fenced]]\n```\n",
     )
     .expect("replace session");
+    support::write_project_state(
+        &fixture.project_dir,
+        &["events/sessions/2026-07-13.md"],
+        &["entities/core.md"],
+        &[],
+    );
 
     let report = validate_project(&fixture.request).expect("validate wikilinks");
     assert_eq!(report.wikilinks, 3);
@@ -326,4 +343,93 @@ fn rejects_non_markdown_files_in_canonical_note_folders() {
     let error = validate_project(&fixture.request).expect_err("non-Markdown file must fail");
     assert_eq!(error.exit_code(), 4);
     assert!(error.to_string().contains("only directories and .md files"));
+}
+
+#[test]
+fn rejects_changed_untracked_and_missing_immutable_events() {
+    let changed = fixture("changed-event");
+    fs::write(
+        changed
+            .project_dir
+            .join("events/sessions/2026-07-13.md"),
+        "---\nschema_version: 1\nproject: example\ntype: session\ndate: 2026-07-13\n---\n\n# Changed\n",
+    )
+    .expect("change event");
+    let error = validate_project(&changed.request).expect_err("changed event must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("changed since its trusted baseline")
+    );
+
+    let untracked = fixture("untracked-event");
+    fs::write(
+        untracked.project_dir.join("events/sessions/2026-07-14.md"),
+        "---\nschema_version: 1\nproject: example\ntype: session\ndate: 2026-07-14\n---\n\n# New\n",
+    )
+    .expect("add event");
+    let error = validate_project(&untracked.request).expect_err("untracked event must fail");
+    assert!(error.to_string().contains("has no trusted baseline"));
+
+    let missing = fixture("missing-event");
+    fs::remove_file(missing.project_dir.join("events/sessions/2026-07-13.md"))
+        .expect("remove event");
+    let error = validate_project(&missing.request).expect_err("missing event must fail");
+    assert!(error.to_string().contains("tracks missing immutable event"));
+}
+
+#[test]
+fn rejects_stale_projection_sources_and_changed_projection_bytes() {
+    let stale_index = fixture("stale-index-sources");
+    fs::write(
+        stale_index.project_dir.join("entities/core.md"),
+        "---\nschema_version: 1\nentity: core\nkind: subsystem\nstatus: active\nreviewed: 2026-07-13\n---\n\n# Updated core\n",
+    )
+    .expect("update entity");
+    let error = validate_project(&stale_index.request).expect_err("stale index must fail");
+    assert!(error.to_string().contains("projection \"index\" is stale"));
+
+    let stale_roadmap = fixture("stale-roadmap-sources");
+    fs::write(
+        stale_roadmap.project_dir.join("records/tasks/new.md"),
+        "---\nschema_version: 1\nproject: example\ntype: task\nstatus: open\n---\n\n# New task\n",
+    )
+    .expect("add record");
+    let error = validate_project(&stale_roadmap.request).expect_err("stale roadmap must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("projection \"roadmap\" is stale")
+    );
+
+    let changed_output = fixture("changed-index-output");
+    fs::write(
+        changed_output.project_dir.join("index.md"),
+        "# Changed index\n",
+    )
+    .expect("change index");
+    let error =
+        validate_project(&changed_output.request).expect_err("changed projection must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("projection \"index\" bytes differ")
+    );
+}
+
+#[test]
+fn rejects_missing_and_malformed_project_state() {
+    let missing = fixture("missing-state");
+    fs::remove_file(missing.project_dir.join(".akasha-state.toml")).expect("remove project state");
+    let error = validate_project(&missing.request).expect_err("missing state must fail");
+    assert!(error.to_string().contains("required file does not exist"));
+
+    let malformed = fixture("malformed-state");
+    fs::write(
+        malformed.project_dir.join(".akasha-state.toml"),
+        "schema_version = 1\nunknown = true\n",
+    )
+    .expect("write malformed project state");
+    let error = validate_project(&malformed.request).expect_err("malformed state must fail");
+    assert!(error.to_string().contains("invalid project state TOML"));
 }

@@ -26,6 +26,7 @@ fn init_prints_plain_text_and_creates_a_valid_resolvable_project() {
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
     assert!(stdout.starts_with("initialized: example\n"));
+    assert!(stdout.contains("project state:"));
     assert!(stdout.contains("templates copied: 1"));
     assert_eq!(
         fs::read(fixture.repository.join(".akasha.toml")).expect("read pointer"),
@@ -70,6 +71,12 @@ fn init_json_reports_the_same_created_paths() {
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).expect("parse init JSON");
     assert_eq!(value["project"], "example");
     assert_eq!(value["template_files"], 0);
+    assert!(
+        value["state"]
+            .as_str()
+            .expect("state path")
+            .ends_with("Projects/example/.akasha-state.toml")
+    );
     assert_eq!(
         value["repository_dir"],
         fs::canonicalize(&fixture.repository)

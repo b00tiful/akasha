@@ -1,0 +1,14 @@
+schema_version = 1
+
+[events]
+"events/handoffs/2026-07-12.md" = "sha256:6d9e7c5a7dabc62d62a93581e28cd2c8b49ade0e62f22967999f9f7b20e2f336"
+"events/handoffs/2026-07-13.md" = "sha256:c83d8a1ec568ef7512924dda21c166909289dc0f9c45df90542ade6f12bf30a7"
+"events/sessions/2026-07-13.md" = "sha256:63725f2bd13fe116c0c473cc55f933d8962621ad9459108e1c358d63aed09b28"
+
+[projections.index]
+sources = "sha256:4816f669e28b38036af021dbac97cfdfef59bd8cc0c5abe51b4bd0b65ec36127"
+output = "sha256:c0bb54c3d5bd960e58b6cabc2cc856be0c0613e940b327491e37364dfb1f8794"
+
+[projections.roadmap]
+sources = "sha256:96e10f7fe231772690514879bba5e58b14b054b6b406b385f11323823ee6ea00"
+output = "sha256:5870c4bf63620dd5286f68cc666c2792f6567902f4d77f9648dbb2b994e07c51"

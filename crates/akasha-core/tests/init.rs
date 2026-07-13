@@ -65,6 +65,8 @@ fn creates_configured_scaffold_exact_templates_registry_and_pointer() {
         fs::read(result.project_dir.join("plan.md")).expect("read roadmap"),
         b""
     );
+    assert_eq!(result.state, result.project_dir.join(".akasha-state.toml"));
+    assert!(result.state.is_file());
     assert_eq!(
         fs::read(&result.pointer).expect("read pointer"),
         b"schema_version = 1\nproject = \"example\"\n"
@@ -88,6 +90,9 @@ fn creates_configured_scaffold_exact_templates_registry_and_pointer() {
     assert_eq!(resolved.project, "example");
     let report = validate_project(&resolve_request).expect("validate empty initialized project");
     assert_eq!(report.canonical_notes, 0);
+    assert_eq!(report.immutable_events, 0);
+    assert_eq!(report.projections["index"].sources, 0);
+    assert_eq!(report.projections["roadmap"].sources, 0);
 }
 
 #[test]

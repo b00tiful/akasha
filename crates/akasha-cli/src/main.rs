@@ -175,6 +175,7 @@ fn render_init(result: &InitResult, json: bool) -> Result<(), serde_json::Error>
         println!("initialized: {}", result.project);
         println!("repository: {}", result.repository_dir.display());
         println!("project directory: {}", result.project_dir.display());
+        println!("project state: {}", result.state.display());
         println!("templates copied: {}", result.template_files);
         println!("registry: {}", result.registry.display());
         println!("pointer: {}", result.pointer.display());
@@ -232,6 +233,11 @@ fn render_validation(
         println!("project directory: {}", report.project_dir.display());
         println!("registry projects: {}", report.registry_projects);
         println!("canonical notes: {}", report.canonical_notes);
+        println!("immutable events: {}", report.immutable_events);
+        println!("project state: {}", report.state.display());
+        for (name, projection) in &report.projections {
+            println!("projection: {name} — {} sources", projection.sources);
+        }
         println!("wikilinks: {}", report.wikilinks);
         for (name, note_type) in &report.note_types {
             println!(

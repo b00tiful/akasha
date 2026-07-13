@@ -7,6 +7,8 @@ use akasha_core::{
     assemble_context, render_context_markdown,
 };
 
+mod support;
+
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 fn fixtures() -> PathBuf {
@@ -79,6 +81,16 @@ fn truncates_only_between_entries_and_reports_the_omission() {
         ),
     )
     .expect("write oversized recent event");
+    support::write_project_state(
+        &temp.path().join("valid-root/Projects/example"),
+        &[
+            "events/handoffs/2026-07-12.md",
+            "events/handoffs/2026-07-13.md",
+            "events/sessions/2026-07-13.md",
+        ],
+        &["entities/core.md"],
+        &["records/problems/open.md", "records/tasks/active.md"],
+    );
 
     let bundle = assemble_context(&request(
         temp.path().join("valid-root"),
