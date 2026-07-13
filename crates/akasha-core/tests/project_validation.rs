@@ -49,6 +49,9 @@ fn fixture(name: &str) -> Fixture {
         root.join("Inbox"),
         project_dir.join("templates"),
         project_dir.join("events/sessions"),
+        project_dir.join("events/handoffs"),
+        project_dir.join("records/tasks"),
+        project_dir.join("records/problems"),
         project_dir.join("entities"),
         repository.join("nested"),
     ] {
@@ -105,6 +108,13 @@ fn root_config() -> &'static str {
      projects = \"Projects\"\n\
      inbox = \"Inbox\"\n\
      \n\
+     [context]\n\
+     tasks = \"task\"\n\
+     problems = \"problem\"\n\
+     handoffs = \"handoff\"\n\
+     recent_events = [\"session\"]\n\
+     open_statuses = [\"open\", \"active\", \"blocked\", \"in-progress\"]\n\
+     \n\
      [project]\n\
      templates = \"templates\"\n\
      index = \"index.md\"\n\
@@ -114,6 +124,21 @@ fn root_config() -> &'static str {
      class = \"event\"\n\
      folder = \"events/sessions\"\n\
      required_fields = [\"project\", \"type\", \"date\"]\n\
+     \n\
+     [project.note_types.handoff]\n\
+     class = \"event\"\n\
+     folder = \"events/handoffs\"\n\
+     required_fields = [\"project\", \"type\", \"date\"]\n\
+     \n\
+     [project.note_types.task]\n\
+     class = \"record\"\n\
+     folder = \"records/tasks\"\n\
+     required_fields = [\"project\", \"type\", \"status\"]\n\
+     \n\
+     [project.note_types.problem]\n\
+     class = \"record\"\n\
+     folder = \"records/problems\"\n\
+     required_fields = [\"project\", \"type\", \"status\"]\n\
      \n\
      [project.note_types.entity]\n\
      class = \"entity\"\n\

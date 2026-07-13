@@ -160,6 +160,42 @@ fn validate_note_tree(
     note_type: &str,
     required_fields: &[String],
 ) -> Result<usize, ProjectValidationError> {
+    let paths = canonical_note_paths(directory)?;
+    for path in &paths {
+        let source = fs::read(path).map_err(|source| ProjectValidationError::FileSystem {
+            operation: "read canonical note",
+            path: path.clone(),
+            source,
+        })?;
+        let parsed = parse_leading_frontmatter_bytes(&source).map_err(|source| {
+            ProjectValidationError::InvalidDocument {
+                path: path.clone(),
+                source: Box::new(source),
+            }
+        })?;
+        validate_configured_note(&parsed, project, note_type, required_fields).map_err(
+            |source| ProjectValidationError::InvalidDocument {
+                path: path.clone(),
+                source: Box::new(source),
+            },
+        )?;
+    }
+    Ok(paths.len())
+}
+
+pub(crate) fn canonical_note_paths(
+    directory: &Path,
+) -> Result<Vec<PathBuf>, ProjectValidationError> {
+    let mut notes = Vec::new();
+    collect_note_paths(directory, &mut notes)?;
+    notes.sort();
+    Ok(notes)
+}
+
+fn collect_note_paths(
+    directory: &Path,
+    notes: &mut Vec<PathBuf>,
+) -> Result<(), ProjectValidationError> {
     let entries = fs::read_dir(directory).map_err(|source| ProjectValidationError::FileSystem {
         operation: "read canonical note directory",
         path: directory.to_path_buf(),
@@ -178,7 +214,6 @@ fn validate_note_tree(
         .collect::<Result<Vec<_>, _>>()?;
     paths.sort();
 
-    let mut notes = 0;
     for path in paths {
         let metadata =
             fs::symlink_metadata(&path).map_err(|source| ProjectValidationError::FileSystem {
@@ -193,7 +228,7 @@ fn validate_note_tree(
             ));
         }
         if metadata.is_dir() {
-            notes += validate_note_tree(&path, project, note_type, required_fields)?;
+            collect_note_paths(&path, notes)?;
             continue;
         }
         if !metadata.is_file() || path.extension().and_then(|value| value.to_str()) != Some("md") {
@@ -203,26 +238,9 @@ fn validate_note_tree(
             ));
         }
 
-        let source = fs::read(&path).map_err(|source| ProjectValidationError::FileSystem {
-            operation: "read canonical note",
-            path: path.clone(),
-            source,
-        })?;
-        let parsed = parse_leading_frontmatter_bytes(&source).map_err(|source| {
-            ProjectValidationError::InvalidDocument {
-                path: path.clone(),
-                source: Box::new(source),
-            }
-        })?;
-        validate_configured_note(&parsed, project, note_type, required_fields).map_err(
-            |source| ProjectValidationError::InvalidDocument {
-                path: path.clone(),
-                source: Box::new(source),
-            },
-        )?;
-        notes += 1;
+        notes.push(path);
     }
-    Ok(notes)
+    Ok(())
 }
 
 fn require_directory(path: &Path, boundary: &Path) -> Result<PathBuf, ProjectValidationError> {

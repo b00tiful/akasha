@@ -53,6 +53,13 @@ fn root_config(projects: &str) -> String {
          projects = {projects:?}\n\
          inbox = \"Inbox\"\n\
          \n\
+         [context]\n\
+         tasks = \"task\"\n\
+         problems = \"problem\"\n\
+         handoffs = \"handoff\"\n\
+         recent_events = [\"session\"]\n\
+         open_statuses = [\"open\", \"active\", \"blocked\", \"in-progress\"]\n\
+         \n\
          [project]\n\
          templates = \"templates\"\n\
          index = \"index.md\"\n\
@@ -61,7 +68,22 @@ fn root_config(projects: &str) -> String {
          [project.note_types.session]\n\
          class = \"event\"\n\
          folder = \"events/sessions\"\n\
-         required_fields = [\"project\", \"type\", \"date\"]\n"
+         required_fields = [\"project\", \"type\", \"date\"]\n\
+         \n\
+         [project.note_types.handoff]\n\
+         class = \"event\"\n\
+         folder = \"events/handoffs\"\n\
+         required_fields = [\"project\", \"type\", \"date\"]\n\
+         \n\
+         [project.note_types.task]\n\
+         class = \"record\"\n\
+         folder = \"records/tasks\"\n\
+         required_fields = [\"project\", \"type\", \"status\"]\n\
+         \n\
+         [project.note_types.problem]\n\
+         class = \"record\"\n\
+         folder = \"records/problems\"\n\
+         required_fields = [\"project\", \"type\", \"status\"]\n"
     )
 }
 
@@ -356,6 +378,22 @@ fn rejects_unknown_root_configuration_fields() {
 
     assert_eq!(error.exit_code(), 3);
     assert!(error.to_string().contains("unknown field"));
+}
+
+#[test]
+fn rejects_context_roles_that_do_not_name_configured_note_types() {
+    let temp = TempDir::new("unknown-context-role");
+    let root = create_root(temp.path(), "root", "example");
+    let config = root_config("Projects").replace("tasks = \"task\"", "tasks = \"missing\"");
+    fs::write(root.join("akasha.toml"), config).expect("write invalid context role");
+
+    let mut request = request(temp.path());
+    request.root_override = Some(root);
+    request.project_override = Some("example".to_owned());
+    let error = resolve_project(&request).expect_err("undefined context role must fail");
+
+    assert_eq!(error.exit_code(), 3);
+    assert!(error.to_string().contains("undefined project note type"));
 }
 
 #[cfg(unix)]

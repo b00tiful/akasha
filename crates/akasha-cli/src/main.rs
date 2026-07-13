@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use akasha_core::{
-    NoteClass, ProjectValidationReport, ResolveRequest, ResolvedProject, resolve_project,
-    validate_project,
+    NoteClass, ProjectValidationReport, ResolveRequest, ResolvedProject, assemble_context,
+    render_context_markdown, resolve_project, validate_project,
 };
 use clap::{Parser, Subcommand};
 
@@ -40,6 +40,8 @@ enum Command {
     Resolve,
     /// Validate the selected project's configuration, layout, and canonical notes.
     Validate,
+    /// Assemble a deterministic, bounded orientation bundle for the selected project.
+    Context,
 }
 
 fn main() -> ExitCode {
@@ -66,6 +68,20 @@ fn run(cli: Cli) -> Result<(), u8> {
                 6
             })?;
         }
+        Command::Context => {
+            let context = assemble_context(&request).map_err(report_context)?;
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&context).map_err(|error| {
+                        eprintln!("akasha: failed to render command output: {error}");
+                        6
+                    })?
+                );
+            } else {
+                print!("{}", render_context_markdown(&context));
+            }
+        }
     }
 
     Ok(())
@@ -77,6 +93,11 @@ fn report_resolution(error: akasha_core::ResolveError) -> u8 {
 }
 
 fn report_validation(error: akasha_core::ProjectValidationError) -> u8 {
+    eprintln!("akasha: {error}");
+    error.exit_code()
+}
+
+fn report_context(error: akasha_core::ContextError) -> u8 {
     eprintln!("akasha: {error}");
     error.exit_code()
 }

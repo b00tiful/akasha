@@ -30,7 +30,7 @@ fn validate_prints_a_compact_plain_text_report() {
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
     assert!(stdout.contains("valid: example"));
-    assert!(stdout.contains("canonical notes: 3"));
+    assert!(stdout.contains("canonical notes: 6"));
     assert!(stdout.contains("note type: session (event) — 1"));
 }
 
@@ -58,7 +58,7 @@ fn validate_json_is_machine_readable() {
     let value: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("parse validate JSON");
     assert_eq!(value["project"], "example");
-    assert_eq!(value["canonical_notes"], 3);
+    assert_eq!(value["canonical_notes"], 6);
     assert_eq!(value["note_types"]["entity"]["class"], "entity");
 }
 

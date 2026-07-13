@@ -166,6 +166,7 @@ pub(crate) struct RootConfig {
     pub(crate) schema_version: u32,
     pub(crate) files: FileConfig,
     pub(crate) folders: FolderConfig,
+    pub(crate) context: ContextConfig,
     pub(crate) project: ProjectLayoutConfig,
 }
 
@@ -182,6 +183,16 @@ pub(crate) struct FolderConfig {
     pub(crate) global: PathBuf,
     pub(crate) projects: PathBuf,
     pub(crate) inbox: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ContextConfig {
+    pub(crate) tasks: String,
+    pub(crate) problems: String,
+    pub(crate) handoffs: String,
+    pub(crate) recent_events: Vec<String>,
+    pub(crate) open_statuses: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -404,6 +415,111 @@ fn validate_root_config(config: &RootConfig) -> Result<(), ResolveError> {
         }
     }
 
+    validate_context_config(config)?;
+
+    Ok(())
+}
+
+fn validate_context_config(config: &RootConfig) -> Result<(), ResolveError> {
+    if config.context.tasks == config.context.problems {
+        return Err(ResolveError::Configuration(
+            "context.tasks and context.problems must name different note types".to_owned(),
+        ));
+    }
+
+    for (field, note_type, class, required_field) in [
+        (
+            "context.tasks",
+            config.context.tasks.as_str(),
+            NoteClass::Record,
+            "status",
+        ),
+        (
+            "context.problems",
+            config.context.problems.as_str(),
+            NoteClass::Record,
+            "status",
+        ),
+        (
+            "context.handoffs",
+            config.context.handoffs.as_str(),
+            NoteClass::Event,
+            "date",
+        ),
+    ] {
+        validate_context_role(config, field, note_type, class, required_field)?;
+    }
+
+    if config.context.recent_events.is_empty() {
+        return Err(ResolveError::Configuration(
+            "context.recent_events must contain at least one note type".to_owned(),
+        ));
+    }
+    let mut recent_events = BTreeSet::new();
+    for note_type in &config.context.recent_events {
+        if note_type == &config.context.handoffs {
+            return Err(ResolveError::Configuration(
+                "context.recent_events must not repeat context.handoffs".to_owned(),
+            ));
+        }
+        if !recent_events.insert(note_type) {
+            return Err(ResolveError::Configuration(
+                "context.recent_events must contain unique note types".to_owned(),
+            ));
+        }
+        validate_context_role(
+            config,
+            "context.recent_events",
+            note_type,
+            NoteClass::Event,
+            "date",
+        )?;
+    }
+
+    if config.context.open_statuses.is_empty() {
+        return Err(ResolveError::Configuration(
+            "context.open_statuses must contain at least one status".to_owned(),
+        ));
+    }
+    let mut open_statuses = BTreeSet::new();
+    for status in &config.context.open_statuses {
+        if status.trim().is_empty() || !open_statuses.insert(status) {
+            return Err(ResolveError::Configuration(
+                "context.open_statuses must contain unique non-empty strings".to_owned(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_context_role(
+    config: &RootConfig,
+    field: &str,
+    name: &str,
+    expected_class: NoteClass,
+    required_field: &str,
+) -> Result<(), ResolveError> {
+    let note_type = config.project.note_types.get(name).ok_or_else(|| {
+        ResolveError::Configuration(format!(
+            "{field} names undefined project note type {name:?}"
+        ))
+    })?;
+    if note_type.class != expected_class {
+        return Err(ResolveError::Configuration(format!(
+            "{field} must name a {:?} note type",
+            expected_class
+        )));
+    }
+    if !note_type
+        .required_fields
+        .iter()
+        .any(|candidate| candidate == required_field)
+    {
+        return Err(ResolveError::Configuration(format!(
+            "{field} note type {name:?} must require field {required_field:?}"
+        )));
+    }
     Ok(())
 }
 
