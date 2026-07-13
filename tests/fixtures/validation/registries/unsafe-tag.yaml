@@ -1,0 +1,3 @@
+example:
+  path: !include secret-path.txt
+  status: active

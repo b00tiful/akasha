@@ -1,0 +1,5 @@
+defaults: &defaults
+  path: ~/code/example
+  status: active
+example:
+  <<: *defaults

@@ -1,0 +1,7 @@
+# Synthetic registry only.
+example:
+  path: ~/code/example
+  status: active
+second-project:
+  path: /srv/code/second
+  status: archived

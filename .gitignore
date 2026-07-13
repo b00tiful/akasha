@@ -1,0 +1,38 @@
+.env
+.codegraph/
+.env.example
+
+# Local agent state.
+.agents/
+.codex/local/
+.claude/
+.codex/
+
+# Obsidian machine-local state and generated REST credentials.
+akasha/.obsidian/workspace.json
+akasha/.obsidian/workspace-mobile.json
+akasha/.obsidian/plugins/obsidian-local-rest-api/data.json
+akasha/.trash/
+
+# Python/tool caches for the future implementation.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
+
+# Rust build output.
+/target/
+
+# The demo is provenance, not part of the new project.
+reference/
+initial_convo/
+akasha/
+
+.mcp.json
+AGENTS.md
+VAULT.md
+implementation_plan.md

@@ -1,0 +1,4 @@
+example:
+  path: ~/code/example
+  status: active
+  owner: human

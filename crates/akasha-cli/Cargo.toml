@@ -1,0 +1,14 @@
+[package]
+name = "akasha-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "akasha"
+path = "src/main.rs"
+
+[dependencies]
+akasha-core = { path = "../akasha-core" }
+clap.workspace = true
+serde_json.workspace = true

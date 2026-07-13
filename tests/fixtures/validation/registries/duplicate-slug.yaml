@@ -1,0 +1,6 @@
+example:
+  path: ~/code/first
+  status: active
+example:
+  path: ~/code/second
+  status: active
