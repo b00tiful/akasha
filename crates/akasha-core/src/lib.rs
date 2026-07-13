@@ -3,6 +3,7 @@
 pub mod context;
 pub mod init;
 pub mod link;
+pub mod onboarding;
 pub mod project_validation;
 pub mod resolution;
 mod state;
@@ -16,6 +17,10 @@ pub use context::{
 };
 pub use init::{InitError, InitRequest, InitResult, initialize_project};
 pub use link::{LinkError, LinkRequest, LinkResult, link_project};
+pub use onboarding::{
+    OnboardingBatchError, OnboardingBatchRequest, OnboardingBatchResult, ProposedNote,
+    apply_onboarding_batch,
+};
 pub use project_validation::{
     NoteTypeValidation, ProjectValidationError, ProjectValidationReport, ProjectionValidation,
     validate_project,

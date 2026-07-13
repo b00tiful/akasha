@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -300,6 +300,15 @@ fn validate_wikilinks(
     source_path: &Path,
     body: &str,
 ) -> Result<usize, ProjectValidationError> {
+    validate_wikilinks_with_targets(root, source_path, body, &BTreeSet::new())
+}
+
+pub(crate) fn validate_wikilinks_with_targets(
+    root: &Path,
+    source_path: &Path,
+    body: &str,
+    proposed_targets: &BTreeSet<PathBuf>,
+) -> Result<usize, ProjectValidationError> {
     let links =
         parse_wikilinks(body).map_err(|source| ProjectValidationError::InvalidWikilink {
             path: source_path.to_path_buf(),
@@ -316,6 +325,9 @@ fn validate_wikilinks(
             }
         })?;
         let target_path = root.join(relative);
+        if proposed_targets.contains(&target_path) {
+            continue;
+        }
         let metadata = match fs::symlink_metadata(&target_path) {
             Ok(metadata) => metadata,
             Err(source) if source.kind() == io::ErrorKind::NotFound => {

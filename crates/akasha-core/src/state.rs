@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::path::{Component, Path, PathBuf};
 
@@ -43,17 +43,88 @@ struct ProjectionState {
 pub(crate) fn render_empty_project_state() -> Vec<u8> {
     let empty_sources = source_fingerprint(std::iter::empty::<(&str, &[u8])>());
     let empty_output = content_fingerprint(&[]);
-    format!(
-        "schema_version = {PROJECT_STATE_SCHEMA_VERSION}\n\n\
-         [events]\n\n\
-         [projections.{INDEX_PROJECTION}]\n\
-         sources = \"{empty_sources}\"\n\
-         output = \"{empty_output}\"\n\n\
-         [projections.{ROADMAP_PROJECTION}]\n\
-         sources = \"{empty_sources}\"\n\
-         output = \"{empty_output}\"\n"
-    )
-    .into_bytes()
+    render_project_state(&ProjectState {
+        schema_version: PROJECT_STATE_SCHEMA_VERSION,
+        events: BTreeMap::new(),
+        projections: BTreeMap::from([
+            (
+                INDEX_PROJECTION.to_owned(),
+                ProjectionState {
+                    sources: empty_sources.clone(),
+                    output: empty_output.clone(),
+                },
+            ),
+            (
+                ROADMAP_PROJECTION.to_owned(),
+                ProjectionState {
+                    sources: empty_sources,
+                    output: empty_output,
+                },
+            ),
+        ]),
+    })
+}
+
+pub(crate) fn render_updated_project_state(
+    current_source: &str,
+    project_dir: &Path,
+    index: &[u8],
+    roadmap: &[u8],
+    notes: &[CanonicalNoteEvidence],
+    new_events: &BTreeSet<PathBuf>,
+) -> Result<Vec<u8>, String> {
+    let mut state = parse_project_state(current_source)?;
+    let mut index_sources = Vec::new();
+    let mut roadmap_sources = Vec::new();
+
+    for note in notes {
+        let path = project_relative_path(project_dir, &note.path)?;
+        match note.class {
+            NoteClass::Event if new_events.contains(&note.path) => {
+                if state
+                    .events
+                    .insert(path.clone(), content_fingerprint(&note.source))
+                    .is_some()
+                {
+                    return Err(format!(
+                        "new event {path:?} already exists in the trusted project state"
+                    ));
+                }
+            }
+            NoteClass::Event => {}
+            NoteClass::Record => roadmap_sources.push((path, note.source.as_slice())),
+            NoteClass::Entity => index_sources.push((path, note.source.as_slice())),
+        }
+    }
+
+    state.projections.insert(
+        INDEX_PROJECTION.to_owned(),
+        ProjectionState {
+            sources: source_fingerprint(
+                index_sources
+                    .iter()
+                    .map(|(path, source)| (path.as_str(), *source)),
+            ),
+            output: content_fingerprint(index),
+        },
+    );
+    state.projections.insert(
+        ROADMAP_PROJECTION.to_owned(),
+        ProjectionState {
+            sources: source_fingerprint(
+                roadmap_sources
+                    .iter()
+                    .map(|(path, source)| (path.as_str(), *source)),
+            ),
+            output: content_fingerprint(roadmap),
+        },
+    );
+
+    let rendered = render_project_state(&state);
+    let rendered_text = std::str::from_utf8(&rendered)
+        .expect("the deterministic project-state renderer always emits UTF-8");
+    validate_project_state(rendered_text, project_dir, index, roadmap, notes)?;
+    Ok(rendered)
 }
 
 pub(crate) fn validate_project_state(
@@ -63,6 +134,11 @@ pub(crate) fn validate_project_state(
     roadmap: &[u8],
     notes: &[CanonicalNoteEvidence],
 ) -> Result<ProjectStateValidation, String> {
+    let state = parse_project_state(source)?;
+    validate_project_state_contents(&state, project_dir, index, roadmap, notes)
+}
+
+fn parse_project_state(source: &str) -> Result<ProjectState, String> {
     let state: ProjectState =
         toml::from_str(source).map_err(|error| format!("invalid project state TOML: {error}"))?;
     if state.schema_version != PROJECT_STATE_SCHEMA_VERSION {
@@ -80,7 +156,16 @@ pub(crate) fn validate_project_state(
         validate_fingerprint(&projection.sources, &format!("projection {name:?} sources"))?;
         validate_fingerprint(&projection.output, &format!("projection {name:?} output"))?;
     }
+    Ok(state)
+}
 
+fn validate_project_state_contents(
+    state: &ProjectState,
+    project_dir: &Path,
+    index: &[u8],
+    roadmap: &[u8],
+    notes: &[CanonicalNoteEvidence],
+) -> Result<ProjectStateValidation, String> {
     let mut current_events = BTreeMap::new();
     let mut index_sources = Vec::new();
     let mut roadmap_sources = Vec::new();
@@ -138,6 +223,30 @@ pub(crate) fn validate_project_state(
         immutable_events: current_events.len(),
         projection_sources,
     })
+}
+
+fn render_project_state(state: &ProjectState) -> Vec<u8> {
+    let mut rendered = format!("schema_version = {}\n\n[events]\n", state.schema_version);
+    for (path, fingerprint) in &state.events {
+        let path = serde_json::to_string(path).expect("state paths always serialize as JSON");
+        let fingerprint =
+            serde_json::to_string(fingerprint).expect("fingerprints always serialize as JSON");
+        writeln!(rendered, "{path} = {fingerprint}")
+            .expect("writing deterministic state to a string cannot fail");
+    }
+    for name in [INDEX_PROJECTION, ROADMAP_PROJECTION] {
+        let projection = &state.projections[name];
+        let sources = serde_json::to_string(&projection.sources)
+            .expect("fingerprints always serialize as JSON");
+        let output = serde_json::to_string(&projection.output)
+            .expect("fingerprints always serialize as JSON");
+        write!(
+            rendered,
+            "\n[projections.{name}]\nsources = {sources}\noutput = {output}\n"
+        )
+        .expect("writing deterministic state to a string cannot fail");
+    }
+    rendered.into_bytes()
 }
 
 fn validate_projection_names(
