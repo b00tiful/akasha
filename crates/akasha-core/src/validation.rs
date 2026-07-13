@@ -205,6 +205,37 @@ pub(crate) fn validate_configured_note(
         .as_object()
         .expect("parsed note metadata is always a mapping");
 
+    validate_required_fields(mapping, required_fields)?;
+    validate_identity_field(mapping, "project", project)?;
+    validate_identity_field(mapping, "type", note_type)?;
+    Ok(())
+}
+
+pub(crate) fn validate_global_configured_note(
+    parsed: &ParsedNote<'_>,
+    note_type: &str,
+    required_fields: &[String],
+) -> Result<(), ValidationError> {
+    let mapping = parsed
+        .metadata
+        .as_object()
+        .expect("parsed note metadata is always a mapping");
+
+    validate_required_fields(mapping, required_fields)?;
+    if mapping.contains_key("project") {
+        return Err(ValidationError::InvalidSchema {
+            document: "global canonical note",
+            message: "global knowledge must not declare a project identity".to_owned(),
+        });
+    }
+    validate_identity_field(mapping, "type", note_type)?;
+    Ok(())
+}
+
+fn validate_required_fields(
+    mapping: &serde_json::Map<String, Value>,
+    required_fields: &[String],
+) -> Result<(), ValidationError> {
     for field in required_fields {
         let value = mapping
             .get(field)
@@ -220,9 +251,6 @@ pub(crate) fn validate_configured_note(
             });
         }
     }
-
-    validate_identity_field(mapping, "project", project)?;
-    validate_identity_field(mapping, "type", note_type)?;
     Ok(())
 }
 

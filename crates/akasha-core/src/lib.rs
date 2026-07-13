@@ -2,6 +2,7 @@
 
 pub mod context;
 pub mod init;
+pub mod library;
 pub mod link;
 pub mod onboarding;
 pub mod project_validation;
@@ -16,6 +17,10 @@ pub use context::{
     assemble_context, render_context_markdown,
 };
 pub use init::{InitError, InitRequest, InitResult, initialize_project};
+pub use library::{
+    LibraryBook, LibraryCategory, LibraryCollection, LibraryProjection, LibraryScope, LibraryShelf,
+    build_library_projection, render_library_markdown,
+};
 pub use link::{LinkError, LinkRequest, LinkResult, link_project};
 pub use onboarding::{
     MAX_ONBOARDING_EVIDENCE_CLAIMS, MAX_ONBOARDING_EVIDENCE_SOURCES,
