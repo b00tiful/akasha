@@ -22,6 +22,7 @@ __pycache__/
 .mypy_cache/
 dist/
 build/
+node_modules/
 *.egg-info/
 
 # Rust build output.

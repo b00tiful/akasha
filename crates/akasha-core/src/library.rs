@@ -1,11 +1,13 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::str;
 
 use serde::Serialize;
 
 use crate::project_validation::{
-    ProjectValidationError, canonical_note_paths, validate_project, validate_wikilinks_with_targets,
+    ProjectValidationError, canonical_note_paths, validate_project,
+    validate_wikilinks_with_targets, wikilink_target_path,
 };
 use crate::resolution::{
     NoteClass, ResolveRequest, load_project_registry, load_root_config, resolve_project,
@@ -14,6 +16,7 @@ use crate::validation::{
     ParsedNote, ValidationError, parse_leading_frontmatter_bytes, validate_configured_note,
     validate_global_configured_note,
 };
+use crate::wikilink::parse_wikilinks;
 
 /// Storage scope for one canonical book identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -35,6 +38,8 @@ pub struct LibraryBook {
     pub status: Option<String>,
     pub reviewed: Option<String>,
     pub date: Option<String>,
+    /// Validated full vault-relative targets in deterministic order.
+    pub outgoing_links: Vec<String>,
     /// Exact textual fallback for visual inspection.
     pub explanation: String,
 }
@@ -69,6 +74,13 @@ pub struct LibraryProjection {
     pub global: LibraryCollection,
     pub projects: Vec<LibraryShelf>,
     pub total_books: usize,
+}
+
+/// Exact canonical Markdown selected through a validated projection identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LibraryDocument {
+    pub id: String,
+    pub source: String,
 }
 
 /// Validate every registered project and project the shared library from canonical notes.
@@ -181,6 +193,42 @@ pub fn build_library_projection(
     })
 }
 
+/// Load exact Markdown only when the requested identity belongs to the validated library.
+pub fn load_library_document(
+    request: &ResolveRequest,
+    id: &str,
+) -> Result<LibraryDocument, ProjectValidationError> {
+    let projection = build_library_projection(request)?;
+    let is_projected = projection
+        .global
+        .categories
+        .iter()
+        .chain(
+            projection
+                .projects
+                .iter()
+                .flat_map(|shelf| shelf.categories.iter()),
+        )
+        .flat_map(|category| category.books.iter())
+        .any(|book| book.id == id);
+    if !is_projected {
+        return Err(invalid_library_layout(
+            &projection.root,
+            &format!("document {id:?} is not part of the validated library projection"),
+        ));
+    }
+
+    let path = projection.root.join(id);
+    let source = read_note(&path)?;
+    parse_note(&path, &source)?;
+    let source = str::from_utf8(&source)
+        .map_err(|source| invalid_note(&path, ValidationError::InvalidUtf8(source)))?;
+    Ok(LibraryDocument {
+        id: id.to_owned(),
+        source: source.to_owned(),
+    })
+}
+
 /// Render the exact hierarchy as a keyboard- and screen-reader-friendly Markdown fallback.
 #[must_use]
 pub fn render_library_markdown(projection: &LibraryProjection) -> String {
@@ -228,6 +276,7 @@ fn project_book(
     let status = metadata_string(parsed, "status");
     let reviewed = metadata_string(parsed, "reviewed");
     let date = metadata_string(parsed, "date");
+    let outgoing_links = outgoing_links(root, path, parsed.body)?;
     let mut explanation = format!(
         "{label}; project {project}; {note_type} {}; canonical source {id}",
         class_name(class)
@@ -249,6 +298,7 @@ fn project_book(
         status,
         reviewed,
         date,
+        outgoing_links,
         explanation,
     })
 }
@@ -265,6 +315,7 @@ fn global_book(
     let status = metadata_string(parsed, "status");
     let reviewed = metadata_string(parsed, "reviewed");
     let date = metadata_string(parsed, "date");
+    let outgoing_links = outgoing_links(root, path, parsed.body)?;
     let mut explanation = format!(
         "{label}; global {note_type} {}; canonical source {id}",
         class_name(class)
@@ -284,8 +335,35 @@ fn global_book(
         status,
         reviewed,
         date,
+        outgoing_links,
         explanation,
     })
+}
+
+fn outgoing_links(
+    root: &Path,
+    source_path: &Path,
+    body: &str,
+) -> Result<Vec<String>, ProjectValidationError> {
+    let links =
+        parse_wikilinks(body).map_err(|source| ProjectValidationError::InvalidWikilink {
+            path: source_path.to_path_buf(),
+            message: source.to_string(),
+        })?;
+    let mut targets = BTreeSet::new();
+    for link in links {
+        let Some(target) = link.target else {
+            continue;
+        };
+        let relative = wikilink_target_path(target).map_err(|message| {
+            ProjectValidationError::InvalidWikilink {
+                path: source_path.to_path_buf(),
+                message,
+            }
+        })?;
+        targets.insert(vault_id(root, &root.join(relative))?);
+    }
+    Ok(targets.into_iter().collect())
 }
 
 fn append_lifecycle_explanation(

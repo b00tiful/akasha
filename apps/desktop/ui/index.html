@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#090b0d" />
+    <title>Akasha</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="masthead">
+        <div>
+          <p class="eyebrow">AKASHA / SYNTHETIC VERTICAL SLICE</p>
+          <h1>Library of living project memory</h1>
+        </div>
+        <form id="library-form" class="library-form">
+          <label>
+            Data root
+            <input id="root-input" value="../../../tests/fixtures/resolution/valid-root" />
+          </label>
+          <label>
+            Project
+            <input id="project-input" value="example" />
+          </label>
+          <button type="submit">Open library</button>
+        </form>
+      </header>
+
+      <div class="status-row">
+        <p id="status" role="status">Waiting for the Rust host.</p>
+        <label class="motion-toggle">
+          <input id="reduced-motion" type="checkbox" />
+          Reduced motion
+        </label>
+      </div>
+
+      <main class="workspace">
+        <section class="world-panel" aria-labelledby="world-title">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">SEMANTIC MAP</p>
+              <h2 id="world-title">Arcane library</h2>
+            </div>
+            <p><span class="swatch link"></span> validated wikilink traffic</p>
+          </div>
+          <div id="scene" class="scene" aria-label="Visual library projection"></div>
+          <p class="scene-caption">
+            Books keep their full vault-relative identities. Movement follows validated links only.
+          </p>
+        </section>
+
+        <aside class="fallback-panel" aria-labelledby="fallback-title">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">EXACT FALLBACK</p>
+              <h2 id="fallback-title">Shelves and books</h2>
+            </div>
+          </div>
+          <div id="fallback" class="fallback"></div>
+        </aside>
+
+        <section class="inspector-panel" aria-labelledby="inspector-title">
+          <div class="panel-heading inspector-heading">
+            <div>
+              <p class="eyebrow">CANONICAL NOTE</p>
+              <h2 id="inspector-title">Inspector</h2>
+            </div>
+            <div class="mode-tabs" role="tablist" aria-label="Note display mode">
+              <button type="button" role="tab" data-mode="live" aria-selected="true">Live Preview</button>
+              <button type="button" role="tab" data-mode="source" aria-selected="false">Source</button>
+              <button type="button" role="tab" data-mode="reading" aria-selected="false">Reading</button>
+            </div>
+          </div>
+          <div id="book-meta" class="book-meta">
+            <p>Select a book from the visual map or exact fallback.</p>
+          </div>
+          <div id="note-viewer" class="note-viewer"></div>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

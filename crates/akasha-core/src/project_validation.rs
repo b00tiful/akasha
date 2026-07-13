@@ -377,7 +377,7 @@ pub(crate) fn validate_wikilinks_with_targets(
     Ok(links.len())
 }
 
-fn wikilink_target_path(target: &str) -> Result<PathBuf, String> {
+pub(crate) fn wikilink_target_path(target: &str) -> Result<PathBuf, String> {
     if target.contains('\\') {
         return Err(format!(
             "target {target:?} must use vault-relative / separators"

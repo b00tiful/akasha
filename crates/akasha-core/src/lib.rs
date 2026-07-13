@@ -18,8 +18,9 @@ pub use context::{
 };
 pub use init::{InitError, InitRequest, InitResult, initialize_project};
 pub use library::{
-    LibraryBook, LibraryCategory, LibraryCollection, LibraryProjection, LibraryScope, LibraryShelf,
-    build_library_projection, render_library_markdown,
+    LibraryBook, LibraryCategory, LibraryCollection, LibraryDocument, LibraryProjection,
+    LibraryScope, LibraryShelf, build_library_projection, load_library_document,
+    render_library_markdown,
 };
 pub use link::{LinkError, LinkRequest, LinkResult, link_project};
 pub use onboarding::{

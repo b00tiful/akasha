@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use akasha_core::{
     LibraryScope, ResolutionEnvironment, ResolveRequest, build_library_projection,
-    render_library_markdown,
+    load_library_document, render_library_markdown,
 };
 
 mod support;
@@ -206,6 +206,7 @@ fn projects_and_global_entities_form_a_deterministic_projection() {
     assert_eq!(global.id, "Global/entities/rust-pattern.md");
     assert_eq!(global.scope, LibraryScope::Global);
     assert_eq!(global.label, "rust-pattern");
+    assert_eq!(global.outgoing_links, ["Projects/alpha/entities/core.md"]);
 
     let alpha_entity = projection.projects[0]
         .categories
@@ -229,6 +230,25 @@ fn projects_and_global_entities_form_a_deterministic_projection() {
     assert!(markdown.contains("`Global/entities/rust-pattern.md`"));
     assert!(markdown.contains("status stable; reviewed 2026-07-13"));
     assert!(markdown.contains("`Projects/zeta/entities/renderer.md`"));
+}
+
+#[test]
+fn loads_only_exact_documents_from_the_validated_projection() {
+    let fixture = fixture("document");
+    let id = "Projects/alpha/entities/core.md";
+
+    let document = load_library_document(&fixture.request, id).expect("load projected document");
+    assert_eq!(document.id, id);
+    assert!(document.source.ends_with("# core\n"));
+
+    let error = load_library_document(&fixture.request, "Projects/alpha/index.md")
+        .expect_err("reject non-book document");
+    assert_eq!(error.exit_code(), 4);
+    assert!(
+        error
+            .to_string()
+            .contains("not part of the validated library")
+    );
 }
 
 #[test]

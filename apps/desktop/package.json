@@ -1,0 +1,30 @@
+{
+  "name": "akasha-desktop-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "check": "npm run build && npm test",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev --features desktop",
+    "tauri:build": "tauri build --features desktop"
+  },
+  "dependencies": {
+    "@codemirror/lang-markdown": "6.5.0",
+    "@codemirror/state": "6.7.1",
+    "@codemirror/view": "6.43.6",
+    "@tauri-apps/api": "2.11.1",
+    "codemirror": "6.0.2",
+    "pixi.js": "8.19.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
+    "jsdom": "29.1.1",
+    "typescript": "7.0.2",
+    "vite": "8.1.4",
+    "vitest": "4.1.10"
+  }
+}

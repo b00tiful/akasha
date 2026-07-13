@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Akasha library mark</title>
+  <rect x="16" y="16" width="480" height="480" rx="96" fill="#090b0d"/>
+  <path
+    d="M128 384V176c0-53 43-96 96-96h64c53 0 96 43 96 96v208"
+    fill="none"
+    stroke="#e7e0cf"
+    stroke-linecap="square"
+    stroke-width="32"
+  />
+  <path d="M128 384h256" stroke="#e7e0cf" stroke-linecap="square" stroke-width="32"/>
+  <path d="M184 176h144M184 240h144M184 304h144" stroke="#64d8cb" stroke-width="24"/>
+  <path d="m256 138 26 26-26 26-26-26z" fill="#e3a64b"/>
+</svg>
