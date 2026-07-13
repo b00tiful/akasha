@@ -6,6 +6,7 @@ pub mod link;
 pub mod project_validation;
 pub mod resolution;
 pub mod validation;
+mod wikilink;
 pub mod writes;
 
 pub use context::{

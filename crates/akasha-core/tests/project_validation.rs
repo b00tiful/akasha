@@ -32,6 +32,7 @@ impl Drop for TempDir {
 
 struct Fixture {
     _temp: TempDir,
+    root: PathBuf,
     project_dir: PathBuf,
     request: ResolveRequest,
 }
@@ -91,6 +92,7 @@ fn fixture(name: &str) -> Fixture {
 
     Fixture {
         _temp: temp,
+        root,
         project_dir,
         request,
     }
@@ -154,8 +156,114 @@ fn validates_the_configured_layout_and_canonical_notes() {
     assert_eq!(report.project, "example");
     assert_eq!(report.registry_projects, 1);
     assert_eq!(report.canonical_notes, 2);
+    assert_eq!(report.wikilinks, 0);
     assert_eq!(report.note_types["session"].notes, 1);
     assert_eq!(report.note_types["entity"].notes, 1);
+}
+
+#[test]
+fn validates_full_vault_relative_wikilinks_and_ignores_code() {
+    let fixture = fixture("valid-wikilinks");
+    let note = fixture.project_dir.join("events/sessions/2026-07-13.md");
+    fs::write(
+        &note,
+        "---\nschema_version: 1\nproject: example\ntype: session\ndate: 2026-07-13\n---\n\n\
+         # Session\n\n\
+         Worked on [[Projects/example/entities/core|the core]].\n\
+         ![[Projects/example/entities/core.md#Details]] [[#Session]]\n\
+         `[[missing/inline]]`\n\
+         ```md\n[[missing/fenced]]\n```\n",
+    )
+    .expect("replace session");
+
+    let report = validate_project(&fixture.request).expect("validate wikilinks");
+    assert_eq!(report.wikilinks, 3);
+}
+
+#[test]
+fn rejects_a_missing_wikilink_target() {
+    let fixture = fixture("missing-wikilink");
+    let note = fixture.project_dir.join("events/sessions/2026-07-13.md");
+    fs::write(
+        &note,
+        "---\nschema_version: 1\nproject: example\ntype: session\ndate: 2026-07-13\n---\n\n\
+         # Session\n\n[[Projects/example/entities/missing]]\n",
+    )
+    .expect("replace session");
+
+    let error = validate_project(&fixture.request).expect_err("missing target must fail");
+    assert_eq!(error.exit_code(), 4);
+    assert!(error.to_string().contains("invalid wikilink"));
+    assert!(error.to_string().contains("entities/missing"));
+    assert!(
+        error
+            .to_string()
+            .contains(note.to_str().expect("UTF-8 path"))
+    );
+}
+
+#[test]
+fn rejects_unsafe_and_malformed_wikilinks() {
+    for (name, link) in [
+        ("parent", "[[../outside]]"),
+        ("absolute", "[[/outside]]"),
+        ("backslash", "[[Projects\\example\\entities\\core]]"),
+        ("unterminated", "[[Projects/example/entities/core"),
+    ] {
+        let fixture = fixture(name);
+        fs::write(
+            fixture.project_dir.join("events/sessions/2026-07-13.md"),
+            format!(
+                "---\nschema_version: 1\nproject: example\ntype: session\ndate: 2026-07-13\n---\n\n{link}\n"
+            ),
+        )
+        .expect("replace session");
+
+        let error = validate_project(&fixture.request).expect_err("unsafe link must fail");
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("invalid wikilink"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_directory_symlink_and_out_of_root_wikilink_targets() {
+    use std::os::unix::fs::symlink;
+
+    let directory = fixture("directory-wikilink");
+    fs::create_dir(directory.root.join("Global/directory.md")).expect("create target directory");
+    replace_session_link(&directory, "[[Global/directory]]");
+    let error = validate_project(&directory.request).expect_err("directory target must fail");
+    assert!(error.to_string().contains("not a regular Markdown file"));
+
+    let symlinked = fixture("symlink-wikilink");
+    let outside_note = symlinked._temp.path().join("outside.md");
+    fs::write(&outside_note, "# Outside\n").expect("write outside note");
+    symlink(&outside_note, symlinked.root.join("Global/symlink.md"))
+        .expect("create target symlink");
+    replace_session_link(&symlinked, "[[Global/symlink]]");
+    let error = validate_project(&symlinked.request).expect_err("symlink target must fail");
+    assert!(error.to_string().contains("must not be a symbolic link"));
+
+    let escaped = fixture("escaped-wikilink");
+    let outside_directory = escaped._temp.path().join("outside");
+    fs::create_dir(&outside_directory).expect("create outside directory");
+    fs::write(outside_directory.join("note.md"), "# Outside\n").expect("write outside note");
+    symlink(&outside_directory, escaped.root.join("Global/external"))
+        .expect("create parent symlink");
+    replace_session_link(&escaped, "[[Global/external/note]]");
+    let error = validate_project(&escaped.request).expect_err("escaped target must fail");
+    assert!(error.to_string().contains("escapes data root"));
+}
+
+fn replace_session_link(fixture: &Fixture, link: &str) {
+    fs::write(
+        fixture.project_dir.join("events/sessions/2026-07-13.md"),
+        format!(
+            "---\nschema_version: 1\nproject: example\ntype: session\ndate: 2026-07-13\n---\n\n{link}\n"
+        ),
+    )
+    .expect("replace session");
 }
 
 #[test]

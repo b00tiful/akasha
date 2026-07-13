@@ -14,6 +14,7 @@ use crate::resolution::{
 use crate::validation::{
     ValidationError, parse_leading_frontmatter_bytes, validate_configured_note,
 };
+use crate::wikilink::parse_wikilinks;
 
 /// Count and class for one configured canonical note type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -32,6 +33,7 @@ pub struct ProjectValidationReport {
     pub registry: PathBuf,
     pub registry_projects: usize,
     pub canonical_notes: usize,
+    pub wikilinks: usize,
     pub note_types: BTreeMap<String, NoteTypeValidation>,
 }
 
@@ -42,6 +44,10 @@ pub enum ProjectValidationError {
     InvalidDocument {
         path: PathBuf,
         source: Box<ValidationError>,
+    },
+    InvalidWikilink {
+        path: PathBuf,
+        message: String,
     },
     FileSystem {
         operation: &'static str,
@@ -56,6 +62,7 @@ impl ProjectValidationError {
         match self {
             Self::Resolve(source) => source.exit_code(),
             Self::InvalidDocument { source, .. } => source.exit_code(),
+            Self::InvalidWikilink { .. } => 4,
             Self::FileSystem { .. } => 6,
         }
     }
@@ -69,6 +76,13 @@ impl fmt::Display for ProjectValidationError {
                 write!(
                     formatter,
                     "validation failed at {}: {source}",
+                    path.display()
+                )
+            }
+            Self::InvalidWikilink { path, message } => {
+                write!(
+                    formatter,
+                    "validation failed at {}: invalid wikilink: {message}",
                     path.display()
                 )
             }
@@ -90,6 +104,7 @@ impl Error for ProjectValidationError {
         match self {
             Self::Resolve(source) => Some(source.as_ref()),
             Self::InvalidDocument { source, .. } => Some(source.as_ref()),
+            Self::InvalidWikilink { .. } => None,
             Self::FileSystem { source, .. } => Some(source),
         }
     }
@@ -126,13 +141,20 @@ pub fn validate_project(
     }
 
     let mut canonical_notes = 0;
+    let mut wikilinks = 0;
     let mut note_types = BTreeMap::new();
     for (name, note_type) in &config.project.note_types {
         let folder = resolved.project_dir.join(&note_type.folder);
         let folder = require_directory(&folder, &resolved.project_dir)?;
-        let notes =
-            validate_note_tree(&folder, &resolved.project, name, &note_type.required_fields)?;
+        let (notes, links) = validate_note_tree(
+            &resolved.root,
+            &folder,
+            &resolved.project,
+            name,
+            &note_type.required_fields,
+        )?;
         canonical_notes += notes;
+        wikilinks += links;
         note_types.insert(
             name.clone(),
             NoteTypeValidation {
@@ -150,17 +172,20 @@ pub fn validate_project(
         registry: resolved.registry,
         registry_projects: registry.projects.len(),
         canonical_notes,
+        wikilinks,
         note_types,
     })
 }
 
 fn validate_note_tree(
+    root: &Path,
     directory: &Path,
     project: &str,
     note_type: &str,
     required_fields: &[String],
-) -> Result<usize, ProjectValidationError> {
+) -> Result<(usize, usize), ProjectValidationError> {
     let paths = canonical_note_paths(directory)?;
+    let mut wikilinks = 0;
     for path in &paths {
         let source = fs::read(path).map_err(|source| ProjectValidationError::FileSystem {
             operation: "read canonical note",
@@ -179,8 +204,115 @@ fn validate_note_tree(
                 source: Box::new(source),
             },
         )?;
+        wikilinks += validate_wikilinks(root, path, parsed.body)?;
     }
-    Ok(paths.len())
+    Ok((paths.len(), wikilinks))
+}
+
+fn validate_wikilinks(
+    root: &Path,
+    source_path: &Path,
+    body: &str,
+) -> Result<usize, ProjectValidationError> {
+    let links =
+        parse_wikilinks(body).map_err(|source| ProjectValidationError::InvalidWikilink {
+            path: source_path.to_path_buf(),
+            message: source.to_string(),
+        })?;
+    for link in &links {
+        let Some(target) = link.target else {
+            continue;
+        };
+        let relative = wikilink_target_path(target).map_err(|message| {
+            ProjectValidationError::InvalidWikilink {
+                path: source_path.to_path_buf(),
+                message,
+            }
+        })?;
+        let target_path = root.join(relative);
+        let metadata = match fs::symlink_metadata(&target_path) {
+            Ok(metadata) => metadata,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {
+                return Err(ProjectValidationError::InvalidWikilink {
+                    path: source_path.to_path_buf(),
+                    message: format!(
+                        "target {target:?} does not exist as {}",
+                        target_path.display()
+                    ),
+                });
+            }
+            Err(source) => {
+                return Err(ProjectValidationError::FileSystem {
+                    operation: "inspect wikilink target",
+                    path: target_path,
+                    source,
+                });
+            }
+        };
+        if metadata.file_type().is_symlink() {
+            return Err(ProjectValidationError::InvalidWikilink {
+                path: source_path.to_path_buf(),
+                message: format!("target {target:?} must not be a symbolic link"),
+            });
+        }
+        if !metadata.is_file() {
+            return Err(ProjectValidationError::InvalidWikilink {
+                path: source_path.to_path_buf(),
+                message: format!("target {target:?} is not a regular Markdown file"),
+            });
+        }
+        let canonical = fs::canonicalize(&target_path).map_err(|source| {
+            ProjectValidationError::FileSystem {
+                operation: "resolve wikilink target",
+                path: target_path.clone(),
+                source,
+            }
+        })?;
+        if !canonical.starts_with(root) {
+            return Err(ProjectValidationError::InvalidWikilink {
+                path: source_path.to_path_buf(),
+                message: format!("target {target:?} escapes data root {}", root.display()),
+            });
+        }
+    }
+
+    Ok(links.len())
+}
+
+fn wikilink_target_path(target: &str) -> Result<PathBuf, String> {
+    if target.contains('\\') {
+        return Err(format!(
+            "target {target:?} must use vault-relative / separators"
+        ));
+    }
+    if target.starts_with('/') {
+        return Err(format!("target {target:?} must be vault-relative"));
+    }
+
+    let parts = target.split('/').collect::<Vec<_>>();
+    if parts
+        .iter()
+        .any(|part| part.is_empty() || *part == "." || *part == "..")
+    {
+        return Err(format!(
+            "target {target:?} contains an empty, current, or parent path component"
+        ));
+    }
+
+    let mut relative = PathBuf::new();
+    for part in parts {
+        relative.push(part);
+    }
+    if !target.ends_with(".md") {
+        let file_name = relative
+            .file_name()
+            .expect("a validated non-empty target has a file name")
+            .to_os_string();
+        let mut markdown_name = file_name;
+        markdown_name.push(".md");
+        relative.set_file_name(markdown_name);
+    }
+    Ok(relative)
 }
 
 pub(crate) fn canonical_note_paths(

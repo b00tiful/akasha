@@ -232,6 +232,7 @@ fn render_validation(
         println!("project directory: {}", report.project_dir.display());
         println!("registry projects: {}", report.registry_projects);
         println!("canonical notes: {}", report.canonical_notes);
+        println!("wikilinks: {}", report.wikilinks);
         for (name, note_type) in &report.note_types {
             println!(
                 "note type: {name} ({}) — {}",
