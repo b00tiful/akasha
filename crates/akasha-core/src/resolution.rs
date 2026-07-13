@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::OsString;
 use std::fmt;
@@ -6,6 +7,8 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+use crate::validation::{ProjectRegistry, ValidationError, parse_project_registry};
 
 const CONFIG_SCHEMA_VERSION: u32 = 1;
 const ROOT_CONFIG_FILE: &str = "akasha.toml";
@@ -86,12 +89,18 @@ pub struct ResolvedProject {
     pub project: String,
     pub project_source: ProjectSource,
     pub pointer: Option<PathBuf>,
+    pub registry: PathBuf,
+    pub repository_dir: PathBuf,
     pub project_dir: PathBuf,
 }
 
 #[derive(Debug)]
 pub enum ResolveError {
     Configuration(String),
+    Validation {
+        path: PathBuf,
+        source: Box<ValidationError>,
+    },
     FileSystem {
         operation: &'static str,
         path: PathBuf,
@@ -104,6 +113,7 @@ impl ResolveError {
     pub const fn exit_code(&self) -> u8 {
         match self {
             Self::Configuration(_) => 3,
+            Self::Validation { source, .. } => source.exit_code(),
             Self::FileSystem { .. } => 6,
         }
     }
@@ -113,6 +123,13 @@ impl fmt::Display for ResolveError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Configuration(message) => formatter.write_str(message),
+            Self::Validation { path, source } => {
+                write!(
+                    formatter,
+                    "validation failed at {}: {source}",
+                    path.display()
+                )
+            }
             Self::FileSystem {
                 operation,
                 path,
@@ -130,6 +147,7 @@ impl std::error::Error for ResolveError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Configuration(_) => None,
+            Self::Validation { source, .. } => Some(source.as_ref()),
             Self::FileSystem { source, .. } => Some(source),
         }
     }
@@ -142,15 +160,53 @@ struct UserConfig {
     root: PathBuf,
 }
 
-#[derive(Debug, Deserialize)]
-struct RootConfig {
-    schema_version: u32,
-    folders: FolderConfig,
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RootConfig {
+    pub(crate) schema_version: u32,
+    pub(crate) files: FileConfig,
+    pub(crate) folders: FolderConfig,
+    pub(crate) project: ProjectLayoutConfig,
 }
 
-#[derive(Debug, Deserialize)]
-struct FolderConfig {
-    projects: PathBuf,
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FileConfig {
+    pub(crate) registry: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FolderConfig {
+    pub(crate) templates: PathBuf,
+    pub(crate) global: PathBuf,
+    pub(crate) projects: PathBuf,
+    pub(crate) inbox: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProjectLayoutConfig {
+    pub(crate) templates: PathBuf,
+    pub(crate) index: PathBuf,
+    pub(crate) roadmap: PathBuf,
+    pub(crate) note_types: BTreeMap<String, NoteTypeConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NoteTypeConfig {
+    pub(crate) class: NoteClass,
+    pub(crate) folder: PathBuf,
+    pub(crate) required_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NoteClass {
+    Event,
+    Record,
+    Entity,
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,10 +219,7 @@ struct ProjectPointer {
 /// Resolve and validate an Akasha data root and project without guessing either identity.
 pub fn resolve_project(request: &ResolveRequest) -> Result<ResolvedProject, ResolveError> {
     let (root, root_source) = resolve_root(request)?;
-    let root_config_path = root.join(ROOT_CONFIG_FILE);
-    let root_config: RootConfig = read_toml(&root_config_path, "data-root configuration")?;
-    require_schema_version(root_config.schema_version, &root_config_path)?;
-    validate_relative_path(&root_config.folders.projects, "folders.projects")?;
+    let root_config = load_root_config(&root)?;
 
     let (project, project_source, pointer) = match &request.project_override {
         Some(project) => {
@@ -186,6 +239,36 @@ pub fn resolve_project(request: &ResolveRequest) -> Result<ResolvedProject, Reso
         }
     };
 
+    let (registry_path, registry) = load_project_registry(&root, &root_config)?;
+    let registry_entry = registry.projects.get(&project).ok_or_else(|| {
+        ResolveError::Configuration(format!(
+            "project {project:?} is not registered in {}",
+            registry_path.display()
+        ))
+    })?;
+    let repository_dir = resolve_registry_repository(
+        &registry_entry.path,
+        &registry_path,
+        request.environment.home.as_deref(),
+    )?;
+
+    if let Some(pointer_path) = &pointer {
+        let pointer_repository = canonicalize_directory(
+            pointer_path
+                .parent()
+                .expect("a discovered project pointer always has a parent"),
+            "pointer repository",
+        )?;
+        if pointer_repository != repository_dir {
+            return Err(ResolveError::Configuration(format!(
+                "project pointer {} resolves to repository {}, but registry entry {project:?} names {}",
+                pointer_path.display(),
+                pointer_repository.display(),
+                repository_dir.display()
+            )));
+        }
+    }
+
     let project_dir = canonicalize_directory(
         &root.join(&root_config.folders.projects).join(&project),
         "project directory",
@@ -204,8 +287,163 @@ pub fn resolve_project(request: &ResolveRequest) -> Result<ResolvedProject, Reso
         project,
         project_source,
         pointer,
+        registry: registry_path,
+        repository_dir,
         project_dir,
     })
+}
+
+pub(crate) fn load_root_config(root: &Path) -> Result<RootConfig, ResolveError> {
+    let path = root.join(ROOT_CONFIG_FILE);
+    let config: RootConfig = read_toml(&path, "data-root configuration")?;
+    require_schema_version(config.schema_version, &path)?;
+    validate_root_config(&config)?;
+    Ok(config)
+}
+
+pub(crate) fn load_project_registry(
+    root: &Path,
+    config: &RootConfig,
+) -> Result<(PathBuf, ProjectRegistry), ResolveError> {
+    let configured_path = root.join(&config.files.registry);
+    let path = canonicalize_file(&configured_path, "project registry")?;
+    if !path.starts_with(root) {
+        return Err(ResolveError::Configuration(format!(
+            "project registry {} escapes data root {}",
+            path.display(),
+            root.display()
+        )));
+    }
+
+    let source = fs::read_to_string(&path).map_err(|source| ResolveError::FileSystem {
+        operation: "read project registry",
+        path: path.clone(),
+        source,
+    })?;
+    let registry = parse_project_registry(&source).map_err(|source| ResolveError::Validation {
+        path: path.clone(),
+        source: Box::new(source),
+    })?;
+    Ok((path, registry))
+}
+
+fn validate_root_config(config: &RootConfig) -> Result<(), ResolveError> {
+    let root_paths = [
+        ("files.registry", &config.files.registry),
+        ("folders.templates", &config.folders.templates),
+        ("folders.global", &config.folders.global),
+        ("folders.projects", &config.folders.projects),
+        ("folders.inbox", &config.folders.inbox),
+        ("project.templates", &config.project.templates),
+        ("project.index", &config.project.index),
+        ("project.roadmap", &config.project.roadmap),
+    ];
+    for (field, path) in root_paths {
+        validate_relative_path(path, field)?;
+    }
+
+    let folder_paths = [
+        ("folders.templates", &config.folders.templates),
+        ("folders.global", &config.folders.global),
+        ("folders.projects", &config.folders.projects),
+        ("folders.inbox", &config.folders.inbox),
+    ];
+    reject_duplicate_paths(&folder_paths)?;
+
+    if config.project.index == config.project.roadmap {
+        return Err(ResolveError::Configuration(
+            "project.index and project.roadmap must name different files".to_owned(),
+        ));
+    }
+    if config.project.note_types.is_empty() {
+        return Err(ResolveError::Configuration(
+            "project.note_types must declare at least one canonical note type".to_owned(),
+        ));
+    }
+
+    let mut note_folders = Vec::new();
+    for (name, note_type) in &config.project.note_types {
+        if validate_slug(name).is_err() {
+            return Err(ResolveError::Configuration(format!(
+                "invalid note type {name:?}; use lowercase ASCII letters, digits, and hyphens"
+            )));
+        }
+        validate_relative_path(
+            &note_type.folder,
+            &format!("project.note_types.{name}.folder"),
+        )?;
+        if note_type.required_fields.is_empty() {
+            return Err(ResolveError::Configuration(format!(
+                "project.note_types.{name}.required_fields must not be empty"
+            )));
+        }
+        let mut fields = BTreeSet::new();
+        for field in &note_type.required_fields {
+            if field.trim().is_empty() || !fields.insert(field) {
+                return Err(ResolveError::Configuration(format!(
+                    "project.note_types.{name}.required_fields must contain unique non-empty names"
+                )));
+            }
+        }
+        note_folders.push((name.as_str(), &note_type.folder));
+    }
+
+    for (index, (name, path)) in note_folders.iter().enumerate() {
+        if path.starts_with(&config.project.templates) || config.project.templates.starts_with(path)
+        {
+            return Err(ResolveError::Configuration(format!(
+                "project.note_types.{name}.folder must not overlap project.templates"
+            )));
+        }
+        for (other_name, other_path) in note_folders.iter().skip(index + 1) {
+            if path.starts_with(other_path) || other_path.starts_with(path) {
+                return Err(ResolveError::Configuration(format!(
+                    "note type folders {name:?} and {other_name:?} must not overlap"
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn reject_duplicate_paths(paths: &[(&str, &PathBuf)]) -> Result<(), ResolveError> {
+    for (index, (field, path)) in paths.iter().enumerate() {
+        if let Some((other_field, _)) = paths
+            .iter()
+            .skip(index + 1)
+            .find(|(_, other_path)| *other_path == *path)
+        {
+            return Err(ResolveError::Configuration(format!(
+                "{field} and {other_field} must name different paths"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn resolve_registry_repository(
+    configured: &Path,
+    registry_path: &Path,
+    home: Option<&std::ffi::OsStr>,
+) -> Result<PathBuf, ResolveError> {
+    let expanded = match configured.strip_prefix("~") {
+        Ok(remainder) => {
+            let home = home.ok_or_else(|| {
+                ResolveError::Configuration(format!(
+                    "registry repository path {} uses ~ but HOME is not set",
+                    configured.display()
+                ))
+            })?;
+            PathBuf::from(home).join(remainder)
+        }
+        Err(_) if configured.is_absolute() => configured.to_path_buf(),
+        Err(_) => registry_path
+            .parent()
+            .expect("a validated registry path always has a parent")
+            .join(configured),
+    };
+    canonicalize_directory(&expanded, "registered repository")
 }
 
 fn resolve_root(request: &ResolveRequest) -> Result<(PathBuf, RootSource), ResolveError> {
@@ -360,12 +598,9 @@ fn validate_slug(slug: &str) -> Result<(), ResolveError> {
 
 fn validate_relative_path(path: &Path, field: &str) -> Result<(), ResolveError> {
     if path.as_os_str().is_empty()
-        || path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        })
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
     {
         return Err(ResolveError::Configuration(format!(
             "{field} must be a non-empty relative path without parent traversal"
@@ -373,6 +608,34 @@ fn validate_relative_path(path: &Path, field: &str) -> Result<(), ResolveError> 
     }
 
     Ok(())
+}
+
+fn canonicalize_file(path: &Path, description: &str) -> Result<PathBuf, ResolveError> {
+    let canonical = match fs::canonicalize(path) {
+        Ok(path) => path,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {
+            return Err(ResolveError::Configuration(format!(
+                "{description} does not exist at {}",
+                path.display()
+            )));
+        }
+        Err(source) => {
+            return Err(ResolveError::FileSystem {
+                operation: "resolve file",
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+
+    if !canonical.is_file() {
+        return Err(ResolveError::Configuration(format!(
+            "{description} is not a file at {}",
+            canonical.display()
+        )));
+    }
+
+    Ok(canonical)
 }
 
 fn canonicalize_directory(path: &Path, description: &str) -> Result<PathBuf, ResolveError> {

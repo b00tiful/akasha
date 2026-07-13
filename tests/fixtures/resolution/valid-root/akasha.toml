@@ -1,4 +1,30 @@
 schema_version = 1
 
+[files]
+registry = "Meta/projects.yaml"
+
 [folders]
+templates = "templates"
+global = "Global"
 projects = "Projects"
+inbox = "Inbox"
+
+[project]
+templates = "templates"
+index = "index.md"
+roadmap = "roadmap.md"
+
+[project.note_types.session]
+class = "event"
+folder = "events/sessions"
+required_fields = ["project", "type", "date"]
+
+[project.note_types.task]
+class = "record"
+folder = "records/tasks"
+required_fields = ["project", "type", "status", "created", "updated"]
+
+[project.note_types.entity]
+class = "entity"
+folder = "entities"
+required_fields = ["entity", "kind", "status", "reviewed"]

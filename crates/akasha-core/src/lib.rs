@@ -1,10 +1,14 @@
 //! Trusted, interface-independent behavior for Akasha.
 
+pub mod project_validation;
 pub mod resolution;
 pub mod validation;
 
+pub use project_validation::{
+    NoteTypeValidation, ProjectValidationError, ProjectValidationReport, validate_project,
+};
 pub use resolution::{
-    ProjectSource, ResolutionEnvironment, ResolveError, ResolveRequest, ResolvedProject,
+    NoteClass, ProjectSource, ResolutionEnvironment, ResolveError, ResolveRequest, ResolvedProject,
     RootSource, resolve_project,
 };
 pub use validation::{

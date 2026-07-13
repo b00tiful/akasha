@@ -20,6 +20,7 @@ pub struct ParsedNote<'a> {
     pub frontmatter_yaml: &'a str,
     /// Exact Markdown after the closing delimiter.
     pub body: &'a str,
+    pub(crate) metadata: Value,
 }
 
 /// One validated entry from the project registry.
@@ -128,6 +129,7 @@ pub fn parse_leading_frontmatter(source: &str) -> Result<ParsedNote<'_>, Validat
         raw_frontmatter: &source[..slices.raw_end],
         frontmatter_yaml: slices.yaml,
         body: &source[slices.raw_end..],
+        metadata: value,
     })
 }
 
@@ -190,6 +192,61 @@ pub fn parse_project_registry(source: &str) -> Result<ProjectRegistry, Validatio
     }
 
     Ok(ProjectRegistry { projects })
+}
+
+pub(crate) fn validate_configured_note(
+    parsed: &ParsedNote<'_>,
+    project: &str,
+    note_type: &str,
+    required_fields: &[String],
+) -> Result<(), ValidationError> {
+    let mapping = parsed
+        .metadata
+        .as_object()
+        .expect("parsed note metadata is always a mapping");
+
+    for field in required_fields {
+        let value = mapping
+            .get(field)
+            .filter(|value| !value.is_null())
+            .ok_or_else(|| ValidationError::InvalidSchema {
+                document: "canonical note",
+                message: format!("required field {field:?} is missing"),
+            })?;
+        if value.as_str().is_some_and(|value| value.trim().is_empty()) {
+            return Err(ValidationError::InvalidSchema {
+                document: "canonical note",
+                message: format!("required field {field:?} must not be empty"),
+            });
+        }
+    }
+
+    validate_identity_field(mapping, "project", project)?;
+    validate_identity_field(mapping, "type", note_type)?;
+    Ok(())
+}
+
+fn validate_identity_field(
+    mapping: &serde_json::Map<String, Value>,
+    field: &str,
+    expected: &str,
+) -> Result<(), ValidationError> {
+    let Some(value) = mapping.get(field) else {
+        return Ok(());
+    };
+    let actual = value
+        .as_str()
+        .ok_or_else(|| ValidationError::InvalidSchema {
+            document: "canonical note",
+            message: format!("identity field {field:?} must be a string"),
+        })?;
+    if actual != expected {
+        return Err(ValidationError::InvalidSchema {
+            document: "canonical note",
+            message: format!("identity field {field:?} is {actual:?}, but expected {expected:?}"),
+        });
+    }
+    Ok(())
 }
 
 struct FrontmatterSlices<'a> {

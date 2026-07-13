@@ -31,13 +31,46 @@ impl Drop for TempDir {
 
 fn create_root(base: &Path, name: &str, project: &str) -> PathBuf {
     let root = base.join(name);
+    let repository = base.join(format!("{name}-{project}-repository"));
     fs::create_dir_all(root.join("Projects").join(project)).expect("create project");
-    fs::write(
-        root.join("akasha.toml"),
-        "schema_version = 1\n\n[folders]\nprojects = \"Projects\"\n",
-    )
-    .expect("write root config");
+    fs::create_dir_all(root.join("Meta")).expect("create metadata directory");
+    fs::create_dir_all(&repository).expect("create repository");
+    fs::write(root.join("akasha.toml"), root_config("Projects")).expect("write root config");
+    write_registry(&root, project, &repository);
     root
+}
+
+fn root_config(projects: &str) -> String {
+    format!(
+        "schema_version = 1\n\
+         \n\
+         [files]\n\
+         registry = \"Meta/projects.yaml\"\n\
+         \n\
+         [folders]\n\
+         templates = \"templates\"\n\
+         global = \"Global\"\n\
+         projects = {projects:?}\n\
+         inbox = \"Inbox\"\n\
+         \n\
+         [project]\n\
+         templates = \"templates\"\n\
+         index = \"index.md\"\n\
+         roadmap = \"roadmap.md\"\n\
+         \n\
+         [project.note_types.session]\n\
+         class = \"event\"\n\
+         folder = \"events/sessions\"\n\
+         required_fields = [\"project\", \"type\", \"date\"]\n"
+    )
+}
+
+fn write_registry(root: &Path, project: &str, repository: &Path) {
+    fs::write(
+        root.join("Meta/projects.yaml"),
+        format!("{project}:\n  path: {:?}\n  status: active\n", repository),
+    )
+    .expect("write project registry");
 }
 
 fn request(cwd: &Path) -> ResolveRequest {
@@ -100,6 +133,31 @@ fn uses_environment_root_when_no_command_line_root_exists() {
 }
 
 #[test]
+fn expands_home_relative_registry_repository_paths() {
+    let temp = TempDir::new("home-registry-path");
+    let root = create_root(temp.path(), "root", "example");
+    let home = temp.path().join("home");
+    let repository = home.join("code/example");
+    fs::create_dir_all(&repository).expect("create home-relative repository");
+    fs::write(
+        root.join("Meta/projects.yaml"),
+        "example:\n  path: ~/code/example\n  status: active\n",
+    )
+    .expect("write home-relative registry entry");
+
+    let mut request = request(temp.path());
+    request.root_override = Some(root);
+    request.project_override = Some("example".to_owned());
+    request.environment.home = Some(home.into_os_string());
+    let resolved = resolve_project(&request).expect("resolve home-relative repository");
+
+    assert_eq!(
+        resolved.repository_dir,
+        fs::canonicalize(repository).expect("canonical repository")
+    );
+}
+
+#[test]
 fn resolves_relative_command_line_roots_from_the_requested_working_directory() {
     let temp = TempDir::new("relative-root");
     let root = create_root(temp.path(), "root", "example");
@@ -155,6 +213,7 @@ fn finds_the_nearest_pointer_from_a_nested_directory() {
         "schema_version = 1\nproject = \"farther\"\n",
     )
     .expect("write farther pointer");
+    write_registry(&root, "nearest", &repository);
 
     let mut request = request(&nested);
     request.root_override = Some(root);
@@ -186,6 +245,66 @@ fn command_line_project_takes_precedence_without_reading_a_pointer() {
 }
 
 #[test]
+fn rejects_projects_missing_from_the_registry() {
+    let temp = TempDir::new("unregistered-project");
+    let root = create_root(temp.path(), "root", "example");
+    let other_repository = temp.path().join("other-repository");
+    fs::create_dir_all(&other_repository).expect("create other repository");
+    write_registry(&root, "other", &other_repository);
+
+    let mut request = request(temp.path());
+    request.root_override = Some(root);
+    request.project_override = Some("example".to_owned());
+    let error = resolve_project(&request).expect_err("unregistered identity must fail");
+
+    assert_eq!(error.exit_code(), 3);
+    assert!(error.to_string().contains("is not registered"));
+}
+
+#[test]
+fn rejects_pointer_and_registry_repository_mismatches() {
+    let temp = TempDir::new("repository-mismatch");
+    let root = create_root(temp.path(), "root", "example");
+    let repository = temp.path().join("actual-repository");
+    fs::create_dir_all(&repository).expect("create pointer repository");
+    fs::write(
+        repository.join(".akasha.toml"),
+        "schema_version = 1\nproject = \"example\"\n",
+    )
+    .expect("write pointer");
+
+    let mut request = request(&repository);
+    request.root_override = Some(root);
+    let error = resolve_project(&request).expect_err("repository mismatch must fail");
+
+    assert_eq!(error.exit_code(), 3);
+    assert!(
+        error
+            .to_string()
+            .contains("but registry entry \"example\" names")
+    );
+}
+
+#[test]
+fn rejects_ambiguous_registry_yaml_with_validation_exit_class() {
+    let temp = TempDir::new("ambiguous-registry");
+    let root = create_root(temp.path(), "root", "example");
+    fs::write(
+        root.join("Meta/projects.yaml"),
+        "example:\n  path: /one\n  status: active\nexample:\n  path: /two\n  status: active\n",
+    )
+    .expect("write duplicate registry entry");
+
+    let mut request = request(temp.path());
+    request.root_override = Some(root);
+    request.project_override = Some("example".to_owned());
+    let error = resolve_project(&request).expect_err("duplicate registry entry must fail");
+
+    assert_eq!(error.exit_code(), 4);
+    assert!(error.to_string().contains("project registry"));
+}
+
+#[test]
 fn rejects_malformed_pointers() {
     let temp = TempDir::new("malformed-pointer");
     let root = create_root(temp.path(), "root", "example");
@@ -208,11 +327,8 @@ fn rejects_parent_traversal_in_root_folder_config() {
     let temp = TempDir::new("folder-traversal");
     let root = temp.path().join("root");
     fs::create_dir_all(&root).expect("create root");
-    fs::write(
-        root.join("akasha.toml"),
-        "schema_version = 1\n\n[folders]\nprojects = \"../outside\"\n",
-    )
-    .expect("write malicious root config");
+    fs::write(root.join("akasha.toml"), root_config("../outside"))
+        .expect("write malicious root config");
 
     let mut request = request(temp.path());
     request.root_override = Some(root);
@@ -221,6 +337,25 @@ fn rejects_parent_traversal_in_root_folder_config() {
 
     assert_eq!(error.exit_code(), 3);
     assert!(error.to_string().contains("without parent traversal"));
+}
+
+#[test]
+fn rejects_unknown_root_configuration_fields() {
+    let temp = TempDir::new("unknown-root-field");
+    let root = create_root(temp.path(), "root", "example");
+    fs::write(
+        root.join("akasha.toml"),
+        format!("unknown = true\n{}", root_config("Projects")),
+    )
+    .expect("write root config with unknown field");
+
+    let mut request = request(temp.path());
+    request.root_override = Some(root);
+    request.project_override = Some("example".to_owned());
+    let error = resolve_project(&request).expect_err("unknown root field must fail");
+
+    assert_eq!(error.exit_code(), 3);
+    assert!(error.to_string().contains("unknown field"));
 }
 
 #[cfg(unix)]
@@ -233,11 +368,11 @@ fn rejects_project_symlinks_that_escape_the_data_root() {
     let outside = temp.path().join("outside");
     fs::create_dir_all(root.join("Projects")).expect("create projects folder");
     fs::create_dir_all(&outside).expect("create outside folder");
-    fs::write(
-        root.join("akasha.toml"),
-        "schema_version = 1\n\n[folders]\nprojects = \"Projects\"\n",
-    )
-    .expect("write root config");
+    fs::create_dir_all(root.join("Meta")).expect("create metadata directory");
+    let repository = temp.path().join("repository");
+    fs::create_dir_all(&repository).expect("create repository");
+    fs::write(root.join("akasha.toml"), root_config("Projects")).expect("write root config");
+    write_registry(&root, "escaped", &repository);
     symlink(&outside, root.join("Projects/escaped")).expect("create escaping symlink");
 
     let mut request = request(temp.path());

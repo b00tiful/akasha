@@ -1,0 +1,4 @@
+# Paths are relative to this registry file for portable synthetic fixtures.
+example:
+  path: ../../repository
+  status: active

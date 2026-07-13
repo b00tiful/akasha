@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use akasha_core::{ResolveRequest, ResolvedProject, resolve_project};
+use akasha_core::{
+    NoteClass, ProjectValidationReport, ResolveRequest, ResolvedProject, resolve_project,
+    validate_project,
+};
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
@@ -35,6 +38,8 @@ struct Cli {
 enum Command {
     /// Resolve and print the current data root and project identity.
     Resolve,
+    /// Validate the selected project's configuration, layout, and canonical notes.
+    Validate,
 }
 
 fn main() -> ExitCode {
@@ -45,11 +50,18 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<(), u8> {
+    let request = ResolveRequest::from_process(cli.root, cli.project).map_err(report_resolution)?;
     match cli.command {
         Command::Resolve => {
-            let request = ResolveRequest::from_process(cli.root, cli.project).map_err(report)?;
-            let resolved = resolve_project(&request).map_err(report)?;
+            let resolved = resolve_project(&request).map_err(report_resolution)?;
             render_resolution(&resolved, cli.json).map_err(|error| {
+                eprintln!("akasha: failed to render command output: {error}");
+                6
+            })?;
+        }
+        Command::Validate => {
+            let report = validate_project(&request).map_err(report_validation)?;
+            render_validation(&report, cli.json).map_err(|error| {
                 eprintln!("akasha: failed to render command output: {error}");
                 6
             })?;
@@ -59,7 +71,12 @@ fn run(cli: Cli) -> Result<(), u8> {
     Ok(())
 }
 
-fn report(error: akasha_core::ResolveError) -> u8 {
+fn report_resolution(error: akasha_core::ResolveError) -> u8 {
+    eprintln!("akasha: {error}");
+    error.exit_code()
+}
+
+fn report_validation(error: akasha_core::ProjectValidationError) -> u8 {
     eprintln!("akasha: {error}");
     error.exit_code()
 }
@@ -79,7 +96,34 @@ fn render_resolution(resolved: &ResolvedProject, json: bool) -> Result<(), serde
             Some(pointer) => println!("pointer: {}", pointer.display()),
             None => println!("pointer: none (project selected explicitly)"),
         }
+        println!("registry: {}", resolved.registry.display());
+        println!("repository: {}", resolved.repository_dir.display());
         println!("project directory: {}", resolved.project_dir.display());
+    }
+
+    Ok(())
+}
+
+fn render_validation(
+    report: &ProjectValidationReport,
+    json: bool,
+) -> Result<(), serde_json::Error> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(report)?);
+    } else {
+        println!("valid: {}", report.project);
+        println!("registry: {}", report.registry.display());
+        println!("repository: {}", report.repository_dir.display());
+        println!("project directory: {}", report.project_dir.display());
+        println!("registry projects: {}", report.registry_projects);
+        println!("canonical notes: {}", report.canonical_notes);
+        for (name, note_type) in &report.note_types {
+            println!(
+                "note type: {name} ({}) — {}",
+                note_class_name(note_type.class),
+                note_type.notes
+            );
+        }
     }
 
     Ok(())
@@ -97,5 +141,13 @@ const fn project_source_name(source: akasha_core::ProjectSource) -> &'static str
     match source {
         akasha_core::ProjectSource::CommandLine => "command-line",
         akasha_core::ProjectSource::Pointer => "pointer",
+    }
+}
+
+const fn note_class_name(class: NoteClass) -> &'static str {
+    match class {
+        NoteClass::Event => "event",
+        NoteClass::Record => "record",
+        NoteClass::Entity => "entity",
     }
 }
