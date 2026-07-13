@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use akasha_core::{
-    NoteClass, ProjectValidationReport, ResolveRequest, ResolvedProject, assemble_context,
-    render_context_markdown, resolve_project, validate_project,
+    LinkRequest, LinkResult, NoteClass, ProjectValidationReport, ResolveRequest, ResolvedProject,
+    assemble_context, link_project, render_context_markdown, resolve_project, validate_project,
 };
 use clap::{Parser, Subcommand};
 
@@ -36,6 +36,16 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Link an already-registered Akasha project to a repository.
+    Link {
+        /// Registered project slug to link.
+        #[arg(value_name = "SLUG")]
+        slug: String,
+
+        /// Repository directory. Defaults to the current directory.
+        #[arg(long, value_name = "PATH")]
+        repo: Option<PathBuf>,
+    },
     /// Resolve and print the current data root and project identity.
     Resolve,
     /// Validate the selected project's configuration, layout, and canonical notes.
@@ -52,25 +62,50 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<(), u8> {
-    let request = ResolveRequest::from_process(cli.root, cli.project).map_err(report_resolution)?;
-    match cli.command {
+    let Cli {
+        root,
+        project,
+        json,
+        no_color: _,
+        command,
+    } = cli;
+
+    if let (Command::Link { slug, .. }, Some(selected)) = (&command, project.as_ref())
+        && slug != selected
+    {
+        eprintln!("akasha: link slug {slug:?} does not match --project {selected:?}");
+        return Err(3);
+    }
+
+    match command {
+        Command::Link { slug, repo } => {
+            let request = LinkRequest::from_process(root, slug, repo).map_err(report_resolution)?;
+            let result = link_project(&request).map_err(report_link)?;
+            render_link(&result, json).map_err(|error| {
+                eprintln!("akasha: failed to render command output: {error}");
+                6
+            })?;
+        }
         Command::Resolve => {
+            let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
             let resolved = resolve_project(&request).map_err(report_resolution)?;
-            render_resolution(&resolved, cli.json).map_err(|error| {
+            render_resolution(&resolved, json).map_err(|error| {
                 eprintln!("akasha: failed to render command output: {error}");
                 6
             })?;
         }
         Command::Validate => {
+            let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
             let report = validate_project(&request).map_err(report_validation)?;
-            render_validation(&report, cli.json).map_err(|error| {
+            render_validation(&report, json).map_err(|error| {
                 eprintln!("akasha: failed to render command output: {error}");
                 6
             })?;
         }
         Command::Context => {
+            let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
             let context = assemble_context(&request).map_err(report_context)?;
-            if cli.json {
+            if json {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&context).map_err(|error| {
@@ -100,6 +135,24 @@ fn report_validation(error: akasha_core::ProjectValidationError) -> u8 {
 fn report_context(error: akasha_core::ContextError) -> u8 {
     eprintln!("akasha: {error}");
     error.exit_code()
+}
+
+fn report_link(error: akasha_core::LinkError) -> u8 {
+    eprintln!("akasha: {error}");
+    error.exit_code()
+}
+
+fn render_link(result: &LinkResult, json: bool) -> Result<(), serde_json::Error> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(result)?);
+    } else {
+        println!("linked: {}", result.project);
+        println!("repository: {}", result.repository_dir.display());
+        println!("pointer: {}", result.pointer.display());
+        println!("project directory: {}", result.project_dir.display());
+    }
+
+    Ok(())
 }
 
 fn render_resolution(resolved: &ResolvedProject, json: bool) -> Result<(), serde_json::Error> {

@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::validation::{ProjectRegistry, ValidationError, parse_project_registry};
 
-const CONFIG_SCHEMA_VERSION: u32 = 1;
+pub(crate) const CONFIG_SCHEMA_VERSION: u32 = 1;
 const ROOT_CONFIG_FILE: &str = "akasha.toml";
-const POINTER_FILE: &str = ".akasha.toml";
+pub(crate) const POINTER_FILE: &str = ".akasha.toml";
 
 /// Environment values used by project resolution.
 ///
@@ -618,7 +618,7 @@ fn resolve_root(request: &ResolveRequest) -> Result<(PathBuf, RootSource), Resol
     ))
 }
 
-fn relative_to(path: &Path, base: &Path) -> PathBuf {
+pub(crate) fn relative_to(path: &Path, base: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -754,7 +754,10 @@ fn canonicalize_file(path: &Path, description: &str) -> Result<PathBuf, ResolveE
     Ok(canonical)
 }
 
-fn canonicalize_directory(path: &Path, description: &str) -> Result<PathBuf, ResolveError> {
+pub(crate) fn canonicalize_directory(
+    path: &Path,
+    description: &str,
+) -> Result<PathBuf, ResolveError> {
     let canonical = match fs::canonicalize(path) {
         Ok(path) => path,
         Err(source) if source.kind() == io::ErrorKind::NotFound => {
