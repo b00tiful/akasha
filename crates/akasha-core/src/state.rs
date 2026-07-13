@@ -358,7 +358,7 @@ fn source_fingerprint<'a>(sources: impl Iterator<Item = (&'a str, &'a [u8])>) ->
     content_fingerprint(&canonical)
 }
 
-fn content_fingerprint(source: &[u8]) -> String {
+pub(crate) fn content_fingerprint(source: &[u8]) -> String {
     let digest = Sha256::digest(source);
     let mut fingerprint = String::with_capacity(71);
     fingerprint.push_str("sha256:");

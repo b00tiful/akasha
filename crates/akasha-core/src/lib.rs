@@ -18,8 +18,13 @@ pub use context::{
 pub use init::{InitError, InitRequest, InitResult, initialize_project};
 pub use link::{LinkError, LinkRequest, LinkResult, link_project};
 pub use onboarding::{
-    OnboardingBatchError, OnboardingBatchRequest, OnboardingBatchResult, ProposedNote,
-    apply_onboarding_batch,
+    MAX_ONBOARDING_EVIDENCE_CLAIMS, MAX_ONBOARDING_EVIDENCE_SOURCES,
+    MAX_ONBOARDING_INVENTORY_ENTRIES, MAX_ONBOARDING_NOTE_CHARS, MAX_ONBOARDING_NOTES,
+    MAX_ONBOARDING_PROJECTION_CHARS, MAX_ONBOARDING_PROPOSAL_CHARS, MAX_ONBOARDING_TEMPLATE_CHARS,
+    OnboardingBatchError, OnboardingBatchPreview, OnboardingBatchRequest, OnboardingBatchResult,
+    OnboardingInventoryEntry, OnboardingNoteAction, OnboardingNotePreview, OnboardingNoteType,
+    OnboardingPreparation, OnboardingTemplate, ProposedNote, apply_approved_onboarding_batch,
+    apply_onboarding_batch, prepare_onboarding, preview_onboarding_batch,
 };
 pub use project_validation::{
     NoteTypeValidation, ProjectValidationError, ProjectValidationReport, ProjectionValidation,

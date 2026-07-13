@@ -1,11 +1,14 @@
+use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use akasha_core::{
-    InitRequest, OnboardingBatchRequest, ProposedNote, ResolutionEnvironment, ResolveRequest,
-    apply_onboarding_batch, initialize_project, validate_project,
+    InitRequest, OnboardingBatchRequest, OnboardingNoteAction, ProposedNote, ResolutionEnvironment,
+    ResolveRequest, apply_approved_onboarding_batch, apply_onboarding_batch, initialize_project,
+    prepare_onboarding, preview_onboarding_batch, validate_project,
 };
+use sha2::{Digest, Sha256};
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -131,6 +134,110 @@ fn unsafe_path_and_existing_lock_fail_without_writes() {
     assert_eq!(fixture.project_snapshot(), before);
 }
 
+#[test]
+fn preparation_is_bounded_and_returns_project_contracts_without_note_bodies() {
+    let fixture = Fixture::new("preparation");
+
+    let preparation = prepare_onboarding(&fixture.resolution).expect("prepare onboarding");
+
+    assert_eq!(preparation.project, "example");
+    assert_eq!(preparation.note_types.len(), 5);
+    assert_eq!(preparation.templates.len(), 1);
+    assert_eq!(preparation.templates[0].path, PathBuf::from("entity.md"));
+    assert!(preparation.template_characters > 0);
+    assert_eq!(preparation.omitted_templates, 0);
+    assert!(preparation.existing_notes.is_empty());
+    assert_eq!(preparation.coverage_criteria.len(), 6);
+    assert!(preparation.evidence_contract.contains("fingerprint"));
+}
+
+#[test]
+fn preview_binds_source_attributed_proposal_and_approved_apply_delegates_to_batch() {
+    let fixture = Fixture::new("approved");
+    let request = fixture.evidenced_batch_request();
+
+    let preview = preview_onboarding_batch(&request).expect("preview proposal");
+
+    assert_eq!(preview.notes.len(), 3);
+    assert!(
+        preview
+            .notes
+            .iter()
+            .all(|note| note.action == OnboardingNoteAction::Create)
+    );
+    assert_eq!(
+        preview
+            .notes
+            .iter()
+            .map(|note| note.evidence_claims)
+            .sum::<usize>(),
+        3
+    );
+    assert!(preview.proposal_id.starts_with("sha256:"));
+    assert!(preview.preview_id.starts_with("sha256:"));
+    assert!(preview.index_changed);
+    assert!(preview.roadmap_changed);
+    assert!(preview.state_changed);
+
+    let result = apply_approved_onboarding_batch(&request, &preview.preview_id)
+        .expect("apply approved proposal");
+    assert_eq!(result.created_notes.len(), 3);
+    validate_project(&fixture.resolution).expect("validate applied project");
+
+    let rerun = preview_onboarding_batch(&request).expect("preview exact rerun");
+    assert!(
+        rerun
+            .notes
+            .iter()
+            .all(|note| note.action == OnboardingNoteAction::Unchanged)
+    );
+    assert!(!rerun.index_changed);
+    assert!(!rerun.roadmap_changed);
+    assert!(!rerun.state_changed);
+}
+
+#[test]
+fn stale_preview_and_invalid_evidence_write_nothing() {
+    let fixture = Fixture::new("binding");
+    let request = fixture.evidenced_batch_request();
+    let preview = preview_onboarding_batch(&request).expect("preview proposal");
+    let before = fixture.project_snapshot();
+    let mut changed = request.clone();
+    changed.notes[0]
+        .source
+        .push_str("\nChanged after preview.\n");
+
+    let error = apply_approved_onboarding_batch(&changed, &preview.preview_id)
+        .expect_err("changed proposal must not use an earlier preview");
+    assert_eq!(error.exit_code(), 5);
+    assert!(
+        error
+            .to_string()
+            .contains("approved preview does not match")
+    );
+    assert_eq!(fixture.project_snapshot(), before);
+
+    let mut missing_evidence = request.clone();
+    missing_evidence.notes[0].source = missing_evidence.notes[0]
+        .source
+        .replace("evidence:\n", "other_evidence:\n");
+    let error = preview_onboarding_batch(&missing_evidence)
+        .expect_err("transport proposal evidence is mandatory");
+    assert_eq!(error.exit_code(), 4);
+    assert!(error.to_string().contains("non-empty `evidence` list"));
+    assert_eq!(fixture.project_snapshot(), before);
+
+    let mut stale_evidence = request;
+    stale_evidence.notes[0].source = stale_evidence.notes[0]
+        .source
+        .replace("sha256:", "sha256:0");
+    let error = preview_onboarding_batch(&stale_evidence)
+        .expect_err("source fingerprints must match repository bytes");
+    assert_eq!(error.exit_code(), 4);
+    assert!(error.to_string().contains("fingerprint is stale"));
+    assert_eq!(fixture.project_snapshot(), before);
+}
+
 struct Fixture {
     _temp: TempDir,
     project: PathBuf,
@@ -158,6 +265,16 @@ impl Fixture {
         )
         .expect("write root config");
         fs::write(root.join("Meta/projects.yaml"), "{}\n").expect("write empty registry");
+        fs::write(
+            root.join("templates/entity.md"),
+            "---\nschema_version: 1\n---\n\n# Entity template\n",
+        )
+        .expect("write onboarding template");
+        fs::write(
+            repository.join("Cargo.toml"),
+            "[package]\nname = \"example\"\n",
+        )
+        .expect("write evidence source");
         initialize_project(&InitRequest {
             root_override: Some(root.clone()),
             project: "example".to_owned(),
@@ -204,12 +321,56 @@ impl Fixture {
         }
     }
 
+    fn evidenced_batch_request(&self) -> OnboardingBatchRequest {
+        let mut request = self.batch_request();
+        let fingerprint = content_fingerprint(
+            &fs::read(request.resolution.cwd.join("Cargo.toml")).expect("read evidence source"),
+        );
+        request.notes[0].source = add_evidence(
+            &request.notes[0].source,
+            &format!(
+                "evidence:\n  - kind: fact\n    claim: The repository declares a Rust \
+                 package.\n    sources:\n      - path: Cargo.toml\n        fingerprint: \
+                 \"{fingerprint}\"\n        line_start: 1\n        line_end: 2\n"
+            ),
+        );
+        request.notes[1].source = add_evidence(
+            &request.notes[1].source,
+            &format!(
+                "evidence:\n  - kind: inference\n    claim: The package needs a documented next \
+                 task.\n    rationale: A package manifest exists but the initialized roadmap is \
+                 empty.\n    sources:\n      - path: Cargo.toml\n        fingerprint: \
+                 \"{fingerprint}\"\n"
+            ),
+        );
+        request.notes[2].source = add_evidence(
+            &request.notes[2].source,
+            "evidence:\n  - kind: unknown\n    claim: The repository release process is not yet \
+             known.\n    rationale: No release evidence was supplied in this bounded fixture.\n",
+        );
+        request
+    }
+
     fn project_snapshot(&self) -> Vec<(PathBuf, Vec<u8>)> {
         let mut files = Vec::new();
         collect_files(&self.project, &self.project, &mut files);
         files.sort_by(|left, right| left.0.cmp(&right.0));
         files
     }
+}
+
+fn add_evidence(source: &str, evidence: &str) -> String {
+    source.replacen("\n---\n\n#", &format!("\n{evidence}---\n\n#"), 1)
+}
+
+fn content_fingerprint(source: &[u8]) -> String {
+    let digest = Sha256::digest(source);
+    let mut fingerprint = String::with_capacity(71);
+    fingerprint.push_str("sha256:");
+    for byte in digest {
+        write!(fingerprint, "{byte:02x}").expect("writing to a string cannot fail");
+    }
+    fingerprint
 }
 
 fn collect_files(root: &Path, directory: &Path, files: &mut Vec<(PathBuf, Vec<u8>)>) {
