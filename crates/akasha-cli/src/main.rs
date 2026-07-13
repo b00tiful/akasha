@@ -2,8 +2,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use akasha_core::{
-    LinkRequest, LinkResult, NoteClass, ProjectValidationReport, ResolveRequest, ResolvedProject,
-    assemble_context, link_project, render_context_markdown, resolve_project, validate_project,
+    InitRequest, InitResult, LinkRequest, LinkResult, NoteClass, ProjectValidationReport,
+    ResolveRequest, ResolvedProject, assemble_context, initialize_project, link_project,
+    render_context_markdown, resolve_project, validate_project,
 };
 use clap::{Parser, Subcommand};
 
@@ -36,6 +37,12 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Create, register, and link a new empty Akasha project.
+    Init {
+        /// New project slug for the current repository.
+        #[arg(value_name = "SLUG")]
+        slug: String,
+    },
     /// Link an already-registered Akasha project to a repository.
     Link {
         /// Registered project slug to link.
@@ -70,14 +77,28 @@ fn run(cli: Cli) -> Result<(), u8> {
         command,
     } = cli;
 
-    if let (Command::Link { slug, .. }, Some(selected)) = (&command, project.as_ref())
-        && slug != selected
-    {
-        eprintln!("akasha: link slug {slug:?} does not match --project {selected:?}");
-        return Err(3);
+    if let Some(selected) = project.as_ref() {
+        let positional = match &command {
+            Command::Init { slug } | Command::Link { slug, .. } => Some(slug),
+            Command::Resolve | Command::Validate | Command::Context => None,
+        };
+        if let Some(slug) = positional
+            && slug != selected
+        {
+            eprintln!("akasha: command slug {slug:?} does not match --project {selected:?}");
+            return Err(3);
+        }
     }
 
     match command {
+        Command::Init { slug } => {
+            let request = InitRequest::from_process(root, slug).map_err(report_resolution)?;
+            let result = initialize_project(&request).map_err(report_init)?;
+            render_init(&result, json).map_err(|error| {
+                eprintln!("akasha: failed to render command output: {error}");
+                6
+            })?;
+        }
         Command::Link { slug, repo } => {
             let request = LinkRequest::from_process(root, slug, repo).map_err(report_resolution)?;
             let result = link_project(&request).map_err(report_link)?;
@@ -140,6 +161,26 @@ fn report_context(error: akasha_core::ContextError) -> u8 {
 fn report_link(error: akasha_core::LinkError) -> u8 {
     eprintln!("akasha: {error}");
     error.exit_code()
+}
+
+fn report_init(error: akasha_core::InitError) -> u8 {
+    eprintln!("akasha: {error}");
+    error.exit_code()
+}
+
+fn render_init(result: &InitResult, json: bool) -> Result<(), serde_json::Error> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(result)?);
+    } else {
+        println!("initialized: {}", result.project);
+        println!("repository: {}", result.repository_dir.display());
+        println!("project directory: {}", result.project_dir.display());
+        println!("templates copied: {}", result.template_files);
+        println!("registry: {}", result.registry.display());
+        println!("pointer: {}", result.pointer.display());
+    }
+
+    Ok(())
 }
 
 fn render_link(result: &LinkResult, json: bool) -> Result<(), serde_json::Error> {

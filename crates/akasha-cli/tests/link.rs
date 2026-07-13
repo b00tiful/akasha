@@ -162,7 +162,7 @@ fn link_rejects_a_conflicting_global_project_option() {
     assert_eq!(output.status.code(), Some(3));
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
-    assert!(stderr.contains("link slug \"example\" does not match --project \"other\""));
+    assert!(stderr.contains("command slug \"example\" does not match --project \"other\""));
     assert!(!repository.join(".akasha.toml").exists());
 }
 

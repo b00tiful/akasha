@@ -562,7 +562,9 @@ fn resolve_registry_repository(
     canonicalize_directory(&expanded, "registered repository")
 }
 
-fn resolve_root(request: &ResolveRequest) -> Result<(PathBuf, RootSource), ResolveError> {
+pub(crate) fn resolve_root(
+    request: &ResolveRequest,
+) -> Result<(PathBuf, RootSource), ResolveError> {
     if let Some(root) = &request.root_override {
         return Ok((
             canonicalize_directory(&relative_to(root, &request.cwd), "data root")?,
@@ -698,7 +700,7 @@ fn require_schema_version(version: u32, path: &Path) -> Result<(), ResolveError>
     )))
 }
 
-fn validate_slug(slug: &str) -> Result<(), ResolveError> {
+pub(crate) fn validate_slug(slug: &str) -> Result<(), ResolveError> {
     if !slug.is_empty()
         && slug
             .bytes()

@@ -1,6 +1,7 @@
 //! Trusted, interface-independent behavior for Akasha.
 
 pub mod context;
+pub mod init;
 pub mod link;
 pub mod project_validation;
 pub mod resolution;
@@ -11,6 +12,7 @@ pub use context::{
     ContextBundle, ContextEntry, ContextError, ContextSection, DEFAULT_CONTEXT_MAX_CHARS,
     assemble_context, render_context_markdown,
 };
+pub use init::{InitError, InitRequest, InitResult, initialize_project};
 pub use link::{LinkError, LinkRequest, LinkResult, link_project};
 pub use project_validation::{
     NoteTypeValidation, ProjectValidationError, ProjectValidationReport, validate_project,
