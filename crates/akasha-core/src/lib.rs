@@ -4,6 +4,7 @@ pub mod context;
 pub mod project_validation;
 pub mod resolution;
 pub mod validation;
+pub mod writes;
 
 pub use context::{
     ContextBundle, ContextEntry, ContextError, ContextSection, DEFAULT_CONTEXT_MAX_CHARS,
@@ -20,3 +21,4 @@ pub use validation::{
     ParsedNote, ProjectRegistry, ProjectRegistryEntry, ValidationError, parse_leading_frontmatter,
     parse_leading_frontmatter_bytes, parse_project_registry,
 };
+pub use writes::{AtomicCreateError, create_file_atomically};
