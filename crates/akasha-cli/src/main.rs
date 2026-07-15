@@ -1,10 +1,12 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use akasha_core::{
-    InitRequest, InitResult, LinkRequest, LinkResult, NoteClass, ProjectValidationReport,
-    ResolveRequest, ResolvedProject, assemble_context, initialize_project, link_project,
-    render_context_markdown, resolve_project, validate_project,
+    EventCreationResult, InitRequest, InitResult, LinkRequest, LinkResult, NoteClass,
+    NoteEditRecovery, ProjectValidationReport, ResolveRequest, ResolvedProject, assemble_context,
+    create_event, initialize_project, link_project, render_context_markdown, resolve_project,
+    validate_project,
 };
 use clap::{Parser, Subcommand};
 
@@ -53,6 +55,20 @@ enum Command {
         #[arg(long, value_name = "PATH")]
         repo: Option<PathBuf>,
     },
+    /// Create one immutable event from its configured template.
+    CreateEvent {
+        /// Configured event note type, such as `session` or `handoff`.
+        #[arg(value_name = "TYPE")]
+        note_type: String,
+
+        /// Markdown path relative to the configured note-type folder.
+        #[arg(value_name = "RELATIVE.md")]
+        path: PathBuf,
+
+        /// Exact template field in NAME=VALUE form. Repeat for multiple fields.
+        #[arg(long, value_name = "NAME=VALUE")]
+        field: Vec<String>,
+    },
     /// Resolve and print the current data root and project identity.
     Resolve,
     /// Validate the selected project's configuration, layout, and canonical notes.
@@ -80,7 +96,10 @@ fn run(cli: Cli) -> Result<(), u8> {
     if let Some(selected) = project.as_ref() {
         let positional = match &command {
             Command::Init { slug } | Command::Link { slug, .. } => Some(slug),
-            Command::Resolve | Command::Validate | Command::Context => None,
+            Command::CreateEvent { .. }
+            | Command::Resolve
+            | Command::Validate
+            | Command::Context => None,
         };
         if let Some(slug) = positional
             && slug != selected
@@ -103,6 +122,20 @@ fn run(cli: Cli) -> Result<(), u8> {
             let request = LinkRequest::from_process(root, slug, repo).map_err(report_resolution)?;
             let result = link_project(&request).map_err(report_link)?;
             render_link(&result, json).map_err(|error| {
+                eprintln!("akasha: failed to render command output: {error}");
+                6
+            })?;
+        }
+        Command::CreateEvent {
+            note_type,
+            path,
+            field,
+        } => {
+            let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
+            let fields = parse_event_fields(field)?;
+            let result = create_event(&request, &note_type, &path, &fields)
+                .map_err(report_event_creation)?;
+            render_event_creation(&result, json).map_err(|error| {
                 eprintln!("akasha: failed to render command output: {error}");
                 6
             })?;
@@ -168,6 +201,26 @@ fn report_init(error: akasha_core::InitError) -> u8 {
     error.exit_code()
 }
 
+fn report_event_creation(error: akasha_core::EventCreationError) -> u8 {
+    eprintln!("akasha: {error}");
+    error.exit_code()
+}
+
+fn parse_event_fields(fields: Vec<String>) -> Result<BTreeMap<String, String>, u8> {
+    let mut parsed = BTreeMap::new();
+    for field in fields {
+        let Some((name, value)) = field.split_once('=') else {
+            eprintln!("akasha: event fields must use NAME=VALUE syntax; received {field:?}");
+            return Err(2);
+        };
+        if parsed.insert(name.to_owned(), value.to_owned()).is_some() {
+            eprintln!("akasha: event field {name:?} was supplied more than once");
+            return Err(2);
+        }
+    }
+    Ok(parsed)
+}
+
 fn render_init(result: &InitResult, json: bool) -> Result<(), serde_json::Error> {
     if json {
         println!("{}", serde_json::to_string_pretty(result)?);
@@ -194,6 +247,28 @@ fn render_link(result: &LinkResult, json: bool) -> Result<(), serde_json::Error>
         println!("project directory: {}", result.project_dir.display());
     }
 
+    Ok(())
+}
+
+fn render_event_creation(
+    result: &EventCreationResult,
+    json: bool,
+) -> Result<(), serde_json::Error> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(result)?);
+    } else {
+        println!("created event: {}", result.id);
+        println!("project: {}", result.project);
+        println!("type: {}", result.note_type);
+        println!("path: {}", result.path.display());
+        println!("template: {}", result.template.display());
+        println!(
+            "template scope: {}",
+            template_scope_name(result.template_scope)
+        );
+        println!("project state: {}", result.state.display());
+        println!("recovery: {}", recovery_name(result.recovery));
+    }
     Ok(())
 }
 
@@ -271,5 +346,21 @@ const fn note_class_name(class: NoteClass) -> &'static str {
         NoteClass::Event => "event",
         NoteClass::Record => "record",
         NoteClass::Entity => "entity",
+    }
+}
+
+const fn template_scope_name(scope: akasha_core::NoteTemplateScope) -> &'static str {
+    match scope {
+        akasha_core::NoteTemplateScope::Project => "project",
+        akasha_core::NoteTemplateScope::Root => "root",
+    }
+}
+
+const fn recovery_name(recovery: NoteEditRecovery) -> &'static str {
+    match recovery {
+        NoteEditRecovery::None => "none",
+        NoteEditRecovery::Discarded => "discarded",
+        NoteEditRecovery::RolledBack => "rolled-back",
+        NoteEditRecovery::Finalized => "finalized",
     }
 }

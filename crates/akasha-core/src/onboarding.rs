@@ -9,6 +9,7 @@ use std::str;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::note_edit::{NoteEditError, recover_note_mutation_locked};
 use crate::project_validation::{
     ProjectValidationError, canonical_note_paths, validate_project, validate_wikilinks_with_targets,
 };
@@ -150,6 +151,7 @@ pub struct OnboardingBatchResult {
 pub enum OnboardingBatchError {
     Resolve(Box<ResolveError>),
     Project(Box<ProjectValidationError>),
+    Mutation(Box<NoteEditError>),
     Validation {
         path: PathBuf,
         message: String,
@@ -177,6 +179,7 @@ impl OnboardingBatchError {
         match self {
             Self::Resolve(error) => error.exit_code(),
             Self::Project(error) => error.exit_code(),
+            Self::Mutation(error) => error.exit_code(),
             Self::Validation { .. } => 4,
             Self::Conflict { .. } => 5,
             Self::Creation(error) => error.exit_code(),
@@ -190,6 +193,7 @@ impl fmt::Display for OnboardingBatchError {
         match self {
             Self::Resolve(error) => error.fmt(formatter),
             Self::Project(error) => error.fmt(formatter),
+            Self::Mutation(error) => error.fmt(formatter),
             Self::Validation { path, message } => {
                 write!(
                     formatter,
@@ -238,6 +242,7 @@ impl Error for OnboardingBatchError {
         match self {
             Self::Resolve(error) => Some(error.as_ref()),
             Self::Project(error) => Some(error.as_ref()),
+            Self::Mutation(error) => Some(error.as_ref()),
             Self::Creation(error) => Some(error),
             Self::FileSystem { source, .. } => Some(source),
             Self::Cleanup {
@@ -260,6 +265,12 @@ impl From<ResolveError> for OnboardingBatchError {
 impl From<ProjectValidationError> for OnboardingBatchError {
     fn from(error: ProjectValidationError) -> Self {
         Self::Project(Box::new(error))
+    }
+}
+
+impl From<NoteEditError> for OnboardingBatchError {
+    fn from(error: NoteEditError) -> Self {
+        Self::Mutation(Box::new(error))
     }
 }
 
@@ -348,6 +359,7 @@ pub fn apply_approved_onboarding_batch(
 ) -> Result<OnboardingBatchResult, OnboardingBatchError> {
     let resolved = resolve_project(&request.resolution)?;
     let _lock = ProjectWriteLock::acquire(&resolved.project_dir)?;
+    recover_note_mutation_locked(&request.resolution, &resolved.project_dir)?;
     let prepared = prepare_batch(
         request,
         Some(&resolved.project_dir),
@@ -387,6 +399,7 @@ fn apply_onboarding_batch_with_hook(
 
     let resolved = resolve_project(&request.resolution)?;
     let _lock = ProjectWriteLock::acquire(&resolved.project_dir)?;
+    recover_note_mutation_locked(&request.resolution, &resolved.project_dir)?;
     apply_locked(request, &resolved.project_dir, after_note_creation)
 }
 

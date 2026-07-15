@@ -1,6 +1,7 @@
 //! Trusted, interface-independent behavior for Akasha.
 
 pub mod context;
+pub mod event;
 pub mod init;
 pub mod library;
 pub mod link;
@@ -18,6 +19,7 @@ pub use context::{
     ContextBundle, ContextEntry, ContextError, ContextSection, DEFAULT_CONTEXT_MAX_CHARS,
     assemble_context, render_context_markdown,
 };
+pub use event::{EventCreationError, EventCreationResult, create_event};
 pub use init::{InitError, InitRequest, InitResult, initialize_project};
 pub use library::{
     LibraryBook, LibraryCategory, LibraryCollection, LibraryDocument, LibraryProjection,

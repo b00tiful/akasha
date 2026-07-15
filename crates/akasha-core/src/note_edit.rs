@@ -159,7 +159,7 @@ struct NoteEditJournal {
     schema_version: u32,
     project: String,
     id: String,
-    note_before: String,
+    note_before: Option<String>,
     note_after: String,
     state_before: String,
     state_after: String,
@@ -174,7 +174,7 @@ pub fn replace_library_document(
 ) -> Result<NoteEditResult, NoteEditError> {
     let resolved = resolve_project(request)?;
     let _lock = ProjectWriteLock::acquire(&resolved.project_dir)?;
-    let recovery = recover_locked(request, &resolved.project_dir)?;
+    let recovery = recover_note_mutation_locked(request, &resolved.project_dir)?;
     let projection = build_library_projection(request)?;
     let book = projection
         .projects
@@ -259,19 +259,15 @@ pub fn replace_library_document(
     })?;
     let state_after_text = str::from_utf8(&state_after)
         .expect("the deterministic project-state renderer always emits UTF-8");
-    let journal = NoteEditJournal {
-        schema_version: NOTE_EDIT_JOURNAL_SCHEMA_VERSION,
-        project: resolved.project.clone(),
-        id: id.to_owned(),
-        note_before: expected_source.to_owned(),
-        note_after: replacement_source.to_owned(),
-        state_before: state_before_text.to_owned(),
-        state_after: state_after_text.to_owned(),
-    };
-    let journal_source = render_journal(&journal)?;
-    let journal_path = resolved.project_dir.join(NOTE_EDIT_JOURNAL_FILE);
-    create_file_atomically(&journal_path, &journal_source)?;
-    sync_project_directory(&resolved.project_dir, "sync the note edit journal")?;
+    let (journal_path, journal_source) = write_note_mutation_journal(
+        &resolved.project_dir,
+        &resolved.project,
+        id,
+        Some(expected_source),
+        replacement_source,
+        state_before_text,
+        state_after_text,
+    )?;
 
     let operation = (|| {
         replace_file_if_unchanged(
@@ -285,7 +281,7 @@ pub fn replace_library_document(
             .map_err(map_checked_replace)?;
         sync_replacement_directory(&state_path, "sync the project state replacement")?;
         validate_project(request)?;
-        remove_journal(&journal_path, &journal_source, &resolved.project_dir)?;
+        complete_note_mutation_journal(&journal_path, &journal_source, &resolved.project_dir)?;
         Ok(NoteEditResult {
             root: resolved.root.clone(),
             project: resolved.project.clone(),
@@ -298,7 +294,7 @@ pub fn replace_library_document(
 
     match operation {
         Ok(result) => Ok(result),
-        Err(original) => match recover_locked(request, &resolved.project_dir) {
+        Err(original) => match recover_note_mutation_locked(request, &resolved.project_dir) {
             Ok(NoteEditRecovery::Finalized) => Ok(NoteEditResult {
                 root: resolved.root,
                 project: resolved.project,
@@ -334,10 +330,10 @@ pub fn recover_pending_note_edit(
         }
     }
     let _lock = ProjectWriteLock::acquire(&resolved.project_dir)?;
-    recover_locked(request, &resolved.project_dir)
+    recover_note_mutation_locked(request, &resolved.project_dir)
 }
 
-fn recover_locked(
+pub(crate) fn recover_note_mutation_locked(
     request: &ResolveRequest,
     project_dir: &Path,
 ) -> Result<NoteEditRecovery, NoteEditError> {
@@ -354,25 +350,35 @@ fn recover_locked(
     }
     let note_path = checked_journal_note_path(&resolved.root, project_dir, &journal)?;
     let state_path = project_dir.join(PROJECT_STATE_FILE);
-    let note = read_regular_file(&note_path, "read the journaled canonical note")?;
+    let note = read_optional_regular_file(&note_path, "read the journaled canonical note")?;
     let state = read_regular_file(&state_path, "read the journaled project state")?;
-    let note_before = journal.note_before.as_bytes();
+    let note_before = journal.note_before.as_deref().map(str::as_bytes);
     let note_after = journal.note_after.as_bytes();
     let state_before = journal.state_before.as_bytes();
     let state_after = journal.state_after.as_bytes();
+    let note_matches_before = match (note.as_deref(), note_before) {
+        (Some(current), Some(expected)) => current == expected,
+        (None, None) => true,
+        _ => false,
+    };
+    let note_matches_after = note.as_deref() == Some(note_after);
 
-    let outcome = if note == note_before && state == state_before {
+    let outcome = if note_matches_before && state == state_before {
         NoteEditRecovery::Discarded
-    } else if note == note_after && state == state_after {
+    } else if note_matches_after && state == state_after {
         validate_project(request)?;
         NoteEditRecovery::Finalized
-    } else if note == note_after && state == state_before {
-        replace_file_if_unchanged(&note_path, note_after, note_before)
-            .map_err(map_checked_replace)?;
+    } else if note_matches_after && state == state_before {
+        if let Some(note_before) = note_before {
+            replace_file_if_unchanged(&note_path, note_after, note_before)
+                .map_err(map_checked_replace)?;
+        } else {
+            remove_created_note_if_unchanged(&note_path, note_after)?;
+        }
         sync_replacement_directory(&note_path, "sync recovery of the canonical note")?;
         validate_project(request)?;
         NoteEditRecovery::RolledBack
-    } else if note == note_before && state == state_after {
+    } else if note_matches_before && state == state_after {
         replace_file_if_unchanged(&state_path, state_after, state_before)
             .map_err(map_checked_replace)?;
         sync_replacement_directory(&state_path, "sync recovery of project state")?;
@@ -386,7 +392,7 @@ fn recover_locked(
         });
     };
 
-    remove_journal(&journal_path, &journal_source, project_dir)?;
+    complete_note_mutation_journal(&journal_path, &journal_source, project_dir)?;
     Ok(outcome)
 }
 
@@ -542,6 +548,61 @@ fn render_journal(journal: &NoteEditJournal) -> Result<Vec<u8>, NoteEditError> {
     Ok(source)
 }
 
+pub(crate) fn write_note_mutation_journal(
+    project_dir: &Path,
+    project: &str,
+    id: &str,
+    note_before: Option<&str>,
+    note_after: &str,
+    state_before: &str,
+    state_after: &str,
+) -> Result<(PathBuf, Vec<u8>), NoteEditError> {
+    let journal = NoteEditJournal {
+        schema_version: NOTE_EDIT_JOURNAL_SCHEMA_VERSION,
+        project: project.to_owned(),
+        id: id.to_owned(),
+        note_before: note_before.map(str::to_owned),
+        note_after: note_after.to_owned(),
+        state_before: state_before.to_owned(),
+        state_after: state_after.to_owned(),
+    };
+    let source = render_journal(&journal)?;
+    let path = project_dir.join(NOTE_EDIT_JOURNAL_FILE);
+    create_file_atomically(&path, &source)?;
+    sync_project_directory(project_dir, "sync the note mutation journal")?;
+    Ok((path, source))
+}
+
+fn read_optional_regular_file(
+    path: &Path,
+    operation: &'static str,
+) -> Result<Option<Vec<u8>>, NoteEditError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(NoteEditError::FileSystem {
+                operation,
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(NoteEditError::Conflict {
+            path: path.to_path_buf(),
+            message: "journaled note is not a regular file".to_owned(),
+        });
+    }
+    fs::read(path)
+        .map(Some)
+        .map_err(|source| NoteEditError::FileSystem {
+            operation,
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
 fn read_regular_file(path: &Path, operation: &'static str) -> Result<Vec<u8>, NoteEditError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| NoteEditError::FileSystem {
         operation,
@@ -561,7 +622,11 @@ fn read_regular_file(path: &Path, operation: &'static str) -> Result<Vec<u8>, No
     })
 }
 
-fn remove_journal(path: &Path, expected: &[u8], project_dir: &Path) -> Result<(), NoteEditError> {
+pub(crate) fn complete_note_mutation_journal(
+    path: &Path,
+    expected: &[u8],
+    project_dir: &Path,
+) -> Result<(), NoteEditError> {
     let current = read_regular_file(path, "verify the note edit journal before removal")?;
     if current != expected {
         return Err(NoteEditError::Conflict {
@@ -575,6 +640,21 @@ fn remove_journal(path: &Path, expected: &[u8], project_dir: &Path) -> Result<()
         source,
     })?;
     sync_project_directory(project_dir, "sync removal of the note edit journal")
+}
+
+fn remove_created_note_if_unchanged(path: &Path, expected: &[u8]) -> Result<(), NoteEditError> {
+    let current = read_regular_file(path, "verify the created note before recovery")?;
+    if current != expected {
+        return Err(NoteEditError::Conflict {
+            path: path.to_path_buf(),
+            message: "journaled created note changed before recovery".to_owned(),
+        });
+    }
+    fs::remove_file(path).map_err(|source| NoteEditError::FileSystem {
+        operation: "remove the partially published canonical note",
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 fn sync_project_directory(
