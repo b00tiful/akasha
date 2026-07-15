@@ -32,6 +32,7 @@ node_modules/
 reference/
 initial_convo/
 akasha/
+design/
 
 .mcp.json
 AGENTS.md

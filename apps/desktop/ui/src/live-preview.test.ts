@@ -19,6 +19,11 @@ See [[Global/entities/pattern|shared pattern]].
 \`\`\`
 
 > [!note] Unknown syntax remains visible.
+
+\`**inline literal** [[inline-link]]\`
+<!-- **HTML comment** -->
+%% [[Obsidian/comment]] %%
+\\**escaped strong** and \\[[escaped-link]]
 `;
 
 describe("first live-preview fidelity subset", () => {
@@ -32,6 +37,17 @@ describe("first live-preview fidelity subset", () => {
     expect(
       decorations.some((item) => source.slice(item.from, item.to).includes("literal-code-link")),
     ).toBe(false);
+    for (const literal of [
+      "**inline literal** [[inline-link]]",
+      "**HTML comment**",
+      "[[Obsidian/comment]]",
+      "**escaped strong**",
+      "[[escaped-link]]",
+    ]) {
+      const from = source.indexOf(literal);
+      const to = from + literal.length;
+      expect(decorations.some((item) => item.from < to && item.to > from)).toBe(false);
+    }
     expect(source).toBe(before);
   });
 

@@ -1,12 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
-use std::ffi::OsString;
 use std::fmt;
-use std::fs::{self, File};
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::str;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -22,9 +20,11 @@ use crate::state::{
     validate_project_state,
 };
 use crate::validation::{parse_leading_frontmatter_bytes, validate_configured_note};
-use crate::writes::{AtomicCreateError, create_file_atomically};
+use crate::writes::{
+    AtomicCreateError, CheckedReplaceError, ProjectWriteLock, create_file_atomically,
+    replace_file_if_unchanged as replace_checked_file,
+};
 
-const MAX_REPLACEMENT_STAGING_ATTEMPTS: u64 = 128;
 pub const MAX_ONBOARDING_NOTES: usize = 64;
 pub const MAX_ONBOARDING_NOTE_CHARS: usize = 65_536;
 pub const MAX_ONBOARDING_PROJECTION_CHARS: usize = 131_072;
@@ -33,7 +33,6 @@ pub const MAX_ONBOARDING_EVIDENCE_CLAIMS: usize = 128;
 pub const MAX_ONBOARDING_EVIDENCE_SOURCES: usize = 16;
 pub const MAX_ONBOARDING_TEMPLATE_CHARS: usize = 24_000;
 pub const MAX_ONBOARDING_INVENTORY_ENTRIES: usize = 512;
-static NEXT_REPLACEMENT_STAGE_ID: AtomicU64 = AtomicU64::new(0);
 
 const ONBOARDING_PROPOSAL_DOMAIN: &[u8] = b"akasha-onboarding-proposal-v1";
 const ONBOARDING_PREVIEW_DOMAIN: &[u8] = b"akasha-onboarding-preview-v1";
@@ -348,26 +347,21 @@ pub fn apply_approved_onboarding_batch(
     approved_preview_id: &str,
 ) -> Result<OnboardingBatchResult, OnboardingBatchError> {
     let resolved = resolve_project(&request.resolution)?;
-    let state_path = resolved.project_dir.join(PROJECT_STATE_FILE);
-    let lock = BatchLock::acquire(&state_path)?;
-    let result = (|| {
-        let prepared = prepare_batch(
-            request,
-            Some(&resolved.project_dir),
-            EvidencePolicy::Required,
-        )?;
-        let current_preview = render_preview(request, &prepared);
-        if approved_preview_id != current_preview.preview_id {
-            return Err(OnboardingBatchError::Conflict {
-                path: prepared.state_path.clone(),
-                message: "approved preview does not match the current proposal and project state"
-                    .to_owned(),
-            });
-        }
-        apply_prepared(request, prepared, || {})
-    })();
-
-    finish_locked(lock, result)
+    let _lock = ProjectWriteLock::acquire(&resolved.project_dir)?;
+    let prepared = prepare_batch(
+        request,
+        Some(&resolved.project_dir),
+        EvidencePolicy::Required,
+    )?;
+    let current_preview = render_preview(request, &prepared);
+    if approved_preview_id != current_preview.preview_id {
+        return Err(OnboardingBatchError::Conflict {
+            path: prepared.state_path.clone(),
+            message: "approved preview does not match the current proposal and project state"
+                .to_owned(),
+        });
+    }
+    apply_prepared(request, prepared, || {})
 }
 
 /// Apply one reviewed, create-only onboarding proposal through the shared core.
@@ -392,10 +386,8 @@ fn apply_onboarding_batch_with_hook(
     }
 
     let resolved = resolve_project(&request.resolution)?;
-    let state_path = resolved.project_dir.join(PROJECT_STATE_FILE);
-    let lock = BatchLock::acquire(&state_path)?;
-    let result = apply_locked(request, &resolved.project_dir, after_note_creation);
-    finish_locked(lock, result)
+    let _lock = ProjectWriteLock::acquire(&resolved.project_dir)?;
+    apply_locked(request, &resolved.project_dir, after_note_creation)
 }
 
 fn apply_locked(
@@ -678,23 +670,6 @@ fn render_digest(digest: impl AsRef<[u8]>) -> String {
         write!(output, "{byte:02x}").expect("writing to a string cannot fail");
     }
     output
-}
-
-fn finish_locked(
-    lock: BatchLock,
-    result: Result<OnboardingBatchResult, OnboardingBatchError>,
-) -> Result<OnboardingBatchResult, OnboardingBatchError> {
-    match lock.release() {
-        Ok(()) => result,
-        Err((path, source)) => Err(OnboardingBatchError::Cleanup {
-            committed: result.is_ok(),
-            original: result.err().map(Box::new),
-            failures: vec![format!(
-                "could not remove onboarding lock {}: {source}",
-                path.display()
-            )],
-        }),
-    }
 }
 
 #[derive(Debug)]
@@ -1316,156 +1291,21 @@ fn replace_file_if_unchanged(
     expected: &[u8],
     replacement: &[u8],
 ) -> Result<bool, OnboardingBatchError> {
-    if replacement == expected {
-        return Ok(false);
-    }
-    let metadata =
-        fs::symlink_metadata(path).map_err(|source| OnboardingBatchError::FileSystem {
-            operation: "inspect a checked replacement target",
-            path: path.to_path_buf(),
-            source,
-        })?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(OnboardingBatchError::Conflict {
-            path: path.to_path_buf(),
-            message: "checked replacement target is no longer a regular file".to_owned(),
-        });
-    }
-    let current = fs::read(path).map_err(|source| OnboardingBatchError::FileSystem {
-        operation: "read a checked replacement target",
-        path: path.to_path_buf(),
-        source,
-    })?;
-    if current != expected {
-        return Err(OnboardingBatchError::Conflict {
-            path: path.to_path_buf(),
-            message: "checked replacement target changed during onboarding".to_owned(),
-        });
-    }
-
-    let stage = create_replacement_stage(path, replacement)?;
-    fs::set_permissions(&stage.path, metadata.permissions()).map_err(|source| {
-        OnboardingBatchError::FileSystem {
-            operation: "preserve checked replacement permissions",
-            path: stage.path.clone(),
-            source,
-        }
-    })?;
-    File::open(&stage.path)
-        .and_then(|file| file.sync_all())
-        .map_err(|source| OnboardingBatchError::FileSystem {
-            operation: "sync checked replacement permissions",
-            path: stage.path.clone(),
-            source,
-        })?;
-
-    let current = fs::read(path).map_err(|source| OnboardingBatchError::FileSystem {
-        operation: "verify a checked replacement target",
-        path: path.to_path_buf(),
-        source,
-    })?;
-    if current != expected {
-        return Err(OnboardingBatchError::Conflict {
-            path: path.to_path_buf(),
-            message: "checked replacement target changed during onboarding".to_owned(),
-        });
-    }
-    fs::rename(&stage.path, path).map_err(|source| OnboardingBatchError::FileSystem {
-        operation: "publish a checked replacement",
-        path: path.to_path_buf(),
-        source,
-    })?;
-    Ok(true)
-}
-
-fn create_replacement_stage(
-    path: &Path,
-    contents: &[u8],
-) -> Result<ReplacementStage, OnboardingBatchError> {
-    let parent = path
-        .parent()
-        .expect("a resolved project file always has a parent");
-    let file_name = path
-        .file_name()
-        .expect("a resolved project file always has a filename");
-    for _ in 0..MAX_REPLACEMENT_STAGING_ATTEMPTS {
-        let id = NEXT_REPLACEMENT_STAGE_ID.fetch_add(1, Ordering::Relaxed);
-        let mut stage_name = OsString::from(".");
-        stage_name.push(file_name);
-        stage_name.push(format!(
-            ".akasha-onboard-{}-{id}.replacement",
-            std::process::id()
-        ));
-        let stage = parent.join(stage_name);
-        match create_file_atomically(&stage, contents) {
-            Ok(()) => return Ok(ReplacementStage { path: stage }),
-            Err(AtomicCreateError::Conflict { .. }) => continue,
-            Err(error) => return Err(OnboardingBatchError::Creation(error)),
-        }
-    }
-    Err(OnboardingBatchError::FileSystem {
-        operation: "create a unique checked replacement stage",
-        path: path.to_path_buf(),
-        source: io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "all replacement staging filename attempts were occupied",
-        ),
-    })
-}
-
-struct ReplacementStage {
-    path: PathBuf,
-}
-
-impl Drop for ReplacementStage {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
-
-struct BatchLock {
-    path: PathBuf,
-    released: bool,
-}
-
-impl BatchLock {
-    fn acquire(state: &Path) -> Result<Self, OnboardingBatchError> {
-        let file_name = state
-            .file_name()
-            .expect("a resolved project state always has a filename");
-        let mut lock_name = OsString::from(file_name);
-        lock_name.push(".akasha-onboard.lock");
-        let path = state
-            .parent()
-            .expect("a resolved project state always has a parent")
-            .join(lock_name);
-        create_file_atomically(&path, b"akasha onboarding batch\n")?;
-        Ok(Self {
+    replace_checked_file(path, expected, replacement).map_err(|error| match error {
+        CheckedReplaceError::Conflict { path, .. } => OnboardingBatchError::Conflict {
             path,
-            released: false,
-        })
-    }
-
-    fn release(mut self) -> Result<(), (PathBuf, io::Error)> {
-        match fs::remove_file(&self.path) {
-            Ok(()) => {
-                self.released = true;
-                Ok(())
-            }
-            Err(source) => {
-                self.released = true;
-                Err((self.path.clone(), source))
-            }
-        }
-    }
-}
-
-impl Drop for BatchLock {
-    fn drop(&mut self) {
-        if !self.released {
-            let _ = fs::remove_file(&self.path);
-        }
-    }
+            message: "checked replacement target changed during onboarding".to_owned(),
+        },
+        CheckedReplaceError::FileSystem {
+            operation,
+            path,
+            source,
+        } => OnboardingBatchError::FileSystem {
+            operation,
+            path,
+            source,
+        },
+    })
 }
 
 #[derive(Default)]

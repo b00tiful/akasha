@@ -120,17 +120,16 @@ fn unsafe_path_and_existing_lock_fail_without_writes() {
     assert_eq!(fixture.project_snapshot(), before);
 
     let request = fixture.batch_request();
-    let lock = fixture
-        .project
-        .join(".akasha-state.toml.akasha-onboard.lock");
-    fs::write(&lock, "other writer\n").expect("seed lock");
+    let lock = fixture.project.join(".akasha-write.lock");
+    let lock_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&lock)
+        .expect("open project writer lock");
+    lock_file.try_lock().expect("hold project writer lock");
     let error = apply_onboarding_batch(&request).expect_err("existing lock must conflict");
     assert_eq!(error.exit_code(), 5);
-    assert_eq!(
-        fs::read_to_string(&lock).expect("preserve lock"),
-        "other writer\n"
-    );
-    fs::remove_file(lock).expect("remove seeded lock");
+    drop(lock_file);
     assert_eq!(fixture.project_snapshot(), before);
 }
 

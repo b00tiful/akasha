@@ -1,13 +1,14 @@
 use std::error::Error;
 use std::ffi::OsString;
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_STAGING_ATTEMPTS: u64 = 128;
 static NEXT_STAGING_ID: AtomicU64 = AtomicU64::new(0);
+pub(crate) const PROJECT_WRITE_LOCK_FILE: &str = ".akasha-write.lock";
 
 /// An exclusive-creation conflict or operational filesystem failure.
 #[derive(Debug)]
@@ -64,6 +65,49 @@ impl Error for AtomicCreateError {
     }
 }
 
+/// An optimistic replacement conflict or operational filesystem failure.
+#[derive(Debug)]
+pub(crate) enum CheckedReplaceError {
+    Conflict {
+        path: PathBuf,
+        source: io::Error,
+    },
+    FileSystem {
+        operation: &'static str,
+        path: PathBuf,
+        source: io::Error,
+    },
+}
+
+impl fmt::Display for CheckedReplaceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Conflict { path, .. } => write!(
+                formatter,
+                "checked replacement target changed at {}",
+                path.display()
+            ),
+            Self::FileSystem {
+                operation,
+                path,
+                source,
+            } => write!(
+                formatter,
+                "failed to {operation} at {}: {source}",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl Error for CheckedReplaceError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Conflict { source, .. } | Self::FileSystem { source, .. } => Some(source),
+        }
+    }
+}
+
 /// Create one regular file without exposing partial content or overwriting an existing path.
 ///
 /// The destination's parent must already exist. Content is written and synced to an exclusively
@@ -74,6 +118,172 @@ pub fn create_file_atomically(
     contents: &[u8],
 ) -> Result<(), AtomicCreateError> {
     create_file_atomically_with(destination.as_ref(), |file| file.write_all(contents))
+}
+
+/// Replace one regular file only while its exact bytes still match the caller's snapshot.
+pub(crate) fn replace_file_if_unchanged(
+    path: &Path,
+    expected: &[u8],
+    replacement: &[u8],
+) -> Result<bool, CheckedReplaceError> {
+    let path = canonical_destination(path).map_err(map_create_error)?;
+    let metadata =
+        fs::symlink_metadata(&path).map_err(|source| CheckedReplaceError::FileSystem {
+            operation: "inspect a checked replacement target",
+            path: path.clone(),
+            source,
+        })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(CheckedReplaceError::Conflict {
+            path,
+            source: io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "checked replacement target is not a regular file",
+            ),
+        });
+    }
+    let current = fs::read(&path).map_err(|source| CheckedReplaceError::FileSystem {
+        operation: "read a checked replacement target",
+        path: path.clone(),
+        source,
+    })?;
+    if current != expected {
+        return Err(changed_replacement(&path));
+    }
+    if replacement == expected {
+        return Ok(false);
+    }
+
+    let (mut file, staging) = create_staging_file(&path).map_err(map_create_error)?;
+    file.write_all(replacement)
+        .map_err(|source| CheckedReplaceError::FileSystem {
+            operation: "write a checked replacement stage",
+            path: staging.path.clone(),
+            source,
+        })?;
+    file.set_permissions(metadata.permissions())
+        .map_err(|source| CheckedReplaceError::FileSystem {
+            operation: "preserve checked replacement permissions",
+            path: staging.path.clone(),
+            source,
+        })?;
+    file.sync_all()
+        .map_err(|source| CheckedReplaceError::FileSystem {
+            operation: "sync a checked replacement stage",
+            path: staging.path.clone(),
+            source,
+        })?;
+    drop(file);
+
+    let current = fs::read(&path).map_err(|source| CheckedReplaceError::FileSystem {
+        operation: "verify a checked replacement target",
+        path: path.clone(),
+        source,
+    })?;
+    if current != expected {
+        return Err(changed_replacement(&path));
+    }
+    fs::rename(&staging.path, &path).map_err(|source| CheckedReplaceError::FileSystem {
+        operation: "publish a checked replacement",
+        path: path.clone(),
+        source,
+    })?;
+    Ok(true)
+}
+
+pub(crate) fn sync_directory(directory: &Path) -> io::Result<()> {
+    File::open(directory)?.sync_all()
+}
+
+/// One crash-released advisory lock shared by every project mutation path.
+pub(crate) struct ProjectWriteLock {
+    _file: File,
+}
+
+impl ProjectWriteLock {
+    pub(crate) fn acquire(project_dir: &Path) -> Result<Self, AtomicCreateError> {
+        let project_dir =
+            fs::canonicalize(project_dir).map_err(|source| AtomicCreateError::FileSystem {
+                operation: "resolve the project writer lock directory",
+                path: project_dir.to_path_buf(),
+                source,
+            })?;
+        let path = project_dir.join(PROJECT_WRITE_LOCK_FILE);
+        match create_file_atomically(&path, b"") {
+            Ok(()) => {
+                sync_directory(&project_dir).map_err(|source| AtomicCreateError::FileSystem {
+                    operation: "sync the project writer lock directory",
+                    path: project_dir.clone(),
+                    source,
+                })?
+            }
+            Err(error @ AtomicCreateError::Conflict { .. }) => {
+                let metadata = fs::symlink_metadata(&path).map_err(|source| {
+                    AtomicCreateError::FileSystem {
+                        operation: "inspect the project writer lock",
+                        path: path.clone(),
+                        source,
+                    }
+                })?;
+                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    return Err(error);
+                }
+            }
+            Err(error) => return Err(error),
+        }
+
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|source| AtomicCreateError::FileSystem {
+                operation: "open the project writer lock",
+                path: path.clone(),
+                source,
+            })?;
+        match file.try_lock() {
+            Ok(()) => Ok(Self { _file: file }),
+            Err(TryLockError::WouldBlock) => Err(AtomicCreateError::Conflict {
+                path,
+                source: io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "another Akasha project writer holds the lock",
+                ),
+            }),
+            Err(TryLockError::Error(source)) => Err(AtomicCreateError::FileSystem {
+                operation: "acquire the project writer lock",
+                path,
+                source,
+            }),
+        }
+    }
+}
+
+fn changed_replacement(path: &Path) -> CheckedReplaceError {
+    CheckedReplaceError::Conflict {
+        path: path.to_path_buf(),
+        source: io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "checked replacement target no longer matches the expected bytes",
+        ),
+    }
+}
+
+fn map_create_error(error: AtomicCreateError) -> CheckedReplaceError {
+    match error {
+        AtomicCreateError::Conflict { path, source } => {
+            CheckedReplaceError::Conflict { path, source }
+        }
+        AtomicCreateError::FileSystem {
+            operation,
+            path,
+            source,
+        } => CheckedReplaceError::FileSystem {
+            operation,
+            path,
+            source,
+        },
+    }
 }
 
 fn create_file_atomically_with(

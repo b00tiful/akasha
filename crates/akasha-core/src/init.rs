@@ -19,7 +19,7 @@ use crate::state::{PROJECT_STATE_FILE, render_empty_project_state};
 use crate::validation::{
     ProjectRegistry, ProjectRegistryEntry, ValidationError, parse_project_registry,
 };
-use crate::writes::{AtomicCreateError, create_file_atomically};
+use crate::writes::{AtomicCreateError, PROJECT_WRITE_LOCK_FILE, create_file_atomically};
 
 const MAX_REGISTRY_STAGING_ATTEMPTS: u64 = 128;
 static NEXT_REGISTRY_STAGE_ID: AtomicU64 = AtomicU64::new(0);
@@ -477,6 +477,11 @@ fn build_scaffold_plan(
         &mut files,
         PathBuf::from(PROJECT_STATE_FILE),
         render_empty_project_state(),
+    )?;
+    insert_scaffold_file(
+        &mut files,
+        PathBuf::from(PROJECT_WRITE_LOCK_FILE),
+        Vec::new(),
     )?;
     insert_scaffold_file(&mut files, config.project.index.clone(), Vec::new())?;
     insert_scaffold_file(&mut files, config.project.roadmap.clone(), Vec::new())?;

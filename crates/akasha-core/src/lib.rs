@@ -4,6 +4,7 @@ pub mod context;
 pub mod init;
 pub mod library;
 pub mod link;
+pub mod note_edit;
 pub mod onboarding;
 pub mod project_validation;
 pub mod resolution;
@@ -23,6 +24,10 @@ pub use library::{
     render_library_markdown,
 };
 pub use link::{LinkError, LinkRequest, LinkResult, link_project};
+pub use note_edit::{
+    NOTE_EDIT_JOURNAL_FILE, NoteEditError, NoteEditRecovery, NoteEditResult,
+    recover_pending_note_edit, replace_library_document,
+};
 pub use onboarding::{
     MAX_ONBOARDING_EVIDENCE_CLAIMS, MAX_ONBOARDING_EVIDENCE_SOURCES,
     MAX_ONBOARDING_INVENTORY_ENTRIES, MAX_ONBOARDING_NOTE_CHARS, MAX_ONBOARDING_NOTES,

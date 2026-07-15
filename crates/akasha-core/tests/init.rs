@@ -67,6 +67,7 @@ fn creates_configured_scaffold_exact_templates_registry_and_pointer() {
     );
     assert_eq!(result.state, result.project_dir.join(".akasha-state.toml"));
     assert!(result.state.is_file());
+    assert!(result.project_dir.join(".akasha-write.lock").is_file());
     assert_eq!(
         fs::read(&result.pointer).expect("read pointer"),
         b"schema_version = 1\nproject = \"example\"\n"

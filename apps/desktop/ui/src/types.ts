@@ -40,11 +40,23 @@ export interface LibraryProjection {
 export interface DesktopLibrary {
   projection: LibraryProjection;
   fallback_markdown: string;
+  recovery: NoteEditRecovery;
 }
 
 export interface LibraryDocument {
   id: string;
   source: string;
+}
+
+export type NoteEditRecovery = "none" | "discarded" | "rolled-back" | "finalized";
+
+export interface NoteEditResult {
+  root: string;
+  project: string;
+  project_dir: string;
+  id: string;
+  changed: boolean;
+  recovery: NoteEditRecovery;
 }
 
 export interface CommandError {

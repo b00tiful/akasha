@@ -264,9 +264,20 @@ h2 {
   gap: 0.35rem;
 }
 
-.mode-tabs button {
+.mode-tabs button,
+.edit-actions button {
   padding: 0.4rem 0.55rem;
   font-size: 0.68rem;
+}
+
+.edit-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
 }
 
 .book-meta {
