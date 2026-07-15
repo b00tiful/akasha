@@ -24,6 +24,7 @@ use crate::writes::{
 
 pub const NOTE_EDIT_JOURNAL_FILE: &str = ".akasha-edit-journal.json";
 const NOTE_EDIT_JOURNAL_SCHEMA_VERSION: u32 = 1;
+const NOTE_PROJECTION_JOURNAL_SCHEMA_VERSION: u32 = 2;
 
 /// Recovery work performed before a checked note edit or library load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -161,8 +162,18 @@ struct NoteEditJournal {
     id: String,
     note_before: Option<String>,
     note_after: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    projection: Option<JournalProjection>,
     state_before: String,
     state_after: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct JournalProjection {
+    id: String,
+    before: String,
+    after: String,
 }
 
 /// Replace one selected project's mutable canonical note from an exact loaded baseline.
@@ -349,8 +360,24 @@ pub(crate) fn recover_note_mutation_locked(
         });
     }
     let note_path = checked_journal_note_path(&resolved.root, project_dir, &journal)?;
+    let projection_path = journal
+        .projection
+        .as_ref()
+        .map(|projection| {
+            checked_journal_projection_path(
+                &resolved.root,
+                project_dir,
+                &projection.id,
+                &journal_path,
+            )
+        })
+        .transpose()?;
     let state_path = project_dir.join(PROJECT_STATE_FILE);
     let note = read_optional_regular_file(&note_path, "read the journaled canonical note")?;
+    let projection = projection_path
+        .as_ref()
+        .map(|path| read_regular_file(path, "read the journaled projection"))
+        .transpose()?;
     let state = read_regular_file(&state_path, "read the journaled project state")?;
     let note_before = journal.note_before.as_deref().map(str::as_bytes);
     let note_after = journal.note_after.as_bytes();
@@ -362,34 +389,64 @@ pub(crate) fn recover_note_mutation_locked(
         _ => false,
     };
     let note_matches_after = note.as_deref() == Some(note_after);
+    let projection_matches_before = match (&projection, &journal.projection) {
+        (None, None) => true,
+        (Some(current), Some(expected)) => current == expected.before.as_bytes(),
+        _ => false,
+    };
+    let projection_matches_after = match (&projection, &journal.projection) {
+        (None, None) => true,
+        (Some(current), Some(expected)) => current == expected.after.as_bytes(),
+        _ => false,
+    };
+    let state_matches_before = state == state_before;
+    let state_matches_after = state == state_after;
 
-    let outcome = if note_matches_before && state == state_before {
-        NoteEditRecovery::Discarded
-    } else if note_matches_after && state == state_after {
-        validate_project(request)?;
-        NoteEditRecovery::Finalized
-    } else if note_matches_after && state == state_before {
-        if let Some(note_before) = note_before {
-            replace_file_if_unchanged(&note_path, note_after, note_before)
-                .map_err(map_checked_replace)?;
-        } else {
-            remove_created_note_if_unchanged(&note_path, note_after)?;
-        }
-        sync_replacement_directory(&note_path, "sync recovery of the canonical note")?;
-        validate_project(request)?;
-        NoteEditRecovery::RolledBack
-    } else if note_matches_before && state == state_after {
-        replace_file_if_unchanged(&state_path, state_after, state_before)
-            .map_err(map_checked_replace)?;
-        sync_replacement_directory(&state_path, "sync recovery of project state")?;
-        validate_project(request)?;
-        NoteEditRecovery::RolledBack
-    } else {
+    if (!note_matches_before && !note_matches_after)
+        || (!projection_matches_before && !projection_matches_after)
+        || (!state_matches_before && !state_matches_after)
+    {
         return Err(NoteEditError::Conflict {
             path: journal_path,
-            message: "journaled note or project state contains unexpected bytes; automatic recovery refused"
+            message: "journaled note, projection, or project state contains unexpected bytes; automatic recovery refused"
                 .to_owned(),
         });
+    }
+
+    let outcome = if note_matches_before && projection_matches_before && state_matches_before {
+        NoteEditRecovery::Discarded
+    } else if note_matches_after && projection_matches_after && state_matches_after {
+        validate_project(request)?;
+        NoteEditRecovery::Finalized
+    } else {
+        if !state_matches_before {
+            replace_file_if_unchanged(&state_path, state_after, state_before)
+                .map_err(map_checked_replace)?;
+            sync_replacement_directory(&state_path, "sync recovery of project state")?;
+        }
+        if !projection_matches_before {
+            let expected = journal
+                .projection
+                .as_ref()
+                .expect("only a journaled projection can differ from its pre-image");
+            let path = projection_path
+                .as_ref()
+                .expect("a journaled projection always has a checked path");
+            replace_file_if_unchanged(path, expected.after.as_bytes(), expected.before.as_bytes())
+                .map_err(map_checked_replace)?;
+            sync_replacement_directory(path, "sync recovery of the maintained projection")?;
+        }
+        if !note_matches_before {
+            if let Some(note_before) = note_before {
+                replace_file_if_unchanged(&note_path, note_after, note_before)
+                    .map_err(map_checked_replace)?;
+            } else {
+                remove_created_note_if_unchanged(&note_path, note_after)?;
+            }
+            sync_replacement_directory(&note_path, "sync recovery of the canonical note")?;
+        }
+        validate_project(request)?;
+        NoteEditRecovery::RolledBack
     };
 
     complete_note_mutation_journal(&journal_path, &journal_source, project_dir)?;
@@ -498,6 +555,41 @@ fn checked_journal_note_path(
     ))
 }
 
+fn checked_journal_projection_path(
+    root: &Path,
+    project_dir: &Path,
+    id: &str,
+    journal_path: &Path,
+) -> Result<PathBuf, NoteEditError> {
+    let relative = Path::new(id);
+    if relative.extension().and_then(|value| value.to_str()) != Some("md")
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(NoteEditError::Validation {
+            path: journal_path.to_path_buf(),
+            message:
+                "journal projection identity must be a normalized vault-relative Markdown path"
+                    .to_owned(),
+        });
+    }
+    let config = load_root_config(root)?;
+    let path = root.join(relative);
+    let allowed = [
+        project_dir.join(&config.project.index),
+        project_dir.join(&config.project.roadmap),
+    ];
+    if !allowed.contains(&path) {
+        return Err(NoteEditError::Validation {
+            path: journal_path.to_path_buf(),
+            message: "journal projection must identify the configured project index or roadmap"
+                .to_owned(),
+        });
+    }
+    Ok(path)
+}
+
 fn read_journal(path: &Path) -> Result<Option<(NoteEditJournal, Vec<u8>)>, NoteEditError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -526,11 +618,16 @@ fn read_journal(path: &Path) -> Result<Option<(NoteEditJournal, Vec<u8>)>, NoteE
             path: path.to_path_buf(),
             message: format!("invalid note edit journal JSON: {error}"),
         })?;
-    if journal.schema_version != NOTE_EDIT_JOURNAL_SCHEMA_VERSION {
+    let valid_schema = match journal.schema_version {
+        NOTE_EDIT_JOURNAL_SCHEMA_VERSION => journal.projection.is_none(),
+        NOTE_PROJECTION_JOURNAL_SCHEMA_VERSION => journal.projection.is_some(),
+        _ => false,
+    };
+    if !valid_schema {
         return Err(NoteEditError::Validation {
             path: path.to_path_buf(),
             message: format!(
-                "unsupported note edit journal schema_version {}; expected {NOTE_EDIT_JOURNAL_SCHEMA_VERSION}",
+                "invalid note edit journal schema_version {}; expected version {NOTE_EDIT_JOURNAL_SCHEMA_VERSION} without a projection or version {NOTE_PROJECTION_JOURNAL_SCHEMA_VERSION} with one",
                 journal.schema_version
             ),
         });
@@ -563,9 +660,49 @@ pub(crate) fn write_note_mutation_journal(
         id: id.to_owned(),
         note_before: note_before.map(str::to_owned),
         note_after: note_after.to_owned(),
+        projection: None,
         state_before: state_before.to_owned(),
         state_after: state_after.to_owned(),
     };
+    write_journal(project_dir, journal)
+}
+
+pub(crate) struct NoteProjectionJournal<'a> {
+    pub(crate) project: &'a str,
+    pub(crate) id: &'a str,
+    pub(crate) note_after: &'a str,
+    pub(crate) projection_id: &'a str,
+    pub(crate) projection_before: &'a str,
+    pub(crate) projection_after: &'a str,
+    pub(crate) state_before: &'a str,
+    pub(crate) state_after: &'a str,
+}
+
+pub(crate) fn write_note_projection_mutation_journal(
+    project_dir: &Path,
+    mutation: &NoteProjectionJournal<'_>,
+) -> Result<(PathBuf, Vec<u8>), NoteEditError> {
+    let journal = NoteEditJournal {
+        schema_version: NOTE_PROJECTION_JOURNAL_SCHEMA_VERSION,
+        project: mutation.project.to_owned(),
+        id: mutation.id.to_owned(),
+        note_before: None,
+        note_after: mutation.note_after.to_owned(),
+        projection: Some(JournalProjection {
+            id: mutation.projection_id.to_owned(),
+            before: mutation.projection_before.to_owned(),
+            after: mutation.projection_after.to_owned(),
+        }),
+        state_before: mutation.state_before.to_owned(),
+        state_after: mutation.state_after.to_owned(),
+    };
+    write_journal(project_dir, journal)
+}
+
+fn write_journal(
+    project_dir: &Path,
+    journal: NoteEditJournal,
+) -> Result<(PathBuf, Vec<u8>), NoteEditError> {
     let source = render_journal(&journal)?;
     let path = project_dir.join(NOTE_EDIT_JOURNAL_FILE);
     create_file_atomically(&path, &source)?;

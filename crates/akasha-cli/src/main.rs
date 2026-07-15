@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use akasha_core::{
-    EventCreationResult, InitRequest, InitResult, LinkRequest, LinkResult, NoteClass,
-    NoteEditRecovery, ProjectValidationReport, ResolveRequest, ResolvedProject, assemble_context,
-    create_event, initialize_project, link_project, render_context_markdown, resolve_project,
-    validate_project,
+    EventCreationResult, InitRequest, InitResult, LinkRequest, LinkResult,
+    MutableNoteCreationResult, NoteClass, NoteEditRecovery, ProjectValidationReport,
+    ResolveRequest, ResolvedProject, assemble_context, create_event, create_mutable_note,
+    initialize_project, link_project, render_context_markdown, resolve_project, validate_project,
 };
 use clap::{Parser, Subcommand};
 
@@ -69,6 +70,24 @@ enum Command {
         #[arg(long, value_name = "NAME=VALUE")]
         field: Vec<String>,
     },
+    /// Create one record or entity and accept its complete maintained projection.
+    CreateNote {
+        /// Configured record or entity note type, such as `task` or `entity`.
+        #[arg(value_name = "TYPE")]
+        note_type: String,
+
+        /// Markdown path relative to the configured note-type folder.
+        #[arg(value_name = "RELATIVE.md")]
+        path: PathBuf,
+
+        /// UTF-8 file containing the complete accepted roadmap (record) or index (entity).
+        #[arg(long, value_name = "PATH")]
+        projection: PathBuf,
+
+        /// Exact template field in NAME=VALUE form. Repeat for multiple fields.
+        #[arg(long, value_name = "NAME=VALUE")]
+        field: Vec<String>,
+    },
     /// Resolve and print the current data root and project identity.
     Resolve,
     /// Validate the selected project's configuration, layout, and canonical notes.
@@ -97,6 +116,7 @@ fn run(cli: Cli) -> Result<(), u8> {
         let positional = match &command {
             Command::Init { slug } | Command::Link { slug, .. } => Some(slug),
             Command::CreateEvent { .. }
+            | Command::CreateNote { .. }
             | Command::Resolve
             | Command::Validate
             | Command::Context => None,
@@ -132,10 +152,33 @@ fn run(cli: Cli) -> Result<(), u8> {
             field,
         } => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
-            let fields = parse_event_fields(field)?;
+            let fields = parse_template_fields(field)?;
             let result = create_event(&request, &note_type, &path, &fields)
                 .map_err(report_event_creation)?;
             render_event_creation(&result, json).map_err(|error| {
+                eprintln!("akasha: failed to render command output: {error}");
+                6
+            })?;
+        }
+        Command::CreateNote {
+            note_type,
+            path,
+            projection,
+            field,
+        } => {
+            let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
+            let fields = parse_template_fields(field)?;
+            let projection_source = fs::read_to_string(&projection).map_err(|error| {
+                eprintln!(
+                    "akasha: failed to read projection input {}: {error}",
+                    projection.display()
+                );
+                6
+            })?;
+            let result =
+                create_mutable_note(&request, &note_type, &path, &fields, &projection_source)
+                    .map_err(report_mutable_note_creation)?;
+            render_mutable_note_creation(&result, json).map_err(|error| {
                 eprintln!("akasha: failed to render command output: {error}");
                 6
             })?;
@@ -206,15 +249,20 @@ fn report_event_creation(error: akasha_core::EventCreationError) -> u8 {
     error.exit_code()
 }
 
-fn parse_event_fields(fields: Vec<String>) -> Result<BTreeMap<String, String>, u8> {
+fn report_mutable_note_creation(error: akasha_core::MutableNoteCreationError) -> u8 {
+    eprintln!("akasha: {error}");
+    error.exit_code()
+}
+
+fn parse_template_fields(fields: Vec<String>) -> Result<BTreeMap<String, String>, u8> {
     let mut parsed = BTreeMap::new();
     for field in fields {
         let Some((name, value)) = field.split_once('=') else {
-            eprintln!("akasha: event fields must use NAME=VALUE syntax; received {field:?}");
+            eprintln!("akasha: template fields must use NAME=VALUE syntax; received {field:?}");
             return Err(2);
         };
         if parsed.insert(name.to_owned(), value.to_owned()).is_some() {
-            eprintln!("akasha: event field {name:?} was supplied more than once");
+            eprintln!("akasha: template field {name:?} was supplied more than once");
             return Err(2);
         }
     }
@@ -265,6 +313,38 @@ fn render_event_creation(
         println!(
             "template scope: {}",
             template_scope_name(result.template_scope)
+        );
+        println!("project state: {}", result.state.display());
+        println!("recovery: {}", recovery_name(result.recovery));
+    }
+    Ok(())
+}
+
+fn render_mutable_note_creation(
+    result: &MutableNoteCreationResult,
+    json: bool,
+) -> Result<(), serde_json::Error> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(result)?);
+    } else {
+        println!("created note: {}", result.id);
+        println!("project: {}", result.project);
+        println!("type: {}", result.note_type);
+        println!("class: {}", note_class_name(result.class));
+        println!("path: {}", result.path.display());
+        println!("template: {}", result.template.display());
+        println!(
+            "template scope: {}",
+            template_scope_name(result.template_scope)
+        );
+        println!("projection: {}", result.projection.display());
+        println!(
+            "projection changed: {}",
+            if result.projection_changed {
+                "yes"
+            } else {
+                "no"
+            }
         );
         println!("project state: {}", result.state.display());
         println!("recovery: {}", recovery_name(result.recovery));

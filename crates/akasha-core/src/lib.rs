@@ -5,6 +5,7 @@ pub mod event;
 pub mod init;
 pub mod library;
 pub mod link;
+pub mod note_creation;
 pub mod note_edit;
 pub mod note_template;
 pub mod onboarding;
@@ -27,6 +28,7 @@ pub use library::{
     render_library_markdown,
 };
 pub use link::{LinkError, LinkRequest, LinkResult, link_project};
+pub use note_creation::{MutableNoteCreationError, MutableNoteCreationResult, create_mutable_note};
 pub use note_edit::{
     NOTE_EDIT_JOURNAL_FILE, NoteEditError, NoteEditRecovery, NoteEditResult,
     recover_pending_note_edit, replace_library_document,
