@@ -11,6 +11,10 @@ export interface PositionedBook {
   y: number;
 }
 
+const FIRST_CATEGORY_Y = 74;
+const LAST_CATEGORY_Y = 288;
+const DEFAULT_CATEGORY_STEP = 68;
+
 export function allBooks(projection: LibraryProjection): LibraryBook[] {
   return [
     ...projection.global.categories.flatMap((category) => category.books),
@@ -52,12 +56,19 @@ function layoutCategories(
   shelfX: number,
   output: PositionedBook[],
 ): void {
+  const categoryStep =
+    categories.length > 1
+      ? Math.min(
+          DEFAULT_CATEGORY_STEP,
+          Math.floor((LAST_CATEGORY_Y - FIRST_CATEGORY_Y) / (categories.length - 1)),
+        )
+      : DEFAULT_CATEGORY_STEP;
   categories.forEach((category, categoryIndex) => {
     category.books.forEach((book, bookIndex) => {
       output.push({
         book,
         x: shelfX + bookIndex * 20,
-        y: 74 + categoryIndex * 68,
+        y: FIRST_CATEGORY_Y + categoryIndex * categoryStep,
       });
     });
   });

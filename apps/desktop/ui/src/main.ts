@@ -14,6 +14,8 @@ const status = required<HTMLElement>("status");
 const sceneHost = required<HTMLElement>("scene");
 const fallbackHost = required<HTMLElement>("fallback");
 const metaHost = required<HTMLElement>("book-meta");
+const editActions = required<HTMLElement>("edit-actions");
+const editState = required<HTMLElement>("edit-state");
 const saveButton = required<HTMLButtonElement>("save-note");
 const discardButton = required<HTMLButtonElement>("discard-note");
 let viewer: NoteViewer;
@@ -31,7 +33,7 @@ reducedMotion.checked = window.matchMedia("(prefers-reduced-motion: reduce)").ma
 form.addEventListener("submit", (event) => {
   event.preventDefault();
   if (viewer.dirty) {
-    status.textContent = "Save or discard the current note before opening another library.";
+    requireDirtyDecision("opening another library");
     return;
   }
   void openLibrary();
@@ -40,7 +42,7 @@ form.addEventListener("submit", (event) => {
 saveButton.addEventListener("click", () => void saveSelectedNote());
 discardButton.addEventListener("click", () => {
   viewer.discard();
-  status.textContent = "Unsaved changes discarded.";
+  setStatus("Changes discarded. You can navigate away.", "success");
 });
 
 reducedMotion.addEventListener("change", () => {
@@ -65,7 +67,7 @@ async function openLibrary(
   preferredId?: string,
   requestedResolution = { root: rootInput.value, project: projectInput.value },
 ): Promise<void> {
-  status.textContent = "Validating the synthetic library through Akasha Core…";
+  setStatus("Validating the synthetic library through Akasha Core…");
   form.classList.add("is-loading");
   try {
     library = await loadLibrary(requestedResolution.root, requestedResolution.project);
@@ -82,7 +84,10 @@ async function openLibrary(
       await selectBook(initial);
     }
     const recovery = library.recovery === "none" ? "" : ` / recovery ${library.recovery}`;
-    status.textContent = `${library.projection.total_books} canonical books / ${library.projection.projects.length} project shelves / validation passed${recovery}`;
+    setStatus(
+      `${library.projection.total_books} canonical books / ${library.projection.projects.length} project shelves / validation passed${recovery}`,
+      "success",
+    );
   } catch (error) {
     library = null;
     activeResolution = null;
@@ -92,7 +97,7 @@ async function openLibrary(
     fallbackHost.replaceChildren();
     metaHost.textContent = errorMessage(error);
     viewer.setDocument("", false);
-    status.textContent = `Library unavailable: ${errorMessage(error)}`;
+    setStatus(`Library unavailable: ${errorMessage(error)}`, "error");
   } finally {
     form.classList.remove("is-loading");
   }
@@ -118,7 +123,7 @@ async function renderScene(current: DesktopLibrary): Promise<void> {
 
 async function selectBook(book: LibraryBook): Promise<void> {
   if (viewer.dirty) {
-    status.textContent = "Save or discard the current note before selecting another book.";
+    requireDirtyDecision("selecting another book");
     return;
   }
   selectedId = book.id;
@@ -137,7 +142,7 @@ async function selectBook(book: LibraryBook): Promise<void> {
   } catch (error) {
     if (selectedId === requestedId) {
       viewer.setDocument("", false);
-      status.textContent = `Document unavailable: ${errorMessage(error)}`;
+      setStatus(`Document unavailable: ${errorMessage(error)}`, "error");
     }
   }
 }
@@ -166,7 +171,7 @@ async function saveSelectedNote(): Promise<void> {
   }
   saveButton.disabled = true;
   discardButton.disabled = true;
-  status.textContent = "Saving through the checked Akasha Core transaction…";
+  setStatus("Saving through the checked Akasha Core transaction…");
   const id = selectedId;
   const resolution = activeResolution;
   try {
@@ -179,11 +184,14 @@ async function saveSelectedNote(): Promise<void> {
     );
     viewer.markSaved();
     await openLibrary(id, resolution);
-    status.textContent = result.changed
-      ? `Saved ${id}; project state validated.`
-      : `${id} already matched the requested source.`;
+    setStatus(
+      result.changed
+        ? `Saved ${id}; project state validated.`
+        : `${id} already matched the requested source.`,
+      "success",
+    );
   } catch (error) {
-    status.textContent = `Save failed: ${errorMessage(error)}`;
+    setStatus(`Save failed: ${errorMessage(error)}`, "error");
     updateEditActions();
   }
 }
@@ -199,6 +207,25 @@ function isEditable(book: LibraryBook): boolean {
 function updateEditActions(): void {
   saveButton.disabled = !viewer.editable || !viewer.dirty;
   discardButton.disabled = !viewer.dirty;
+  editState.textContent = viewer.dirty ? "Unsaved changes" : "";
+  editActions.classList.toggle("is-dirty", viewer.dirty);
+  if (!viewer.dirty) {
+    editActions.classList.remove("needs-decision");
+  }
+}
+
+function requireDirtyDecision(action: string): void {
+  setStatus(`Unsaved changes: choose Save or Discard before ${action}.`, "warning");
+  editActions.classList.add("needs-decision");
+  saveButton.focus();
+}
+
+type StatusTone = "neutral" | "success" | "warning" | "error";
+
+function setStatus(message: string, tone: StatusTone = "neutral"): void {
+  status.textContent = message;
+  status.dataset.tone = tone;
+  status.setAttribute("aria-live", tone === "warning" || tone === "error" ? "assertive" : "polite");
 }
 
 function errorMessage(error: unknown): string {

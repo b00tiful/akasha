@@ -127,6 +127,30 @@ h2 {
   margin: 0;
 }
 
+#status {
+  flex: 1;
+  border-left: 3px solid transparent;
+  padding: 0.35rem 0.55rem;
+}
+
+#status[data-tone="success"] {
+  color: var(--link);
+}
+
+#status[data-tone="warning"] {
+  color: var(--void);
+  background: var(--focus);
+  border-color: var(--paper);
+  font-weight: 700;
+}
+
+#status[data-tone="error"] {
+  color: var(--paper);
+  background: var(--danger);
+  border-color: var(--paper);
+  font-weight: 700;
+}
+
 .motion-toggle {
   display: flex;
   align-items: center;
@@ -157,6 +181,13 @@ h2 {
 .world-panel,
 .fallback-panel {
   padding: 1rem;
+}
+
+.world-panel {
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+  flex-direction: column;
 }
 
 .inspector-panel {
@@ -194,18 +225,21 @@ h2 {
 
 .scene {
   display: grid;
+  flex: 1 1 auto;
   place-items: center;
-  min-height: 22rem;
+  min-height: 0;
   overflow: hidden;
+  position: relative;
   border: 1px solid #293033;
   background: #090b0d;
 }
 
 .world-canvas {
   display: block;
+  position: absolute;
+  inset: 0;
   width: 100%;
-  max-height: 100%;
-  object-fit: contain;
+  height: 100%;
   image-rendering: pixelated;
 }
 
@@ -272,7 +306,27 @@ h2 {
 
 .edit-actions {
   display: flex;
+  align-items: center;
   gap: 0.35rem;
+}
+
+.edit-state {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.edit-actions.is-dirty .edit-state {
+  color: var(--focus);
+  font-weight: 700;
+}
+
+.edit-actions.needs-decision {
+  outline: 2px solid var(--focus);
+  outline-offset: 4px;
+}
+
+.edit-actions.needs-decision button:not(:disabled) {
+  border-color: var(--focus);
 }
 
 button:disabled {

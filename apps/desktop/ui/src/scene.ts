@@ -12,6 +12,8 @@ const COLORS = {
   link: 0x64d8cb,
   danger: 0xdb5a52,
 } as const;
+const SCENE_WIDTH = 720;
+const SCENE_HEIGHT = 360;
 
 export interface SceneHandle {
   select(id: string): void;
@@ -26,8 +28,8 @@ export async function mountLibraryScene(
 ): Promise<SceneHandle> {
   const app = new Application();
   await app.init({
-    width: 720,
-    height: 360,
+    width: Math.max(1, host.clientWidth),
+    height: Math.max(1, host.clientHeight),
     backgroundColor: COLORS.void,
     antialias: false,
     preference: "webgl",
@@ -39,6 +41,20 @@ export async function mountLibraryScene(
 
   const world = new Container();
   app.stage.addChild(world);
+  const resize = (): void => {
+    const width = Math.max(1, host.clientWidth);
+    const height = Math.max(1, host.clientHeight);
+    app.renderer.resize(width, height);
+    const scale = Math.min(width / SCENE_WIDTH, height / SCENE_HEIGHT);
+    world.scale.set(scale);
+    world.position.set(
+      Math.floor((width - SCENE_WIDTH * scale) / 2),
+      Math.floor((height - SCENE_HEIGHT * scale) / 2),
+    );
+  };
+  const resizeObserver = new ResizeObserver(resize);
+  resizeObserver.observe(host);
+  resize();
   const positioned = layoutBooks(projection);
   const positions = new Map(positioned.map((item) => [item.book.id, item]));
   const bookShapes = new Map<string, Graphics>();
@@ -100,6 +116,7 @@ export async function mountLibraryScene(
       }
     },
     destroy(): void {
+      resizeObserver.disconnect();
       app.destroy(true);
     },
   };

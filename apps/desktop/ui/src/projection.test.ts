@@ -59,6 +59,25 @@ describe("desktop projection helpers", () => {
       },
     ]);
   });
+
+  it("keeps five configured categories inside the visible shelf", () => {
+    const categories = Array.from({ length: 5 }, (_, index) => ({
+      note_type: `type-${index}`,
+      class: "entity" as const,
+      books: [book(`Projects/alpha/entities/book-${index}.md`, [])],
+    }));
+    const crowded: LibraryProjection = {
+      ...projection,
+      global: { categories: [] },
+      projects: [{ project: "alpha", status: "active", categories }],
+      total_books: categories.length,
+    };
+
+    const positions = layoutBooks(crowded);
+
+    expect(positions.map((item) => item.y)).toEqual([74, 127, 180, 233, 286]);
+    expect(Math.max(...positions.map((item) => item.y)) + 24).toBeLessThanOrEqual(314);
+  });
 });
 
 function book(id: string, outgoing_links: string[]) {
