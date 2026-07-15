@@ -67,3 +67,60 @@ fn context_json_contains_the_equivalent_selected_entries() {
     assert_eq!(value["truncated"], false);
     assert!(value["rendered_chars"].as_u64().expect("character count") <= 16_000);
 }
+
+#[test]
+fn plain_context_has_lower_wire_overhead_at_equal_fidelity() {
+    let fixture = fixtures();
+    let root = fixture.join("valid-root");
+    let binary = env!("CARGO_BIN_EXE_akasha");
+
+    let plain = Command::new(binary)
+        .args([
+            "--root",
+            root.to_str().expect("fixture path is UTF-8"),
+            "--project",
+            "example",
+            "context",
+        ])
+        .env_remove("AKASHA_ROOT")
+        .output()
+        .expect("run plain akasha context");
+    let json = Command::new(binary)
+        .args([
+            "--root",
+            root.to_str().expect("fixture path is UTF-8"),
+            "--project",
+            "example",
+            "--json",
+            "context",
+        ])
+        .env_remove("AKASHA_ROOT")
+        .output()
+        .expect("run JSON akasha context");
+
+    assert!(plain.status.success());
+    assert!(plain.stderr.is_empty());
+    assert!(json.status.success());
+    assert!(json.stderr.is_empty());
+
+    let plain_text = String::from_utf8(plain.stdout).expect("plain stdout is UTF-8");
+    let json_value: serde_json::Value =
+        serde_json::from_slice(&json.stdout).expect("parse context JSON");
+    let rendered_chars = json_value["rendered_chars"]
+        .as_u64()
+        .expect("rendered character count") as usize;
+    assert_eq!(plain_text.chars().count(), rendered_chars);
+
+    for entry in json_value["entries"].as_array().expect("context entries") {
+        let content = entry["content"].as_str().expect("entry content");
+        assert!(
+            plain_text.contains(content),
+            "plain context omitted selected JSON entry content: {content:?}"
+        );
+    }
+
+    assert!(
+        plain_text.len() < json.stdout.len(),
+        "plain Markdown should have less wire overhead than equivalent pretty JSON"
+    );
+}

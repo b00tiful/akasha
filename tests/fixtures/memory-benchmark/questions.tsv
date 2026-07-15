@@ -1,0 +1,6 @@
+case_id	question
+cold-resume	What is the one exact immediate next task?
+failed-approach	Which previously failed approach must not be repeated?
+current-truth	What storage authority model is currently accepted?
+rationale	Why was the current authority model selected?
+history-preservation	How should a superseded decision be corrected without corrupting history?
