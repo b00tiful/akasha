@@ -5,6 +5,7 @@ pub mod init;
 pub mod library;
 pub mod link;
 pub mod note_edit;
+pub mod note_template;
 pub mod onboarding;
 pub mod project_validation;
 pub mod resolution;
@@ -27,6 +28,9 @@ pub use link::{LinkError, LinkRequest, LinkResult, link_project};
 pub use note_edit::{
     NOTE_EDIT_JOURNAL_FILE, NoteEditError, NoteEditRecovery, NoteEditResult,
     recover_pending_note_edit, replace_library_document,
+};
+pub use note_template::{
+    NoteTemplateError, NoteTemplateScope, ResolvedNoteTemplate, resolve_note_template,
 };
 pub use onboarding::{
     MAX_ONBOARDING_EVIDENCE_CLAIMS, MAX_ONBOARDING_EVIDENCE_SOURCES,
