@@ -52,6 +52,9 @@ fn help_and_invalid_usage_follow_the_stream_and_exit_contract() {
     assert!(stdout.contains("context"));
     assert!(stdout.contains("breadcrumb"));
     assert!(stdout.contains("prepare-agent-wiring"));
+    assert!(stdout.contains("prepare-session-hook"));
+    assert!(stdout.contains("apply-session-hook"));
+    assert!(stdout.contains("remove-session-hook"));
     assert!(stdout.contains("--json"));
     assert!(stdout.contains("--no-color"));
 

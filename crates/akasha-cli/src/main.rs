@@ -5,11 +5,12 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use akasha_core::{
-    AgentClient, InitRequest, LinkRequest, ResolveRequest, apply_agent_wiring, assemble_context,
-    assemble_session_breadcrumb, assemble_session_breadcrumb_if_linked, create_event,
-    create_mutable_note, initialize_project, link_project, prepare_agent_wiring,
-    prepare_agent_wiring_removal, prepare_session_hook_wiring, remove_agent_wiring,
-    resolve_project, update_entity, update_record, validate_project,
+    AgentClient, InitRequest, LinkRequest, ResolveRequest, apply_agent_wiring,
+    apply_session_hook_wiring, assemble_context, assemble_session_breadcrumb,
+    assemble_session_breadcrumb_if_linked, create_event, create_mutable_note, initialize_project,
+    link_project, prepare_agent_wiring, prepare_agent_wiring_removal, prepare_session_hook_removal,
+    prepare_session_hook_wiring, remove_agent_wiring, remove_session_hook_wiring, resolve_project,
+    update_entity, update_record, validate_project,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -18,7 +19,8 @@ mod render;
 use render::{
     OutputMode, render_agent_wiring_plan, render_agent_wiring_result, render_breadcrumb,
     render_context, render_event_creation, render_init, render_link, render_mutable_note_creation,
-    render_resolution, render_session_hook_wiring_plan, render_validation,
+    render_resolution, render_session_hook_wiring_plan, render_session_hook_wiring_result,
+    render_validation,
 };
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -200,6 +202,38 @@ enum Command {
         /// Client configuration directory. Defaults to CODEX_HOME/~/.codex or ~/.claude.
         #[arg(long, value_name = "PATH")]
         home: Option<PathBuf>,
+
+        /// Prepare exact managed-hook removal instead of application.
+        #[arg(long)]
+        remove: bool,
+    },
+    /// Apply an exact prepared session-start hook plan for one agent client.
+    ApplySessionHook {
+        /// Agent client whose user-level session hook should be applied.
+        #[arg(value_enum, value_name = "CLIENT")]
+        client: AgentClientArgument,
+
+        /// Exact plan ID returned by prepare-session-hook.
+        #[arg(long, value_name = "SHA256")]
+        plan_id: String,
+
+        /// Client configuration directory. Defaults to CODEX_HOME/~/.codex or ~/.claude.
+        #[arg(long, value_name = "PATH")]
+        home: Option<PathBuf>,
+    },
+    /// Remove an exact prepared Akasha session-start hook entry.
+    RemoveSessionHook {
+        /// Agent client whose user-level Akasha session hook should be removed.
+        #[arg(value_enum, value_name = "CLIENT")]
+        client: AgentClientArgument,
+
+        /// Exact plan ID returned by prepare-session-hook --remove.
+        #[arg(long, value_name = "SHA256")]
+        plan_id: String,
+
+        /// Client configuration directory. Defaults to CODEX_HOME/~/.codex or ~/.claude.
+        #[arg(long, value_name = "PATH")]
+        home: Option<PathBuf>,
     },
     /// Resolve and print the current data root and project identity.
     Resolve,
@@ -243,6 +277,8 @@ fn run(cli: Cli) -> Result<(), u8> {
             | Command::ApplyAgentWiring { .. }
             | Command::RemoveAgentWiring { .. }
             | Command::PrepareSessionHook { .. }
+            | Command::ApplySessionHook { .. }
+            | Command::RemoveSessionHook { .. }
             | Command::Resolve
             | Command::Validate
             | Command::Context
@@ -399,13 +435,51 @@ fn run(cli: Cli) -> Result<(), u8> {
                 6
             })?;
         }
-        Command::PrepareSessionHook { client, home } => {
+        Command::PrepareSessionHook {
+            client,
+            home,
+            remove,
+        } => {
             let client = AgentClient::from(client);
             let home = resolve_agent_home(client, home)?;
             let request = ResolveRequest::from_process(root, None).map_err(report_resolution)?;
-            let plan = prepare_session_hook_wiring(&request, client, &home)
-                .map_err(report_session_hook_wiring)?;
+            let plan = if remove {
+                prepare_session_hook_removal(&request, client, &home)
+            } else {
+                prepare_session_hook_wiring(&request, client, &home)
+            }
+            .map_err(report_session_hook_wiring)?;
             render_session_hook_wiring_plan(&plan, output).map_err(|error| {
+                eprintln!("akasha: failed to render command output: {error}");
+                6
+            })?;
+        }
+        Command::ApplySessionHook {
+            client,
+            plan_id,
+            home,
+        } => {
+            let client = AgentClient::from(client);
+            let home = resolve_agent_home(client, home)?;
+            let request = ResolveRequest::from_process(root, None).map_err(report_resolution)?;
+            let result = apply_session_hook_wiring(&request, client, &home, &plan_id)
+                .map_err(report_session_hook_wiring)?;
+            render_session_hook_wiring_result(&result, output).map_err(|error| {
+                eprintln!("akasha: failed to render command output: {error}");
+                6
+            })?;
+        }
+        Command::RemoveSessionHook {
+            client,
+            plan_id,
+            home,
+        } => {
+            let client = AgentClient::from(client);
+            let home = resolve_agent_home(client, home)?;
+            let request = ResolveRequest::from_process(root, None).map_err(report_resolution)?;
+            let result = remove_session_hook_wiring(&request, client, &home, &plan_id)
+                .map_err(report_session_hook_wiring)?;
+            render_session_hook_wiring_result(&result, output).map_err(|error| {
                 eprintln!("akasha: failed to render command output: {error}");
                 6
             })?;

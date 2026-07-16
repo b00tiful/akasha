@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use akasha_core::{
     AgentClient, ResolutionEnvironment, ResolveRequest, SessionHookWiringAction,
-    prepare_session_hook_wiring,
+    SessionHookWiringOperation, SessionHookWiringRecovery, apply_session_hook_wiring,
+    prepare_session_hook_removal, prepare_session_hook_wiring, remove_session_hook_wiring,
 };
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -96,7 +97,105 @@ fn existing_hook_shapes_choose_the_narrowest_insertion_or_noop() {
         .expect("recognize exact entry");
     assert_eq!(no_change.action, SessionHookWiringAction::NoChange);
     assert!(no_change.patch.replacement.is_empty());
-    assert_eq!(no_change.current_sha256, Some(no_change.result_sha256));
+    assert_eq!(no_change.current_sha256, no_change.result_sha256);
+}
+
+#[test]
+fn checked_apply_and_removal_restore_exact_existing_settings_bytes() {
+    let home = TempDir::new("checked-existing");
+    let target = home.path().join("settings.json");
+    let original = b"{\r\n  \"theme\": \"dark\"\r\n}\r\n";
+    fs::write(&target, original).expect("seed Claude settings");
+
+    let apply = prepare_session_hook_wiring(&request(), AgentClient::Claude, home.path())
+        .expect("prepare Claude hook");
+    let applied =
+        apply_session_hook_wiring(&request(), AgentClient::Claude, home.path(), &apply.plan_id)
+            .expect("apply Claude hook");
+
+    assert!(applied.changed);
+    assert_eq!(applied.operation, SessionHookWiringOperation::Apply);
+    assert_eq!(applied.recovery, SessionHookWiringRecovery::None);
+    assert_eq!(
+        fs::read(&target).expect("read applied settings"),
+        apply_patch(original, &apply)
+    );
+
+    let removal = prepare_session_hook_removal(&request(), AgentClient::Claude, home.path())
+        .expect("prepare Claude hook removal");
+    assert_eq!(removal.operation, SessionHookWiringOperation::Remove);
+    assert_eq!(removal.action, SessionHookWiringAction::RemoveHooksKey);
+    let removed = remove_session_hook_wiring(
+        &request(),
+        AgentClient::Claude,
+        home.path(),
+        &removal.plan_id,
+    )
+    .expect("remove Claude hook");
+
+    assert!(removed.changed);
+    assert_eq!(fs::read(&target).expect("read restored settings"), original);
+}
+
+#[test]
+fn checked_removal_deletes_an_exact_managed_only_hook_file() {
+    let home = TempDir::new("checked-managed-file");
+    let apply = prepare_session_hook_wiring(&request(), AgentClient::Codex, home.path())
+        .expect("prepare Codex hook");
+    apply_session_hook_wiring(&request(), AgentClient::Codex, home.path(), &apply.plan_id)
+        .expect("apply Codex hook");
+    let removal = prepare_session_hook_removal(&request(), AgentClient::Codex, home.path())
+        .expect("prepare Codex hook removal");
+
+    assert_eq!(removal.action, SessionHookWiringAction::RemoveManagedFile);
+    assert!(removal.result_sha256.is_none());
+    remove_session_hook_wiring(
+        &request(),
+        AgentClient::Codex,
+        home.path(),
+        &removal.plan_id,
+    )
+    .expect("remove Codex hook");
+
+    assert!(!home.path().join("hooks.json").exists());
+}
+
+#[test]
+fn changed_target_refuses_a_stale_plan_without_overwriting_human_bytes() {
+    let home = TempDir::new("stale-target");
+    let target = home.path().join("hooks.json");
+    let plan = prepare_session_hook_wiring(&request(), AgentClient::Codex, home.path())
+        .expect("prepare Codex hook");
+    let human = b"{\"human\":true}\n";
+    fs::write(&target, human).expect("change target after preparation");
+
+    let error =
+        apply_session_hook_wiring(&request(), AgentClient::Codex, home.path(), &plan.plan_id)
+            .expect_err("stale plan must conflict");
+
+    assert_eq!(error.exit_code(), 5);
+    assert!(error.to_string().contains("plan ID no longer matches"));
+    assert_eq!(fs::read(&target).expect("read preserved target"), human);
+}
+
+#[test]
+fn removal_prunes_only_the_narrowest_managed_json_structure() {
+    let home = TempDir::new("narrow-removal");
+    let target = home.path().join("hooks.json");
+    let human = br#"{"hooks":{"SessionStart":[{"matcher":"startup","hooks":[{"type":"command","command":"human-hook"}]}]}}"#;
+    fs::write(&target, human).expect("seed human hook");
+    let apply = prepare_session_hook_wiring(&request(), AgentClient::Codex, home.path())
+        .expect("prepare appended hook");
+    fs::write(&target, apply_patch(human, &apply)).expect("seed exact applied result");
+
+    let removal = prepare_session_hook_removal(&request(), AgentClient::Codex, home.path())
+        .expect("prepare narrow removal");
+    assert_eq!(
+        removal.action,
+        SessionHookWiringAction::RemoveSessionStartEntry
+    );
+    let result = apply_patch(&fs::read(&target).expect("read target"), &removal);
+    assert_eq!(result, human);
 }
 
 #[test]

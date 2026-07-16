@@ -7,7 +7,8 @@ use akasha_core::{
     AgentWiringResult, ContextBundle, EntityUpdateResult, EventCreationResult, InitRecovery,
     InitResult, LinkResult, MutableNoteCreationResult, NoteClass, NoteEditRecovery,
     ProjectValidationReport, RecordUpdateResult, ResolvedProject, SessionBreadcrumb,
-    SessionHookWiringAction, SessionHookWiringPlan, render_context_markdown,
+    SessionHookWiringAction, SessionHookWiringOperation, SessionHookWiringPlan,
+    SessionHookWiringRecovery, SessionHookWiringResult, render_context_markdown,
     render_session_breadcrumb,
 };
 
@@ -157,13 +158,22 @@ pub(crate) fn render_session_hook_wiring_plan(
         print_status("prepared session hook", plan.client.as_str(), output);
         print_field("data root", plan.root.display(), output);
         print_field("target", plan.target.display(), output);
+        print_field(
+            "operation",
+            session_hook_operation_name(plan.operation),
+            output,
+        );
         print_field("action", session_hook_action_name(plan.action), output);
         print_field(
             "current sha256",
             plan.current_sha256.as_deref().unwrap_or("absent"),
             output,
         );
-        print_field("result sha256", &plan.result_sha256, output);
+        print_field(
+            "result sha256",
+            plan.result_sha256.as_deref().unwrap_or("absent"),
+            output,
+        );
         print_field("plan id", &plan.plan_id, output);
         print_field(
             "patch range",
@@ -181,13 +191,60 @@ pub(crate) fn render_session_hook_wiring_plan(
     Ok(())
 }
 
+pub(crate) fn render_session_hook_wiring_result(
+    result: &SessionHookWiringResult,
+    output: OutputMode,
+) -> Result<(), serde_json::Error> {
+    if output.json {
+        println!("{}", serde_json::to_string_pretty(result)?);
+    } else {
+        print_status(
+            match result.operation {
+                SessionHookWiringOperation::Apply => "applied session hook",
+                SessionHookWiringOperation::Remove => "removed session hook",
+            },
+            result.client.as_str(),
+            output,
+        );
+        print_field("target", result.target.display(), output);
+        print_field("action", session_hook_action_name(result.action), output);
+        print_field("changed", result.changed, output);
+        print_field("plan id", &result.plan_id, output);
+        print_field(
+            "recovery",
+            session_hook_recovery_name(result.recovery),
+            output,
+        );
+    }
+    Ok(())
+}
+
+fn session_hook_operation_name(operation: SessionHookWiringOperation) -> &'static str {
+    match operation {
+        SessionHookWiringOperation::Apply => "apply",
+        SessionHookWiringOperation::Remove => "remove",
+    }
+}
+
 fn session_hook_action_name(action: SessionHookWiringAction) -> &'static str {
     match action {
         SessionHookWiringAction::Create => "create",
         SessionHookWiringAction::AddHooks => "add-hooks",
         SessionHookWiringAction::AddSessionStart => "add-session-start",
         SessionHookWiringAction::AppendSessionStart => "append-session-start",
+        SessionHookWiringAction::RemoveSessionStartEntry => "remove-session-start-entry",
+        SessionHookWiringAction::RemoveSessionStartKey => "remove-session-start-key",
+        SessionHookWiringAction::RemoveHooksKey => "remove-hooks-key",
+        SessionHookWiringAction::RemoveManagedFile => "remove-managed-file",
         SessionHookWiringAction::NoChange => "no-change",
+    }
+}
+
+fn session_hook_recovery_name(recovery: SessionHookWiringRecovery) -> &'static str {
+    match recovery {
+        SessionHookWiringRecovery::None => "none",
+        SessionHookWiringRecovery::Discarded => "discarded",
+        SessionHookWiringRecovery::Finalized => "finalized",
     }
 }
 

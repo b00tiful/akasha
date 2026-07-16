@@ -64,8 +64,10 @@ pub use resolution::{
     RootSource, resolve_project,
 };
 pub use session_hook_wiring::{
-    SessionHookWiringAction, SessionHookWiringError, SessionHookWiringPatch, SessionHookWiringPlan,
-    prepare_session_hook_wiring,
+    SessionHookWiringAction, SessionHookWiringError, SessionHookWiringOperation,
+    SessionHookWiringPatch, SessionHookWiringPlan, SessionHookWiringRecovery,
+    SessionHookWiringResult, apply_session_hook_wiring, prepare_session_hook_removal,
+    prepare_session_hook_wiring, remove_session_hook_wiring,
 };
 pub use validation::{
     ParsedNote, ProjectRegistry, ProjectRegistryEntry, ValidationError, parse_leading_frontmatter,
