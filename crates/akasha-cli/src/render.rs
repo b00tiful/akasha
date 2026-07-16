@@ -3,8 +3,9 @@ use std::fmt::Display;
 use std::io::{self, IsTerminal};
 
 use akasha_core::{
-    AgentWiringAction, AgentWiringPlan, ContextBundle, EntityUpdateResult, EventCreationResult,
-    InitRecovery, InitResult, LinkResult, MutableNoteCreationResult, NoteClass, NoteEditRecovery,
+    AgentWiringAction, AgentWiringOperation, AgentWiringPlan, AgentWiringRecovery,
+    AgentWiringResult, ContextBundle, EntityUpdateResult, EventCreationResult, InitRecovery,
+    InitResult, LinkResult, MutableNoteCreationResult, NoteClass, NoteEditRecovery,
     ProjectValidationReport, RecordUpdateResult, ResolvedProject, render_context_markdown,
 };
 
@@ -83,13 +84,22 @@ pub(crate) fn render_agent_wiring_plan(
         print_field("instruction source", plan.source.display(), output);
         print_field("source sha256", &plan.source_sha256, output);
         print_field("target", plan.target.display(), output);
+        print_field(
+            "operation",
+            agent_wiring_operation_name(plan.operation),
+            output,
+        );
         print_field("action", agent_wiring_action_name(plan.action), output);
         print_field(
             "current sha256",
             plan.current_sha256.as_deref().unwrap_or("absent"),
             output,
         );
-        print_field("result sha256", &plan.result_sha256, output);
+        print_field(
+            "result sha256",
+            plan.result_sha256.as_deref().unwrap_or("absent"),
+            output,
+        );
         print_field("plan id", &plan.plan_id, output);
         print_field(
             "patch range",
@@ -103,6 +113,34 @@ pub(crate) fn render_agent_wiring_plan(
             print_field("replacement", "", output);
             print!("{}", plan.patch.replacement);
         }
+    }
+    Ok(())
+}
+
+pub(crate) fn render_agent_wiring_result(
+    result: &AgentWiringResult,
+    output: OutputMode,
+) -> Result<(), serde_json::Error> {
+    if output.json {
+        println!("{}", serde_json::to_string_pretty(result)?);
+    } else {
+        print_status(
+            match result.operation {
+                AgentWiringOperation::Apply => "applied agent wiring",
+                AgentWiringOperation::Remove => "removed agent wiring",
+            },
+            result.client.as_str(),
+            output,
+        );
+        print_field("target", result.target.display(), output);
+        print_field("action", agent_wiring_action_name(result.action), output);
+        print_field("changed", result.changed, output);
+        print_field("plan id", &result.plan_id, output);
+        print_field(
+            "recovery",
+            agent_wiring_recovery_name(result.recovery),
+            output,
+        );
     }
     Ok(())
 }
@@ -362,6 +400,23 @@ const fn agent_wiring_action_name(action: AgentWiringAction) -> &'static str {
         AgentWiringAction::Create => "create",
         AgentWiringAction::Append => "append",
         AgentWiringAction::RefreshManagedSection => "refresh-managed-section",
+        AgentWiringAction::RemoveManagedSection => "remove-managed-section",
+        AgentWiringAction::RemoveCreatedFile => "remove-created-file",
         AgentWiringAction::NoChange => "no-change",
+    }
+}
+
+const fn agent_wiring_operation_name(operation: AgentWiringOperation) -> &'static str {
+    match operation {
+        AgentWiringOperation::Apply => "apply",
+        AgentWiringOperation::Remove => "remove",
+    }
+}
+
+const fn agent_wiring_recovery_name(recovery: AgentWiringRecovery) -> &'static str {
+    match recovery {
+        AgentWiringRecovery::None => "none",
+        AgentWiringRecovery::Discarded => "discarded",
+        AgentWiringRecovery::Finalized => "finalized",
     }
 }

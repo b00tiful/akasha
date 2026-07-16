@@ -19,8 +19,9 @@ mod wikilink;
 pub mod writes;
 
 pub use agent_wiring::{
-    AgentClient, AgentWiringAction, AgentWiringError, AgentWiringPatch, AgentWiringPlan,
-    prepare_agent_wiring,
+    AgentClient, AgentWiringAction, AgentWiringError, AgentWiringOperation, AgentWiringPatch,
+    AgentWiringPlan, AgentWiringRecovery, AgentWiringResult, apply_agent_wiring,
+    prepare_agent_wiring, prepare_agent_wiring_removal, remove_agent_wiring,
 };
 pub use context::{
     ContextBundle, ContextEntry, ContextError, ContextSection, DEFAULT_CONTEXT_MAX_CHARS,

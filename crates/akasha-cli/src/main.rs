@@ -5,17 +5,19 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use akasha_core::{
-    AgentClient, InitRequest, LinkRequest, ResolveRequest, assemble_context, create_event,
-    create_mutable_note, initialize_project, link_project, prepare_agent_wiring, resolve_project,
-    update_entity, update_record, validate_project,
+    AgentClient, InitRequest, LinkRequest, ResolveRequest, apply_agent_wiring, assemble_context,
+    create_event, create_mutable_note, initialize_project, link_project, prepare_agent_wiring,
+    prepare_agent_wiring_removal, remove_agent_wiring, resolve_project, update_entity,
+    update_record, validate_project,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod render;
 
 use render::{
-    OutputMode, render_agent_wiring_plan, render_context, render_event_creation, render_init,
-    render_link, render_mutable_note_creation, render_resolution, render_validation,
+    OutputMode, render_agent_wiring_plan, render_agent_wiring_result, render_context,
+    render_event_creation, render_init, render_link, render_mutable_note_creation,
+    render_resolution, render_validation,
 };
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -155,6 +157,38 @@ enum Command {
         /// Client configuration directory. Defaults to CODEX_HOME/~/.codex or ~/.claude.
         #[arg(long, value_name = "PATH")]
         home: Option<PathBuf>,
+
+        /// Prepare exact managed-section removal instead of application.
+        #[arg(long)]
+        remove: bool,
+    },
+    /// Apply an exact prepared user instruction-file plan for one agent client.
+    ApplyAgentWiring {
+        /// Agent client whose user-level instructions should load Akasha.
+        #[arg(value_enum, value_name = "CLIENT")]
+        client: AgentClientArgument,
+
+        /// Exact plan ID returned by prepare-agent-wiring.
+        #[arg(long, value_name = "SHA256")]
+        plan_id: String,
+
+        /// Client configuration directory. Defaults to CODEX_HOME/~/.codex or ~/.claude.
+        #[arg(long, value_name = "PATH")]
+        home: Option<PathBuf>,
+    },
+    /// Remove an exact prepared managed section or Akasha-created instruction file.
+    RemoveAgentWiring {
+        /// Agent client whose user-level Akasha instructions should be removed.
+        #[arg(value_enum, value_name = "CLIENT")]
+        client: AgentClientArgument,
+
+        /// Exact plan ID returned by prepare-agent-wiring --remove.
+        #[arg(long, value_name = "SHA256")]
+        plan_id: String,
+
+        /// Client configuration directory. Defaults to CODEX_HOME/~/.codex or ~/.claude.
+        #[arg(long, value_name = "PATH")]
+        home: Option<PathBuf>,
     },
     /// Resolve and print the current data root and project identity.
     Resolve,
@@ -189,6 +223,8 @@ fn run(cli: Cli) -> Result<(), u8> {
             | Command::UpdateRecord { .. }
             | Command::UpdateEntity { .. }
             | Command::PrepareAgentWiring { .. }
+            | Command::ApplyAgentWiring { .. }
+            | Command::RemoveAgentWiring { .. }
             | Command::Resolve
             | Command::Validate
             | Command::Context => None,
@@ -295,13 +331,51 @@ fn run(cli: Cli) -> Result<(), u8> {
                 6
             })?;
         }
-        Command::PrepareAgentWiring { client, home } => {
+        Command::PrepareAgentWiring {
+            client,
+            home,
+            remove,
+        } => {
             let client = AgentClient::from(client);
             let home = resolve_agent_home(client, home)?;
             let request = ResolveRequest::from_process(root, None).map_err(report_resolution)?;
-            let plan =
-                prepare_agent_wiring(&request, client, &home).map_err(report_agent_wiring)?;
+            let plan = if remove {
+                prepare_agent_wiring_removal(&request, client, &home)
+            } else {
+                prepare_agent_wiring(&request, client, &home)
+            }
+            .map_err(report_agent_wiring)?;
             render_agent_wiring_plan(&plan, output).map_err(|error| {
+                eprintln!("akasha: failed to render command output: {error}");
+                6
+            })?;
+        }
+        Command::ApplyAgentWiring {
+            client,
+            plan_id,
+            home,
+        } => {
+            let client = AgentClient::from(client);
+            let home = resolve_agent_home(client, home)?;
+            let request = ResolveRequest::from_process(root, None).map_err(report_resolution)?;
+            let result = apply_agent_wiring(&request, client, &home, &plan_id)
+                .map_err(report_agent_wiring)?;
+            render_agent_wiring_result(&result, output).map_err(|error| {
+                eprintln!("akasha: failed to render command output: {error}");
+                6
+            })?;
+        }
+        Command::RemoveAgentWiring {
+            client,
+            plan_id,
+            home,
+        } => {
+            let client = AgentClient::from(client);
+            let home = resolve_agent_home(client, home)?;
+            let request = ResolveRequest::from_process(root, None).map_err(report_resolution)?;
+            let result = remove_agent_wiring(&request, client, &home, &plan_id)
+                .map_err(report_agent_wiring)?;
+            render_agent_wiring_result(&result, output).map_err(|error| {
                 eprintln!("akasha: failed to render command output: {error}");
                 6
             })?;
