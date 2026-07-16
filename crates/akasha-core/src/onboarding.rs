@@ -9,6 +9,7 @@ use std::str;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::evidence::collect_canonical_evidence;
 use crate::note_edit::{
     NoteEditError, NoteEditRecovery, OnboardingBatchJournalInput, OnboardingJournalNote,
     complete_note_mutation_journal, recover_note_mutation_locked,
@@ -1364,23 +1365,13 @@ fn collect_existing_evidence(
     project_dir: &Path,
     config: &RootConfig,
 ) -> Result<Vec<CanonicalNoteEvidence>, OnboardingBatchError> {
-    let mut evidence = Vec::new();
-    for note_type in config.project.note_types.values() {
-        let folder = project_dir.join(&note_type.folder);
-        for path in canonical_note_paths(&folder)? {
-            let source = fs::read(&path).map_err(|source| OnboardingBatchError::FileSystem {
-                operation: "read canonical note for onboarding state",
-                path: path.clone(),
-                source,
-            })?;
-            evidence.push(CanonicalNoteEvidence {
-                path,
-                class: note_type.class,
-                source,
-            });
-        }
-    }
-    Ok(evidence)
+    collect_canonical_evidence(project_dir, config, |path| {
+        fs::read(path).map_err(|source| OnboardingBatchError::FileSystem {
+            operation: "read canonical note for onboarding state",
+            path: path.to_path_buf(),
+            source,
+        })
+    })
 }
 
 fn read_regular_file(

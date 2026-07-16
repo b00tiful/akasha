@@ -8,13 +8,14 @@ use std::str;
 
 use serde::Serialize;
 
+use crate::evidence::collect_canonical_evidence;
 use crate::note_edit::{
     NoteEditError, NoteEditRecovery, complete_note_mutation_journal, recover_note_mutation_locked,
     write_note_mutation_journal,
 };
 use crate::note_template::{NoteTemplateError, NoteTemplateScope, resolve_note_template};
 use crate::project_validation::{
-    ProjectValidationError, canonical_note_paths, validate_project, validate_wikilinks_with_targets,
+    ProjectValidationError, validate_project, validate_wikilinks_with_targets,
 };
 use crate::resolution::{
     NoteClass, ResolveError, ResolveRequest, RootConfig, load_root_config, resolve_project,
@@ -502,18 +503,9 @@ fn collect_existing_evidence(
     project_dir: &Path,
     config: &RootConfig,
 ) -> Result<Vec<CanonicalNoteEvidence>, EventCreationError> {
-    let mut evidence = Vec::new();
-    for note_type in config.project.note_types.values() {
-        for path in canonical_note_paths(&project_dir.join(&note_type.folder))? {
-            let source = read_regular_file(&path, "read canonical note for event state")?;
-            evidence.push(CanonicalNoteEvidence {
-                path,
-                class: note_type.class,
-                source,
-            });
-        }
-    }
-    Ok(evidence)
+    collect_canonical_evidence(project_dir, config, |path| {
+        read_regular_file(path, "read canonical note for event state")
+    })
 }
 
 fn read_regular_file(path: &Path, operation: &'static str) -> Result<Vec<u8>, EventCreationError> {

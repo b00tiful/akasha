@@ -8,9 +8,10 @@ use std::str;
 
 use serde::{Deserialize, Serialize};
 
+use crate::evidence::collect_canonical_evidence;
 use crate::library::build_library_projection;
 use crate::project_validation::{
-    ProjectValidationError, canonical_note_paths, validate_project, validate_wikilinks_with_targets,
+    ProjectValidationError, validate_project, validate_wikilinks_with_targets,
 };
 use crate::resolution::{
     NoteClass, ResolveError, ResolveRequest, RootConfig, load_root_config, resolve_project,
@@ -60,6 +61,22 @@ pub struct RecordUpdateResult {
     pub changed: bool,
     pub roadmap: PathBuf,
     pub roadmap_changed: bool,
+    pub state: PathBuf,
+    pub recovery: NoteEditRecovery,
+}
+
+/// Result of one exact-source entity update with an explicitly accepted index.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EntityUpdateResult {
+    pub root: PathBuf,
+    pub project: String,
+    pub project_dir: PathBuf,
+    pub note_type: String,
+    pub id: String,
+    pub path: PathBuf,
+    pub changed: bool,
+    pub index: PathBuf,
+    pub index_changed: bool,
     pub state: PathBuf,
     pub recovery: NoteEditRecovery,
 }
@@ -559,6 +576,182 @@ pub fn update_record(
     }
 }
 
+/// Update one selected-project entity and explicitly accept its complete index projection.
+pub fn update_entity(
+    request: &ResolveRequest,
+    id: &str,
+    expected_source: &str,
+    replacement_source: &str,
+    index_source: &str,
+) -> Result<EntityUpdateResult, NoteEditError> {
+    let resolved = resolve_project(request)?;
+    let _lock = ProjectWriteLock::acquire(&resolved.project_dir)?;
+    let recovery = recover_note_mutation_locked(request, &resolved.project_dir)?;
+    let projection = build_library_projection(request)?;
+    let book = projection
+        .projects
+        .iter()
+        .find(|shelf| shelf.project == resolved.project)
+        .into_iter()
+        .flat_map(|shelf| &shelf.categories)
+        .flat_map(|category| &category.books)
+        .find(|book| book.id == id)
+        .ok_or_else(|| NoteEditError::Validation {
+            path: PathBuf::from(id),
+            message: "only a projected note from the selected project can be updated".to_owned(),
+        })?;
+    if book.class != NoteClass::Entity {
+        return Err(NoteEditError::Validation {
+            path: PathBuf::from(id),
+            message: "entity updates require a configured project entity".to_owned(),
+        });
+    }
+    let note_type = book.note_type.clone();
+
+    let path = resolved.root.join(id);
+    let current = read_regular_file(&path, "read the selected canonical entity")?;
+    if current != expected_source.as_bytes() {
+        return Err(NoteEditError::Conflict {
+            path,
+            message: "the canonical entity no longer matches the supplied expected source"
+                .to_owned(),
+        });
+    }
+
+    let config = load_root_config(&resolved.root)?;
+    validate_replacement(
+        &resolved.root,
+        &resolved.project,
+        &path,
+        &note_type,
+        replacement_source.as_bytes(),
+        &config,
+    )?;
+    validate_preserved_entity_identity(
+        &path,
+        expected_source.as_bytes(),
+        replacement_source.as_bytes(),
+    )?;
+
+    let evidence = collect_candidate_evidence(
+        &resolved.project_dir,
+        &path,
+        replacement_source.as_bytes(),
+        &config,
+    )?;
+    let index_path = resolved.project_dir.join(&config.project.index);
+    let roadmap_path = resolved.project_dir.join(&config.project.roadmap);
+    let index_before = read_regular_file(&index_path, "read the current index projection")?;
+    let index_before_text =
+        str::from_utf8(&index_before).map_err(|error| NoteEditError::Validation {
+            path: index_path.clone(),
+            message: format!("current index projection is not valid UTF-8: {error}"),
+        })?;
+    let roadmap = read_regular_file(&roadmap_path, "read the current roadmap projection")?;
+    let state_path = resolved.project_dir.join(PROJECT_STATE_FILE);
+    let note_changed = replacement_source != expected_source;
+    let index_changed = index_before != index_source.as_bytes();
+    if !note_changed && !index_changed {
+        return Ok(EntityUpdateResult {
+            root: resolved.root,
+            project: resolved.project,
+            project_dir: resolved.project_dir,
+            note_type,
+            id: id.to_owned(),
+            path,
+            changed: false,
+            index: index_path,
+            index_changed: false,
+            state: state_path,
+            recovery,
+        });
+    }
+
+    let state_before = read_regular_file(&state_path, "read the current project state")?;
+    let state_before_text =
+        str::from_utf8(&state_before).map_err(|error| NoteEditError::Validation {
+            path: state_path.clone(),
+            message: format!("project state is not valid UTF-8: {error}"),
+        })?;
+    let state_after = render_updated_project_state(
+        state_before_text,
+        &resolved.project_dir,
+        index_source.as_bytes(),
+        &roadmap,
+        &evidence,
+        &BTreeSet::new(),
+    )
+    .map_err(|message| NoteEditError::Validation {
+        path: state_path.clone(),
+        message,
+    })?;
+    let state_after_text = str::from_utf8(&state_after)
+        .expect("the deterministic project-state renderer always emits UTF-8");
+    let index_id = vault_relative_identity(&resolved.root, &index_path)?;
+    let (journal_path, journal_source) = write_note_projection_mutation_journal(
+        &resolved.project_dir,
+        &NoteProjectionJournal {
+            project: &resolved.project,
+            id,
+            note_before: Some(expected_source),
+            note_after: replacement_source,
+            projection_id: &index_id,
+            projection_before: index_before_text,
+            projection_after: index_source,
+            state_before: state_before_text,
+            state_after: state_after_text,
+        },
+    )?;
+    let result_for = |recovery| EntityUpdateResult {
+        root: resolved.root.clone(),
+        project: resolved.project.clone(),
+        project_dir: resolved.project_dir.clone(),
+        note_type: note_type.clone(),
+        id: id.to_owned(),
+        path: path.clone(),
+        changed: note_changed,
+        index: index_path.clone(),
+        index_changed,
+        state: state_path.clone(),
+        recovery,
+    };
+
+    let operation = (|| {
+        if note_changed {
+            replace_file_if_unchanged(
+                &path,
+                expected_source.as_bytes(),
+                replacement_source.as_bytes(),
+            )
+            .map_err(map_checked_replace)?;
+            sync_replacement_directory(&path, "sync the canonical entity replacement")?;
+        }
+        if index_changed {
+            replace_file_if_unchanged(&index_path, &index_before, index_source.as_bytes())
+                .map_err(map_checked_replace)?;
+            sync_replacement_directory(&index_path, "sync the index replacement")?;
+        }
+        replace_file_if_unchanged(&state_path, &state_before, &state_after)
+            .map_err(map_checked_replace)?;
+        sync_replacement_directory(&state_path, "sync the project state replacement")?;
+        validate_project(request)?;
+        complete_note_mutation_journal(&journal_path, &journal_source, &resolved.project_dir)?;
+        Ok(result_for(recovery))
+    })();
+
+    match operation {
+        Ok(result) => Ok(result),
+        Err(original) => match recover_note_mutation_locked(request, &resolved.project_dir) {
+            Ok(NoteEditRecovery::Finalized) => Ok(result_for(NoteEditRecovery::Finalized)),
+            Ok(_) => Err(original),
+            Err(recovery) => Err(NoteEditError::Recovery {
+                original: Box::new(original),
+                recovery: Box::new(recovery),
+            }),
+        },
+    }
+}
+
 /// Resolve a pending exact-byte edit journal without requiring the project to validate first.
 pub fn recover_pending_note_edit(
     request: &ResolveRequest,
@@ -901,6 +1094,33 @@ fn validate_preserved_record_metadata(
     Ok(())
 }
 
+fn validate_preserved_entity_identity(
+    path: &Path,
+    expected_source: &[u8],
+    replacement_source: &[u8],
+) -> Result<(), NoteEditError> {
+    let expected = parse_leading_frontmatter_bytes(expected_source).map_err(|error| {
+        NoteEditError::Validation {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        }
+    })?;
+    let replacement = parse_leading_frontmatter_bytes(replacement_source).map_err(|error| {
+        NoteEditError::Validation {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        }
+    })?;
+    if expected.metadata.get("entity") != replacement.metadata.get("entity") {
+        return Err(NoteEditError::Validation {
+            path: path.to_path_buf(),
+            message: "entity field \"entity\" must be preserved across updates; rename is a separate operation"
+                .to_owned(),
+        });
+    }
+    Ok(())
+}
+
 fn vault_relative_identity(root: &Path, path: &Path) -> Result<String, NoteEditError> {
     let relative = path
         .strip_prefix(root)
@@ -921,21 +1141,17 @@ fn collect_candidate_evidence(
     replacement_source: &[u8],
     config: &RootConfig,
 ) -> Result<Vec<CanonicalNoteEvidence>, NoteEditError> {
-    let mut evidence = Vec::new();
-    for note_type in config.project.note_types.values() {
-        for path in canonical_note_paths(&project_dir.join(&note_type.folder))? {
-            let source = if path == replacement_path {
-                replacement_source.to_vec()
-            } else {
-                read_regular_file(&path, "read canonical note for edit state")?
-            };
-            evidence.push(CanonicalNoteEvidence {
-                path,
-                class: note_type.class,
-                source,
-            });
-        }
-    }
+    let mut evidence = collect_canonical_evidence(project_dir, config, |path| {
+        read_regular_file(path, "read canonical note for edit state")
+    })?;
+    let candidate = evidence
+        .iter_mut()
+        .find(|item| item.path == replacement_path)
+        .ok_or_else(|| NoteEditError::Conflict {
+            path: replacement_path.to_path_buf(),
+            message: "the configured canonical note set changed during the update".to_owned(),
+        })?;
+    candidate.source = replacement_source.to_vec();
     Ok(evidence)
 }
 

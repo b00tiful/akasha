@@ -2,6 +2,7 @@
 
 pub mod context;
 pub mod event;
+mod evidence;
 pub mod init;
 pub mod library;
 pub mod link;
@@ -30,8 +31,9 @@ pub use library::{
 pub use link::{LinkError, LinkRequest, LinkResult, link_project};
 pub use note_creation::{MutableNoteCreationError, MutableNoteCreationResult, create_mutable_note};
 pub use note_edit::{
-    NOTE_EDIT_JOURNAL_FILE, NoteEditError, NoteEditRecovery, NoteEditResult, RecordUpdateResult,
-    recover_pending_note_edit, replace_library_document, update_record,
+    EntityUpdateResult, NOTE_EDIT_JOURNAL_FILE, NoteEditError, NoteEditRecovery, NoteEditResult,
+    RecordUpdateResult, recover_pending_note_edit, replace_library_document, update_entity,
+    update_record,
 };
 pub use note_template::{
     NoteTemplateError, NoteTemplateScope, ResolvedNoteTemplate, resolve_note_template,

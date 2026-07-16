@@ -5,7 +5,8 @@ use std::process::ExitCode;
 
 use akasha_core::{
     InitRequest, LinkRequest, ResolveRequest, assemble_context, create_event, create_mutable_note,
-    initialize_project, link_project, resolve_project, update_record, validate_project,
+    initialize_project, link_project, resolve_project, update_entity, update_record,
+    validate_project,
 };
 use clap::{Parser, Subcommand};
 
@@ -111,6 +112,24 @@ enum Command {
         #[arg(long, value_name = "PATH")]
         roadmap: PathBuf,
     },
+    /// Update one entity from exact source bytes and accept its complete index.
+    UpdateEntity {
+        /// Complete vault-relative Markdown identity of the configured project entity.
+        #[arg(value_name = "ID")]
+        id: String,
+
+        /// UTF-8 file containing the exact entity source previously read by the caller.
+        #[arg(long, value_name = "PATH")]
+        expected: PathBuf,
+
+        /// UTF-8 file containing the complete replacement entity source.
+        #[arg(long, value_name = "PATH")]
+        replacement: PathBuf,
+
+        /// UTF-8 file containing the complete accepted index after the update.
+        #[arg(long, value_name = "PATH")]
+        index: PathBuf,
+    },
     /// Resolve and print the current data root and project identity.
     Resolve,
     /// Validate the selected project's configuration, layout, and canonical notes.
@@ -142,6 +161,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             Command::CreateEvent { .. }
             | Command::CreateNote { .. }
             | Command::UpdateRecord { .. }
+            | Command::UpdateEntity { .. }
             | Command::Resolve
             | Command::Validate
             | Command::Context => None,
@@ -221,6 +241,29 @@ fn run(cli: Cli) -> Result<(), u8> {
             )
             .map_err(report_note_edit)?;
             render::render_record_update(&result, output).map_err(|error| {
+                eprintln!("akasha: failed to render command output: {error}");
+                6
+            })?;
+        }
+        Command::UpdateEntity {
+            id,
+            expected,
+            replacement,
+            index,
+        } => {
+            let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
+            let expected_source = read_utf8_input(&expected, "expected entity")?;
+            let replacement_source = read_utf8_input(&replacement, "replacement entity")?;
+            let index_source = read_utf8_input(&index, "index")?;
+            let result = update_entity(
+                &request,
+                &id,
+                &expected_source,
+                &replacement_source,
+                &index_source,
+            )
+            .map_err(report_note_edit)?;
+            render::render_entity_update(&result, output).map_err(|error| {
                 eprintln!("akasha: failed to render command output: {error}");
                 6
             })?;
