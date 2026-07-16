@@ -25,7 +25,8 @@ pub use agent_wiring::{
 };
 pub use context::{
     ContextBundle, ContextEntry, ContextError, ContextSection, DEFAULT_CONTEXT_MAX_CHARS,
-    assemble_context, render_context_markdown,
+    SessionBreadcrumb, assemble_context, assemble_session_breadcrumb, render_context_markdown,
+    render_session_breadcrumb,
 };
 pub use event::{EventCreationError, EventCreationResult, create_event};
 pub use init::{InitError, InitRecovery, InitRequest, InitResult, initialize_project};

@@ -6,17 +6,17 @@ use std::process::ExitCode;
 
 use akasha_core::{
     AgentClient, InitRequest, LinkRequest, ResolveRequest, apply_agent_wiring, assemble_context,
-    create_event, create_mutable_note, initialize_project, link_project, prepare_agent_wiring,
-    prepare_agent_wiring_removal, remove_agent_wiring, resolve_project, update_entity,
-    update_record, validate_project,
+    assemble_session_breadcrumb, create_event, create_mutable_note, initialize_project,
+    link_project, prepare_agent_wiring, prepare_agent_wiring_removal, remove_agent_wiring,
+    resolve_project, update_entity, update_record, validate_project,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod render;
 
 use render::{
-    OutputMode, render_agent_wiring_plan, render_agent_wiring_result, render_context,
-    render_event_creation, render_init, render_link, render_mutable_note_creation,
+    OutputMode, render_agent_wiring_plan, render_agent_wiring_result, render_breadcrumb,
+    render_context, render_event_creation, render_init, render_link, render_mutable_note_creation,
     render_resolution, render_validation,
 };
 
@@ -196,6 +196,8 @@ enum Command {
     Validate,
     /// Assemble a deterministic, bounded orientation bundle for the selected project.
     Context,
+    /// Print the compact session-start project breadcrumb.
+    Breadcrumb,
 }
 
 fn main() -> ExitCode {
@@ -227,7 +229,8 @@ fn run(cli: Cli) -> Result<(), u8> {
             | Command::RemoveAgentWiring { .. }
             | Command::Resolve
             | Command::Validate
-            | Command::Context => None,
+            | Command::Context
+            | Command::Breadcrumb => None,
         };
         if let Some(slug) = positional
             && slug != selected
@@ -400,6 +403,14 @@ fn run(cli: Cli) -> Result<(), u8> {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
             let context = assemble_context(&request).map_err(report_context)?;
             render_context(&context, output).map_err(|error| {
+                eprintln!("akasha: failed to render command output: {error}");
+                6
+            })?;
+        }
+        Command::Breadcrumb => {
+            let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
+            let breadcrumb = assemble_session_breadcrumb(&request).map_err(report_context)?;
+            render_breadcrumb(&breadcrumb, output).map_err(|error| {
                 eprintln!("akasha: failed to render command output: {error}");
                 6
             })?;

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use akasha_core::{
     ContextSection, DEFAULT_CONTEXT_MAX_CHARS, ResolutionEnvironment, ResolveRequest,
-    assemble_context, render_context_markdown,
+    assemble_context, assemble_session_breadcrumb, render_context_markdown,
 };
 
 mod support;
@@ -65,6 +65,82 @@ fn assembles_context_in_priority_order() {
     let markdown = render_context_markdown(&bundle);
     assert_eq!(markdown.chars().count(), bundle.rendered_chars);
     assert!(bundle.rendered_chars <= DEFAULT_CONTEXT_MAX_CHARS);
+}
+
+#[test]
+fn assembles_the_configured_session_breadcrumb() {
+    let fixture = fixtures();
+    let breadcrumb = assemble_session_breadcrumb(&request(
+        fixture.join("valid-root"),
+        fixture.join("repository/nested"),
+    ))
+    .expect("assemble breadcrumb");
+
+    assert_eq!(breadcrumb.project, "example");
+    assert_eq!(breadcrumb.open_tasks, 1);
+    assert_eq!(
+        breadcrumb.latest_handoff_date.as_deref(),
+        Some("2026-07-13")
+    );
+    assert!(breadcrumb.handoff_age_days.is_some());
+}
+
+#[test]
+fn breadcrumb_reports_a_project_without_handoffs() {
+    let temp = TempDir::copy_of(&fixtures());
+    let project = temp.path().join("valid-root/Projects/example");
+    fs::remove_dir_all(project.join("events/handoffs")).expect("remove handoffs");
+    fs::create_dir(project.join("events/handoffs")).expect("restore handoff directory");
+    support::write_project_state(
+        &project,
+        &["events/sessions/2026-07-13.md"],
+        &["entities/core.md"],
+        &["records/problems/open.md", "records/tasks/active.md"],
+    );
+
+    let breadcrumb = assemble_session_breadcrumb(&request(
+        temp.path().join("valid-root"),
+        temp.path().join("repository/nested"),
+    ))
+    .expect("assemble breadcrumb without handoffs");
+
+    assert_eq!(breadcrumb.open_tasks, 1);
+    assert_eq!(breadcrumb.latest_handoff_date, None);
+    assert_eq!(breadcrumb.handoff_age_days, None);
+}
+
+#[test]
+fn breadcrumb_rejects_an_invalid_handoff_calendar_date() {
+    let temp = TempDir::copy_of(&fixtures());
+    let project = temp.path().join("valid-root/Projects/example");
+    fs::write(
+        project.join("events/handoffs/2026-07-12.md"),
+        "---\nschema_version: 1\nproject: example\ntype: handoff\ndate: 2026-02-30\n---\n\n# Invalid date\n",
+    )
+    .expect("write invalid handoff date");
+    support::write_project_state(
+        &project,
+        &[
+            "events/handoffs/2026-07-12.md",
+            "events/handoffs/2026-07-13.md",
+            "events/sessions/2026-07-13.md",
+        ],
+        &["entities/core.md"],
+        &["records/problems/open.md", "records/tasks/active.md"],
+    );
+
+    let error = assemble_session_breadcrumb(&request(
+        temp.path().join("valid-root"),
+        temp.path().join("repository/nested"),
+    ))
+    .expect_err("invalid calendar date must fail");
+
+    assert_eq!(error.exit_code(), 4);
+    assert!(
+        error
+            .to_string()
+            .contains("valid YYYY-MM-DD Gregorian date")
+    );
 }
 
 #[test]

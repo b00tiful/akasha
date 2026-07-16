@@ -6,7 +6,8 @@ use akasha_core::{
     AgentWiringAction, AgentWiringOperation, AgentWiringPlan, AgentWiringRecovery,
     AgentWiringResult, ContextBundle, EntityUpdateResult, EventCreationResult, InitRecovery,
     InitResult, LinkResult, MutableNoteCreationResult, NoteClass, NoteEditRecovery,
-    ProjectValidationReport, RecordUpdateResult, ResolvedProject, render_context_markdown,
+    ProjectValidationReport, RecordUpdateResult, ResolvedProject, SessionBreadcrumb,
+    render_context_markdown, render_session_breadcrumb,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -336,6 +337,18 @@ pub(crate) fn render_context(
         println!("{}", serde_json::to_string_pretty(context)?);
     } else {
         print!("{}", render_context_markdown(context));
+    }
+    Ok(())
+}
+
+pub(crate) fn render_breadcrumb(
+    breadcrumb: &SessionBreadcrumb,
+    output: OutputMode,
+) -> Result<(), serde_json::Error> {
+    if output.json {
+        println!("{}", serde_json::to_string_pretty(breadcrumb)?);
+    } else {
+        print!("{}", render_session_breadcrumb(breadcrumb));
     }
     Ok(())
 }
