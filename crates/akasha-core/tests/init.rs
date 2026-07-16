@@ -5,8 +5,8 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 
 use akasha_core::{
-    InitRequest, ResolutionEnvironment, ResolveRequest, initialize_project, parse_project_registry,
-    resolve_project, validate_project,
+    InitRecovery, InitRequest, ResolutionEnvironment, ResolveRequest, initialize_project,
+    parse_project_registry, resolve_project, validate_project,
 };
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -31,6 +31,7 @@ fn creates_configured_scaffold_exact_templates_registry_and_pointer() {
 
     assert_eq!(result.project, "example");
     assert_eq!(result.template_files, 2);
+    assert_eq!(result.recovery, InitRecovery::None);
     assert_eq!(
         result.project_dir,
         fixture.root.join("ProjectMemory/example")

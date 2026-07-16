@@ -22,7 +22,7 @@ pub use context::{
     assemble_context, render_context_markdown,
 };
 pub use event::{EventCreationError, EventCreationResult, create_event};
-pub use init::{InitError, InitRequest, InitResult, initialize_project};
+pub use init::{InitError, InitRecovery, InitRequest, InitResult, initialize_project};
 pub use library::{
     LibraryBook, LibraryCategory, LibraryCollection, LibraryDocument, LibraryProjection,
     LibraryScope, LibraryShelf, build_library_projection, load_library_document,

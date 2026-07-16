@@ -28,6 +28,7 @@ fn init_prints_plain_text_and_creates_a_valid_resolvable_project() {
     assert!(stdout.starts_with("initialized: example\n"));
     assert!(stdout.contains("project state:"));
     assert!(stdout.contains("templates copied: 1"));
+    assert!(stdout.contains("recovery: none"));
     assert_eq!(
         fs::read(fixture.repository.join(".akasha.toml")).expect("read pointer"),
         b"schema_version = 1\nproject = \"example\"\n"
@@ -71,6 +72,7 @@ fn init_json_reports_the_same_created_paths() {
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).expect("parse init JSON");
     assert_eq!(value["project"], "example");
     assert_eq!(value["template_files"], 0);
+    assert_eq!(value["recovery"], "none");
     assert!(
         value["state"]
             .as_str()

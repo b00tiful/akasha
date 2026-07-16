@@ -3,7 +3,7 @@ use std::fmt::Display;
 use std::io::{self, IsTerminal};
 
 use akasha_core::{
-    ContextBundle, EntityUpdateResult, EventCreationResult, InitResult, LinkResult,
+    ContextBundle, EntityUpdateResult, EventCreationResult, InitRecovery, InitResult, LinkResult,
     MutableNoteCreationResult, NoteClass, NoteEditRecovery, ProjectValidationReport,
     RecordUpdateResult, ResolvedProject, render_context_markdown,
 };
@@ -40,9 +40,19 @@ pub(crate) fn render_init(
         print_field("templates copied", result.template_files, output);
         print_field("registry", result.registry.display(), output);
         print_field("pointer", result.pointer.display(), output);
+        print_field("recovery", init_recovery_name(result.recovery), output);
     }
 
     Ok(())
+}
+
+fn init_recovery_name(recovery: InitRecovery) -> &'static str {
+    match recovery {
+        InitRecovery::None => "none",
+        InitRecovery::Discarded => "discarded",
+        InitRecovery::RolledBack => "rolled-back",
+        InitRecovery::Finalized => "finalized",
+    }
 }
 
 pub(crate) fn render_link(
