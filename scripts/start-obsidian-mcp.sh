@@ -19,6 +19,7 @@ set +a
 
 export OBSIDIAN_BASE_URL="${OBSIDIAN_BASE_URL:-http://127.0.0.1:${OBSIDIAN_PORT:-27123}}"
 export MCP_TRANSPORT_TYPE="stdio"
+export OBSIDIAN_READ_ONLY="true"
+export OBSIDIAN_ENABLE_COMMANDS="false"
 
 exec obsidian-mcp-server
-
