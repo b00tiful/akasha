@@ -1,7 +1,11 @@
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -123,6 +127,170 @@ fn stale_apply_plan_fails_on_stderr_without_overwriting_the_target() {
             .contains("plan ID no longer matches")
     );
     assert_eq!(fs::read(&target).expect("read preserved settings"), human);
+}
+
+#[test]
+#[ignore = "requires an installed Codex CLI and permission to bind a loopback probe server"]
+fn active_codex_client_enforces_trust_then_injects_the_breadcrumb() {
+    let home = TempDir::new("active-codex");
+    let apply_plan = run_prepare(home.path(), "codex", true);
+    assert!(apply_plan.status.success());
+    let apply_plan: serde_json::Value =
+        serde_json::from_slice(&apply_plan.stdout).expect("parse apply plan");
+    let apply_id = apply_plan["plan_id"].as_str().expect("apply plan ID");
+    let applied = run_commit(home.path(), "codex", "apply-session-hook", apply_id, true);
+    assert!(applied.status.success());
+
+    let untrusted = run_active_codex_probe(home.path(), false);
+    assert!(
+        !untrusted.body.contains("Akasha example"),
+        "an untrusted command hook must not reach developer context: {}",
+        untrusted.body
+    );
+
+    let trusted_automation = run_active_codex_probe(home.path(), true);
+    assert!(
+        trusted_automation
+            .body
+            .contains("Akasha example — 1 open task — last handoff 2026-07-13"),
+        "the vetted SessionStart hook must reach developer context: {}",
+        trusted_automation.body
+    );
+}
+
+struct CapturedRequest {
+    body: String,
+}
+
+fn run_active_codex_probe(home: &Path, bypass_hook_trust: bool) -> CapturedRequest {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback probe server");
+    listener
+        .set_nonblocking(true)
+        .expect("make probe listener nonblocking");
+    let port = listener.local_addr().expect("read probe address").port();
+    let server = thread::spawn(move || capture_one_request(listener));
+
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_akasha"));
+    let binary_dir = binary.parent().expect("Akasha binary has a parent");
+    let mut path_entries = vec![binary_dir.to_path_buf()];
+    path_entries.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    let path = std::env::join_paths(path_entries).expect("join probe PATH");
+    let provider_url = format!("http://127.0.0.1:{port}/v1");
+    let repository = fixture_root().join("../repository");
+    let codex = std::env::var_os("AKASHA_CODEX_BIN").unwrap_or_else(|| "codex".into());
+
+    let mut command = Command::new(codex);
+    command.args([
+        "exec",
+        "--ephemeral",
+        "--json",
+        "--model",
+        "akasha-hook-probe",
+        "-c",
+        "model_provider=\"akasha_probe\"",
+        "-c",
+        "model_providers.akasha_probe.name=\"Akasha activation probe\"",
+        "-c",
+        &format!("model_providers.akasha_probe.base_url=\"{provider_url}\""),
+        "-c",
+        "model_providers.akasha_probe.wire_api=\"responses\"",
+        "-c",
+        "model_providers.akasha_probe.request_max_retries=0",
+        "-c",
+        "model_providers.akasha_probe.stream_max_retries=0",
+    ]);
+    if bypass_hook_trust {
+        command.arg("--dangerously-bypass-hook-trust");
+    }
+    let output = command
+        .arg("Return exactly OK.")
+        .current_dir(repository)
+        .env("CODEX_HOME", home)
+        .env("AKASHA_ROOT", fixture_root())
+        .env("PATH", path)
+        .output()
+        .expect("run active Codex hook probe");
+
+    assert!(
+        !output.status.success(),
+        "the probe provider intentionally refuses generation"
+    );
+    server
+        .join()
+        .expect("join probe server")
+        .unwrap_or_else(|error| panic!("capture Codex request: {error}"))
+}
+
+fn capture_one_request(listener: TcpListener) -> Result<CapturedRequest, String> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let (mut stream, _) = loop {
+        match listener.accept() {
+            Ok(connection) => break connection,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err("Codex did not contact the probe provider within 15 seconds".into());
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(format!("accept probe connection: {error}")),
+        }
+    };
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|error| format!("set probe read timeout: {error}"))?;
+
+    let mut request = Vec::new();
+    let header_end = loop {
+        let mut chunk = [0_u8; 4096];
+        let read = stream
+            .read(&mut chunk)
+            .map_err(|error| format!("read probe request: {error}"))?;
+        if read == 0 {
+            return Err("Codex closed the probe request before its headers completed".into());
+        }
+        request.extend_from_slice(&chunk[..read]);
+        if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+            break index + 4;
+        }
+    };
+    let headers = String::from_utf8(request[..header_end].to_vec())
+        .map_err(|error| format!("probe headers are not UTF-8: {error}"))?;
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .ok_or_else(|| "probe request has no Content-Length header".to_owned())?;
+    while request.len() - header_end < content_length {
+        let mut chunk = [0_u8; 4096];
+        let read = stream
+            .read(&mut chunk)
+            .map_err(|error| format!("read probe body: {error}"))?;
+        if read == 0 {
+            return Err("Codex closed the probe request before its body completed".into());
+        }
+        request.extend_from_slice(&chunk[..read]);
+    }
+    let body = String::from_utf8(request[header_end..header_end + content_length].to_vec())
+        .map_err(|error| format!("probe body is not UTF-8: {error}"))?;
+    let response = concat!(
+        "HTTP/1.1 400 Bad Request\r\n",
+        "Content-Type: application/json\r\n",
+        "Content-Length: 90\r\n",
+        "Connection: close\r\n",
+        "\r\n",
+        "{\"error\":{\"message\":\"intentional Akasha activation probe\",\"type\":\"invalid_request_error\"}}"
+    );
+    stream
+        .write_all(response.as_bytes())
+        .map_err(|error| format!("write probe response: {error}"))?;
+
+    Ok(CapturedRequest { body })
 }
 
 fn run_prepare(home: &Path, client: &str, json: bool) -> std::process::Output {
