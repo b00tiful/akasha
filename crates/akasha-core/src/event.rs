@@ -189,6 +189,28 @@ pub fn create_event(
     relative_path: &Path,
     fields: &BTreeMap<String, String>,
 ) -> Result<EventCreationResult, EventCreationError> {
+    create_configured_event(request, Some(note_type), relative_path, fields)
+}
+
+/// Capture one handoff through the configured semantic handoff role.
+///
+/// The caller supplies the exact relative identity and template fields, while the core resolves
+/// the configured handoff note type and publishes it through the same immutable-event transaction
+/// as [`create_event`].
+pub fn capture_handoff(
+    request: &ResolveRequest,
+    relative_path: &Path,
+    fields: &BTreeMap<String, String>,
+) -> Result<EventCreationResult, EventCreationError> {
+    create_configured_event(request, None, relative_path, fields)
+}
+
+fn create_configured_event(
+    request: &ResolveRequest,
+    explicit_note_type: Option<&str>,
+    relative_path: &Path,
+    fields: &BTreeMap<String, String>,
+) -> Result<EventCreationResult, EventCreationError> {
     let resolved = resolve_project(request)?;
     let _lock = ProjectWriteLock::acquire(&resolved.project_dir)?;
     let recovery = recover_note_mutation_locked(request, &resolved.project_dir)?;
@@ -201,6 +223,10 @@ pub fn create_event(
     }
 
     let config = load_root_config(&resolved.root)?;
+    let note_type = explicit_note_type
+        .map(str::to_owned)
+        .unwrap_or_else(|| config.context.handoffs.clone());
+    let note_type = note_type.as_str();
     let template = resolve_note_template(request, note_type)?;
     if template.class != NoteClass::Event {
         return Err(EventCreationError::Input {

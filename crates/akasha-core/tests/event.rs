@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use akasha_core::{
     NOTE_EDIT_JOURNAL_FILE, NoteEditRecovery, NoteTemplateScope, ResolutionEnvironment,
-    ResolveRequest, create_event, recover_pending_note_edit, validate_project,
+    ResolveRequest, capture_handoff, create_event, recover_pending_note_edit, validate_project,
 };
 use serde_json::json;
 
@@ -34,6 +34,29 @@ fn creates_exact_template_event_updates_state_and_keeps_project_valid() {
     assert_ne!(fixture.state(), state_before);
     assert!(!fixture.journal().exists());
     let report = validate_project(&fixture.request).expect("created event keeps project valid");
+    assert_eq!(report.immutable_events, 4);
+}
+
+#[test]
+fn captures_the_configured_handoff_role_through_the_event_transaction() {
+    let fixture = Fixture::new("handoff");
+    let state_before = fixture.state();
+    let result = capture_handoff(
+        &fixture.request,
+        Path::new("2026-07-16.md"),
+        &fixture.fields(),
+    )
+    .expect("capture configured handoff");
+
+    assert_eq!(result.note_type, "handoff");
+    assert_eq!(result.id, "Projects/example/events/handoffs/2026-07-16.md");
+    assert_eq!(result.template_scope, NoteTemplateScope::Project);
+    assert_eq!(result.recovery, NoteEditRecovery::None);
+    let source = fs::read_to_string(&result.path).expect("read captured handoff");
+    assert!(source.contains("type: handoff\n"));
+    assert_ne!(fixture.state(), state_before);
+    assert!(!fixture.journal().exists());
+    let report = validate_project(&fixture.request).expect("captured handoff keeps project valid");
     assert_eq!(report.immutable_events, 4);
 }
 
@@ -201,6 +224,8 @@ impl Fixture {
         let project = root.join("Projects/example");
         fs::write(project.join("templates/session.md"), event_template())
             .expect("write project event template");
+        fs::write(project.join("templates/handoff.md"), event_template())
+            .expect("write project handoff template");
         fs::write(root.join("templates/entity.md"), "unused entity template\n")
             .expect("write non-event template");
         let request = ResolveRequest {

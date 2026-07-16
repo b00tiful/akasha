@@ -51,6 +51,7 @@ fn help_and_invalid_usage_follow_the_stream_and_exit_contract() {
     assert!(stdout.contains("Usage: akasha [OPTIONS] <COMMAND>"));
     assert!(stdout.contains("context"));
     assert!(stdout.contains("breadcrumb"));
+    assert!(stdout.contains("capture-handoff"));
     assert!(stdout.contains("prepare-agent-wiring"));
     assert!(stdout.contains("prepare-session-hook"));
     assert!(stdout.contains("apply-session-hook"));

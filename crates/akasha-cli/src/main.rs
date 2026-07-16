@@ -7,10 +7,10 @@ use std::process::ExitCode;
 use akasha_core::{
     AgentClient, InitRequest, LinkRequest, ResolveRequest, apply_agent_wiring,
     apply_session_hook_wiring, assemble_context, assemble_session_breadcrumb,
-    assemble_session_breadcrumb_if_linked, create_event, create_mutable_note, initialize_project,
-    link_project, prepare_agent_wiring, prepare_agent_wiring_removal, prepare_session_hook_removal,
-    prepare_session_hook_wiring, remove_agent_wiring, remove_session_hook_wiring, resolve_project,
-    update_entity, update_record, validate_project,
+    assemble_session_breadcrumb_if_linked, capture_handoff, create_event, create_mutable_note,
+    initialize_project, link_project, prepare_agent_wiring, prepare_agent_wiring_removal,
+    prepare_session_hook_removal, prepare_session_hook_wiring, remove_agent_wiring,
+    remove_session_hook_wiring, resolve_project, update_entity, update_record, validate_project,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -90,6 +90,16 @@ enum Command {
         note_type: String,
 
         /// Markdown path relative to the configured note-type folder.
+        #[arg(value_name = "RELATIVE.md")]
+        path: PathBuf,
+
+        /// Exact template field in NAME=VALUE form. Repeat for multiple fields.
+        #[arg(long, value_name = "NAME=VALUE")]
+        field: Vec<String>,
+    },
+    /// Capture one immutable handoff through the configured handoff role.
+    CaptureHandoff {
+        /// Markdown path relative to the configured handoff folder.
         #[arg(value_name = "RELATIVE.md")]
         path: PathBuf,
 
@@ -270,6 +280,7 @@ fn run(cli: Cli) -> Result<(), u8> {
         let positional = match &command {
             Command::Init { slug } | Command::Link { slug, .. } => Some(slug),
             Command::CreateEvent { .. }
+            | Command::CaptureHandoff { .. }
             | Command::CreateNote { .. }
             | Command::UpdateRecord { .. }
             | Command::UpdateEntity { .. }
@@ -318,6 +329,16 @@ fn run(cli: Cli) -> Result<(), u8> {
             let fields = parse_template_fields(field)?;
             let result = create_event(&request, &note_type, &path, &fields)
                 .map_err(report_event_creation)?;
+            render_event_creation(&result, output).map_err(|error| {
+                eprintln!("akasha: failed to render command output: {error}");
+                6
+            })?;
+        }
+        Command::CaptureHandoff { path, field } => {
+            let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
+            let fields = parse_template_fields(field)?;
+            let result =
+                capture_handoff(&request, &path, &fields).map_err(report_event_creation)?;
             render_event_creation(&result, output).map_err(|error| {
                 eprintln!("akasha: failed to render command output: {error}");
                 6

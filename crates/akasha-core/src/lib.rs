@@ -29,7 +29,7 @@ pub use context::{
     SessionBreadcrumb, assemble_context, assemble_session_breadcrumb,
     assemble_session_breadcrumb_if_linked, render_context_markdown, render_session_breadcrumb,
 };
-pub use event::{EventCreationError, EventCreationResult, create_event};
+pub use event::{EventCreationError, EventCreationResult, capture_handoff, create_event};
 pub use init::{InitError, InitRecovery, InitRequest, InitResult, initialize_project};
 pub use library::{
     LibraryBook, LibraryCategory, LibraryCollection, LibraryDocument, LibraryProjection,

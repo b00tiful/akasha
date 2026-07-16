@@ -74,6 +74,49 @@ fn create_event_json_reports_the_same_identity_and_template() {
 }
 
 #[test]
+fn capture_handoff_uses_the_configured_role_and_publishes_valid_state() {
+    let fixture = Fixture::new("handoff");
+
+    let output = fixture
+        .handoff_command(true)
+        .output()
+        .expect("run JSON capture-handoff");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("parse handoff JSON");
+    assert_eq!(value["project"], "example");
+    assert_eq!(value["note_type"], "handoff");
+    assert_eq!(
+        value["id"],
+        "Projects/example/events/handoffs/2026-07-16-cli.md"
+    );
+    assert_eq!(value["recovery"], "none");
+    let source = fs::read_to_string(
+        fixture
+            .root
+            .join("Projects/example/events/handoffs/2026-07-16-cli.md"),
+    )
+    .expect("read captured handoff");
+    assert!(source.contains("type: handoff\n"));
+
+    let validate = Command::new(env!("CARGO_BIN_EXE_akasha"))
+        .args([
+            "--root",
+            path(&fixture.root),
+            "--project",
+            "example",
+            "validate",
+        ])
+        .current_dir(&fixture.repository)
+        .env_remove("AKASHA_ROOT")
+        .output()
+        .expect("validate handoff project");
+    assert!(validate.status.success());
+}
+
+#[test]
 fn create_event_reports_field_and_existing_path_failures_on_stderr() {
     let fixture = Fixture::new("errors");
     let malformed = Command::new(env!("CARGO_BIN_EXE_akasha"))
@@ -132,6 +175,11 @@ impl Fixture {
             event_template(),
         )
         .expect("write project event template");
+        fs::write(
+            root.join("Projects/example/templates/handoff.md"),
+            event_template(),
+        )
+        .expect("write project handoff template");
         Self {
             _temp: temp,
             root,
@@ -155,6 +203,28 @@ impl Fixture {
             "title=CLI session",
             "--field",
             "body=Worked on [[Projects/example/entities/core|the core]].\n\nRelated: [[Projects/example/roadmap|Roadmap]].",
+        ]);
+        command
+            .current_dir(&self.repository)
+            .env_remove("AKASHA_ROOT");
+        command
+    }
+
+    fn handoff_command(&self, json: bool) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_akasha"));
+        command.args(["--root", path(&self.root), "--project", "example"]);
+        if json {
+            command.arg("--json");
+        }
+        command.args([
+            "capture-handoff",
+            "2026-07-16-cli.md",
+            "--field",
+            "date=2026-07-16",
+            "--field",
+            "title=CLI handoff",
+            "--field",
+            "body=Continue with [[Projects/example/entities/core|the core]].\n\nRelated: [[Projects/example/roadmap|Roadmap]].",
         ]);
         command
             .current_dir(&self.repository)
