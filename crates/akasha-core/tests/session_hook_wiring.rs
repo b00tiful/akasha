@@ -73,6 +73,27 @@ fn claude_plan_inserts_hooks_without_changing_existing_bytes() {
 }
 
 #[test]
+fn generated_plans_manage_only_session_start_until_handoff_promotion_is_compatible() {
+    for (client, label) in [
+        (AgentClient::Codex, "codex-explicit-handoff"),
+        (AgentClient::Claude, "claude-explicit-handoff"),
+    ] {
+        let home = TempDir::new(label);
+        let plan = prepare_session_hook_wiring(&request(), client, home.path())
+            .expect("prepare session hook");
+        let value: serde_json::Value =
+            serde_json::from_str(&plan.patch.replacement).expect("parse prepared hook JSON");
+        let hooks = value["hooks"].as_object().expect("hooks object");
+
+        assert_eq!(hooks.len(), 1);
+        assert!(hooks.contains_key("SessionStart"));
+        for unsupported in ["Stop", "PreCompact", "PostCompact", "SessionEnd"] {
+            assert!(!hooks.contains_key(unsupported));
+        }
+    }
+}
+
+#[test]
 fn existing_hook_shapes_choose_the_narrowest_insertion_or_noop() {
     let home = TempDir::new("existing-shapes");
     let target = home.path().join("hooks.json");
