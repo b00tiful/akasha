@@ -12,6 +12,29 @@ fn assert_uncolored(bytes: &[u8]) {
     );
 }
 
+#[cfg(target_os = "linux")]
+fn run_in_terminal(arguments: &[&str], no_color_environment: bool) -> std::process::Output {
+    let binary = env!("CARGO_BIN_EXE_akasha");
+    let command = std::iter::once(binary)
+        .chain(arguments.iter().copied())
+        .map(shell_quote)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut script = Command::new("script");
+    script.args(["--quiet", "--return", "--command", &command, "/dev/null"]);
+    if no_color_environment {
+        script.env("NO_COLOR", "1");
+    } else {
+        script.env_remove("NO_COLOR");
+    }
+    script.output().expect("run akasha in a pseudo-terminal")
+}
+
+#[cfg(target_os = "linux")]
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
 #[test]
 fn help_and_invalid_usage_follow_the_stream_and_exit_contract() {
     let binary = env!("CARGO_BIN_EXE_akasha");
@@ -80,4 +103,36 @@ fn piped_plain_output_is_stable_under_no_color_controls() {
     }
     assert_eq!(flag.stdout, baseline.stdout);
     assert_eq!(environment.stdout, baseline.stdout);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn terminal_plain_output_is_styled_unless_color_is_disabled() {
+    let fixture = fixtures();
+    let root = fixture.join("valid-root");
+    let root = root.to_str().expect("fixture path is UTF-8");
+    let base = ["--root", root, "--project", "example"];
+
+    let styled = run_in_terminal(&[&base[..], &["resolve"]].concat(), false);
+    assert!(styled.status.success());
+    assert!(styled.stderr.is_empty());
+    assert!(
+        styled.stdout.windows(2).any(|window| window == b"\x1b["),
+        "terminal output did not contain ANSI styling"
+    );
+
+    let flag = run_in_terminal(&[&base[..], &["--no-color", "resolve"]].concat(), false);
+    assert!(flag.status.success());
+    assert!(flag.stderr.is_empty());
+    assert_uncolored(&flag.stdout);
+
+    let environment = run_in_terminal(&[&base[..], &["resolve"]].concat(), true);
+    assert!(environment.status.success());
+    assert!(environment.stderr.is_empty());
+    assert_uncolored(&environment.stdout);
+
+    let json = run_in_terminal(&[&base[..], &["--json", "resolve"]].concat(), false);
+    assert!(json.status.success());
+    assert!(json.stderr.is_empty());
+    assert_uncolored(&json.stdout);
 }

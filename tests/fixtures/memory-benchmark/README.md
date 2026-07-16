@@ -25,3 +25,9 @@ scripts/run-akasha-memory-benchmark.sh OUTPUT_DIRECTORY ANSWERS_DIRECTORY
 preserves retrieval payloads, exact commands, validation output, deterministic scores, and a TSV
 manifest with explicit `unavailable` values when the active client cannot report token or answer
 latency telemetry. Output directories are create-only so a later run cannot overwrite evidence.
+
+Detailed named competitor adapters, mappings, and results are private evaluation material and are
+not part of Akasha's release surface. Any exceptional public derivative requires a separate,
+explicit human decision and must use neutral labels such as `Competitor 1` and `Competitor 2`
+while removing product names and other identifying details. The checked-in fixture remains
+system-neutral and does not imply that the private comparison will be published.

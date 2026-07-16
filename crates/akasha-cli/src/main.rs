@@ -4,12 +4,17 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use akasha_core::{
-    EventCreationResult, InitRequest, InitResult, LinkRequest, LinkResult,
-    MutableNoteCreationResult, NoteClass, NoteEditRecovery, ProjectValidationReport,
-    ResolveRequest, ResolvedProject, assemble_context, create_event, create_mutable_note,
-    initialize_project, link_project, render_context_markdown, resolve_project, validate_project,
+    InitRequest, LinkRequest, ResolveRequest, assemble_context, create_event, create_mutable_note,
+    initialize_project, link_project, resolve_project, validate_project,
 };
 use clap::{Parser, Subcommand};
+
+mod render;
+
+use render::{
+    OutputMode, render_context, render_event_creation, render_init, render_link,
+    render_mutable_note_creation, render_resolution, render_validation,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -30,7 +35,7 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
-    /// Disable colored output. Current output is always uncolored.
+    /// Disable colored terminal output.
     #[arg(long, global = true)]
     no_color: bool,
 
@@ -108,9 +113,10 @@ fn run(cli: Cli) -> Result<(), u8> {
         root,
         project,
         json,
-        no_color: _,
+        no_color,
         command,
     } = cli;
+    let output = OutputMode::detect(json, no_color);
 
     if let Some(selected) = project.as_ref() {
         let positional = match &command {
@@ -133,7 +139,7 @@ fn run(cli: Cli) -> Result<(), u8> {
         Command::Init { slug } => {
             let request = InitRequest::from_process(root, slug).map_err(report_resolution)?;
             let result = initialize_project(&request).map_err(report_init)?;
-            render_init(&result, json).map_err(|error| {
+            render_init(&result, output).map_err(|error| {
                 eprintln!("akasha: failed to render command output: {error}");
                 6
             })?;
@@ -141,7 +147,7 @@ fn run(cli: Cli) -> Result<(), u8> {
         Command::Link { slug, repo } => {
             let request = LinkRequest::from_process(root, slug, repo).map_err(report_resolution)?;
             let result = link_project(&request).map_err(report_link)?;
-            render_link(&result, json).map_err(|error| {
+            render_link(&result, output).map_err(|error| {
                 eprintln!("akasha: failed to render command output: {error}");
                 6
             })?;
@@ -155,7 +161,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             let fields = parse_template_fields(field)?;
             let result = create_event(&request, &note_type, &path, &fields)
                 .map_err(report_event_creation)?;
-            render_event_creation(&result, json).map_err(|error| {
+            render_event_creation(&result, output).map_err(|error| {
                 eprintln!("akasha: failed to render command output: {error}");
                 6
             })?;
@@ -178,7 +184,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             let result =
                 create_mutable_note(&request, &note_type, &path, &fields, &projection_source)
                     .map_err(report_mutable_note_creation)?;
-            render_mutable_note_creation(&result, json).map_err(|error| {
+            render_mutable_note_creation(&result, output).map_err(|error| {
                 eprintln!("akasha: failed to render command output: {error}");
                 6
             })?;
@@ -186,7 +192,7 @@ fn run(cli: Cli) -> Result<(), u8> {
         Command::Resolve => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
             let resolved = resolve_project(&request).map_err(report_resolution)?;
-            render_resolution(&resolved, json).map_err(|error| {
+            render_resolution(&resolved, output).map_err(|error| {
                 eprintln!("akasha: failed to render command output: {error}");
                 6
             })?;
@@ -194,7 +200,7 @@ fn run(cli: Cli) -> Result<(), u8> {
         Command::Validate => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
             let report = validate_project(&request).map_err(report_validation)?;
-            render_validation(&report, json).map_err(|error| {
+            render_validation(&report, output).map_err(|error| {
                 eprintln!("akasha: failed to render command output: {error}");
                 6
             })?;
@@ -202,17 +208,10 @@ fn run(cli: Cli) -> Result<(), u8> {
         Command::Context => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
             let context = assemble_context(&request).map_err(report_context)?;
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&context).map_err(|error| {
-                        eprintln!("akasha: failed to render command output: {error}");
-                        6
-                    })?
-                );
-            } else {
-                print!("{}", render_context_markdown(&context));
-            }
+            render_context(&context, output).map_err(|error| {
+                eprintln!("akasha: failed to render command output: {error}");
+                6
+            })?;
         }
     }
 
@@ -267,180 +266,4 @@ fn parse_template_fields(fields: Vec<String>) -> Result<BTreeMap<String, String>
         }
     }
     Ok(parsed)
-}
-
-fn render_init(result: &InitResult, json: bool) -> Result<(), serde_json::Error> {
-    if json {
-        println!("{}", serde_json::to_string_pretty(result)?);
-    } else {
-        println!("initialized: {}", result.project);
-        println!("repository: {}", result.repository_dir.display());
-        println!("project directory: {}", result.project_dir.display());
-        println!("project state: {}", result.state.display());
-        println!("templates copied: {}", result.template_files);
-        println!("registry: {}", result.registry.display());
-        println!("pointer: {}", result.pointer.display());
-    }
-
-    Ok(())
-}
-
-fn render_link(result: &LinkResult, json: bool) -> Result<(), serde_json::Error> {
-    if json {
-        println!("{}", serde_json::to_string_pretty(result)?);
-    } else {
-        println!("linked: {}", result.project);
-        println!("repository: {}", result.repository_dir.display());
-        println!("pointer: {}", result.pointer.display());
-        println!("project directory: {}", result.project_dir.display());
-    }
-
-    Ok(())
-}
-
-fn render_event_creation(
-    result: &EventCreationResult,
-    json: bool,
-) -> Result<(), serde_json::Error> {
-    if json {
-        println!("{}", serde_json::to_string_pretty(result)?);
-    } else {
-        println!("created event: {}", result.id);
-        println!("project: {}", result.project);
-        println!("type: {}", result.note_type);
-        println!("path: {}", result.path.display());
-        println!("template: {}", result.template.display());
-        println!(
-            "template scope: {}",
-            template_scope_name(result.template_scope)
-        );
-        println!("project state: {}", result.state.display());
-        println!("recovery: {}", recovery_name(result.recovery));
-    }
-    Ok(())
-}
-
-fn render_mutable_note_creation(
-    result: &MutableNoteCreationResult,
-    json: bool,
-) -> Result<(), serde_json::Error> {
-    if json {
-        println!("{}", serde_json::to_string_pretty(result)?);
-    } else {
-        println!("created note: {}", result.id);
-        println!("project: {}", result.project);
-        println!("type: {}", result.note_type);
-        println!("class: {}", note_class_name(result.class));
-        println!("path: {}", result.path.display());
-        println!("template: {}", result.template.display());
-        println!(
-            "template scope: {}",
-            template_scope_name(result.template_scope)
-        );
-        println!("projection: {}", result.projection.display());
-        println!(
-            "projection changed: {}",
-            if result.projection_changed {
-                "yes"
-            } else {
-                "no"
-            }
-        );
-        println!("project state: {}", result.state.display());
-        println!("recovery: {}", recovery_name(result.recovery));
-    }
-    Ok(())
-}
-
-fn render_resolution(resolved: &ResolvedProject, json: bool) -> Result<(), serde_json::Error> {
-    if json {
-        println!("{}", serde_json::to_string_pretty(resolved)?);
-    } else {
-        println!("root: {}", resolved.root.display());
-        println!("root source: {}", root_source_name(resolved.root_source));
-        println!("project: {}", resolved.project);
-        println!(
-            "project source: {}",
-            project_source_name(resolved.project_source)
-        );
-        match &resolved.pointer {
-            Some(pointer) => println!("pointer: {}", pointer.display()),
-            None => println!("pointer: none (project selected explicitly)"),
-        }
-        println!("registry: {}", resolved.registry.display());
-        println!("repository: {}", resolved.repository_dir.display());
-        println!("project directory: {}", resolved.project_dir.display());
-    }
-
-    Ok(())
-}
-
-fn render_validation(
-    report: &ProjectValidationReport,
-    json: bool,
-) -> Result<(), serde_json::Error> {
-    if json {
-        println!("{}", serde_json::to_string_pretty(report)?);
-    } else {
-        println!("valid: {}", report.project);
-        println!("registry: {}", report.registry.display());
-        println!("repository: {}", report.repository_dir.display());
-        println!("project directory: {}", report.project_dir.display());
-        println!("registry projects: {}", report.registry_projects);
-        println!("canonical notes: {}", report.canonical_notes);
-        println!("immutable events: {}", report.immutable_events);
-        println!("project state: {}", report.state.display());
-        for (name, projection) in &report.projections {
-            println!("projection: {name} — {} sources", projection.sources);
-        }
-        println!("wikilinks: {}", report.wikilinks);
-        for (name, note_type) in &report.note_types {
-            println!(
-                "note type: {name} ({}) — {}",
-                note_class_name(note_type.class),
-                note_type.notes
-            );
-        }
-    }
-
-    Ok(())
-}
-
-const fn root_source_name(source: akasha_core::RootSource) -> &'static str {
-    match source {
-        akasha_core::RootSource::CommandLine => "command-line",
-        akasha_core::RootSource::Environment => "environment",
-        akasha_core::RootSource::UserConfig => "user-config",
-    }
-}
-
-const fn project_source_name(source: akasha_core::ProjectSource) -> &'static str {
-    match source {
-        akasha_core::ProjectSource::CommandLine => "command-line",
-        akasha_core::ProjectSource::Pointer => "pointer",
-    }
-}
-
-const fn note_class_name(class: NoteClass) -> &'static str {
-    match class {
-        NoteClass::Event => "event",
-        NoteClass::Record => "record",
-        NoteClass::Entity => "entity",
-    }
-}
-
-const fn template_scope_name(scope: akasha_core::NoteTemplateScope) -> &'static str {
-    match scope {
-        akasha_core::NoteTemplateScope::Project => "project",
-        akasha_core::NoteTemplateScope::Root => "root",
-    }
-}
-
-const fn recovery_name(recovery: NoteEditRecovery) -> &'static str {
-    match recovery {
-        NoteEditRecovery::None => "none",
-        NoteEditRecovery::Discarded => "discarded",
-        NoteEditRecovery::RolledBack => "rolled-back",
-        NoteEditRecovery::Finalized => "finalized",
-    }
 }

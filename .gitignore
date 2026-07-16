@@ -28,6 +28,9 @@ node_modules/
 # Rust build output.
 /target/
 
+# Private named comparison adapters; any public derivative requires a separate anonymization task.
+/scripts/run-*-memory-benchmark.sh
+
 # The demo is provenance, not part of the new project.
 reference/
 initial_convo/
