@@ -141,6 +141,7 @@ fn root_config() -> &'static str {
      \n\
      [files]\n\
      registry = \"Meta/projects.yaml\"\n\
+     agent_instructions = \"Meta/AGENTS.md\"\n\
      \n\
      [folders]\n\
      templates = \"templates\"\n\

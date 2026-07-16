@@ -41,3 +41,8 @@ design/
 AGENTS.md
 VAULT.md
 implementation_plan.md
+
+# Public synthetic fixtures for the agent-wiring contract.
+!tests/fixtures/resolution/valid-root/Meta/AGENTS.md
+!tests/fixtures/codex-onboarding/root/Meta/AGENTS.md
+!tests/fixtures/memory-benchmark/akasha-adapter/root/Meta/AGENTS.md

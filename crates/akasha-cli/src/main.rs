@@ -1,21 +1,37 @@
 use std::collections::BTreeMap;
+use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use akasha_core::{
-    InitRequest, LinkRequest, ResolveRequest, assemble_context, create_event, create_mutable_note,
-    initialize_project, link_project, resolve_project, update_entity, update_record,
-    validate_project,
+    AgentClient, InitRequest, LinkRequest, ResolveRequest, assemble_context, create_event,
+    create_mutable_note, initialize_project, link_project, prepare_agent_wiring, resolve_project,
+    update_entity, update_record, validate_project,
 };
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 mod render;
 
 use render::{
-    OutputMode, render_context, render_event_creation, render_init, render_link,
-    render_mutable_note_creation, render_resolution, render_validation,
+    OutputMode, render_agent_wiring_plan, render_context, render_event_creation, render_init,
+    render_link, render_mutable_note_creation, render_resolution, render_validation,
 };
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum AgentClientArgument {
+    Codex,
+    Claude,
+}
+
+impl From<AgentClientArgument> for AgentClient {
+    fn from(client: AgentClientArgument) -> Self {
+        match client {
+            AgentClientArgument::Codex => Self::Codex,
+            AgentClientArgument::Claude => Self::Claude,
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -130,6 +146,16 @@ enum Command {
         #[arg(long, value_name = "PATH")]
         index: PathBuf,
     },
+    /// Prepare an exact, read-only user instruction-file change for one agent client.
+    PrepareAgentWiring {
+        /// Agent client whose user-level instructions should load Akasha.
+        #[arg(value_enum, value_name = "CLIENT")]
+        client: AgentClientArgument,
+
+        /// Client configuration directory. Defaults to CODEX_HOME/~/.codex or ~/.claude.
+        #[arg(long, value_name = "PATH")]
+        home: Option<PathBuf>,
+    },
     /// Resolve and print the current data root and project identity.
     Resolve,
     /// Validate the selected project's configuration, layout, and canonical notes.
@@ -162,6 +188,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             | Command::CreateNote { .. }
             | Command::UpdateRecord { .. }
             | Command::UpdateEntity { .. }
+            | Command::PrepareAgentWiring { .. }
             | Command::Resolve
             | Command::Validate
             | Command::Context => None,
@@ -268,6 +295,17 @@ fn run(cli: Cli) -> Result<(), u8> {
                 6
             })?;
         }
+        Command::PrepareAgentWiring { client, home } => {
+            let client = AgentClient::from(client);
+            let home = resolve_agent_home(client, home)?;
+            let request = ResolveRequest::from_process(root, None).map_err(report_resolution)?;
+            let plan =
+                prepare_agent_wiring(&request, client, &home).map_err(report_agent_wiring)?;
+            render_agent_wiring_plan(&plan, output).map_err(|error| {
+                eprintln!("akasha: failed to render command output: {error}");
+                6
+            })?;
+        }
         Command::Resolve => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
             let resolved = resolve_project(&request).map_err(report_resolution)?;
@@ -335,6 +373,45 @@ fn report_mutable_note_creation(error: akasha_core::MutableNoteCreationError) ->
 fn report_note_edit(error: akasha_core::NoteEditError) -> u8 {
     eprintln!("akasha: {error}");
     error.exit_code()
+}
+
+fn report_agent_wiring(error: akasha_core::AgentWiringError) -> u8 {
+    eprintln!("akasha: {error}");
+    error.exit_code()
+}
+
+fn resolve_agent_home(client: AgentClient, explicit: Option<PathBuf>) -> Result<PathBuf, u8> {
+    if let Some(home) = explicit {
+        return Ok(home);
+    }
+    if client == AgentClient::Codex
+        && let Some(home) = env::var_os("CODEX_HOME")
+    {
+        if home.is_empty() {
+            eprintln!("akasha: CODEX_HOME is set but empty");
+            return Err(3);
+        }
+        return Ok(PathBuf::from(home));
+    }
+    let Some(home) = env::var_os("HOME") else {
+        eprintln!(
+            "akasha: no agent home was provided and HOME{} is not set",
+            if client == AgentClient::Codex {
+                " or CODEX_HOME"
+            } else {
+                ""
+            }
+        );
+        return Err(3);
+    };
+    if home.is_empty() {
+        eprintln!("akasha: HOME is set but empty");
+        return Err(3);
+    }
+    Ok(PathBuf::from(home).join(match client {
+        AgentClient::Codex => ".codex",
+        AgentClient::Claude => ".claude",
+    }))
 }
 
 fn read_utf8_input(path: &std::path::Path, label: &str) -> Result<String, u8> {

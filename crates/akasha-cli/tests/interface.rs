@@ -50,6 +50,7 @@ fn help_and_invalid_usage_follow_the_stream_and_exit_contract() {
     let stdout = String::from_utf8(help.stdout).expect("help stdout is UTF-8");
     assert!(stdout.contains("Usage: akasha [OPTIONS] <COMMAND>"));
     assert!(stdout.contains("context"));
+    assert!(stdout.contains("prepare-agent-wiring"));
     assert!(stdout.contains("--json"));
     assert!(stdout.contains("--no-color"));
 

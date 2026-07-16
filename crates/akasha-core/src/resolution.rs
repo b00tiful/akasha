@@ -174,6 +174,7 @@ pub(crate) struct RootConfig {
 #[serde(deny_unknown_fields)]
 pub(crate) struct FileConfig {
     pub(crate) registry: PathBuf,
+    pub(crate) agent_instructions: PathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -341,6 +342,7 @@ pub(crate) fn load_project_registry(
 fn validate_root_config(config: &RootConfig) -> Result<(), ResolveError> {
     let root_paths = [
         ("files.registry", &config.files.registry),
+        ("files.agent_instructions", &config.files.agent_instructions),
         ("folders.templates", &config.folders.templates),
         ("folders.global", &config.folders.global),
         ("folders.projects", &config.folders.projects),
@@ -351,6 +353,12 @@ fn validate_root_config(config: &RootConfig) -> Result<(), ResolveError> {
     ];
     for (field, path) in root_paths {
         validate_relative_path(path, field)?;
+    }
+
+    if config.files.registry == config.files.agent_instructions {
+        return Err(ResolveError::Configuration(
+            "files.registry and files.agent_instructions must name different paths".to_owned(),
+        ));
     }
 
     let folder_paths = [

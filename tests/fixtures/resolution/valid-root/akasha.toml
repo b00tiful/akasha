@@ -2,6 +2,7 @@ schema_version = 1
 
 [files]
 registry = "Meta/projects.yaml"
+agent_instructions = "Meta/AGENTS.md"
 
 [folders]
 templates = "templates"

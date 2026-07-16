@@ -1,5 +1,6 @@
 //! Trusted, interface-independent behavior for Akasha.
 
+pub mod agent_wiring;
 pub mod context;
 pub mod event;
 mod evidence;
@@ -17,6 +18,10 @@ pub mod validation;
 mod wikilink;
 pub mod writes;
 
+pub use agent_wiring::{
+    AgentClient, AgentWiringAction, AgentWiringError, AgentWiringPatch, AgentWiringPlan,
+    prepare_agent_wiring,
+};
 pub use context::{
     ContextBundle, ContextEntry, ContextError, ContextSection, DEFAULT_CONTEXT_MAX_CHARS,
     assemble_context, render_context_markdown,

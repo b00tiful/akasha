@@ -3,9 +3,9 @@ use std::fmt::Display;
 use std::io::{self, IsTerminal};
 
 use akasha_core::{
-    ContextBundle, EntityUpdateResult, EventCreationResult, InitRecovery, InitResult, LinkResult,
-    MutableNoteCreationResult, NoteClass, NoteEditRecovery, ProjectValidationReport,
-    RecordUpdateResult, ResolvedProject, render_context_markdown,
+    AgentWiringAction, AgentWiringPlan, ContextBundle, EntityUpdateResult, EventCreationResult,
+    InitRecovery, InitResult, LinkResult, MutableNoteCreationResult, NoteClass, NoteEditRecovery,
+    ProjectValidationReport, RecordUpdateResult, ResolvedProject, render_context_markdown,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -68,6 +68,42 @@ pub(crate) fn render_link(
         print_field("project directory", result.project_dir.display(), output);
     }
 
+    Ok(())
+}
+
+pub(crate) fn render_agent_wiring_plan(
+    plan: &AgentWiringPlan,
+    output: OutputMode,
+) -> Result<(), serde_json::Error> {
+    if output.json {
+        println!("{}", serde_json::to_string_pretty(plan)?);
+    } else {
+        print_status("prepared agent wiring", plan.client.as_str(), output);
+        print_field("data root", plan.root.display(), output);
+        print_field("instruction source", plan.source.display(), output);
+        print_field("source sha256", &plan.source_sha256, output);
+        print_field("target", plan.target.display(), output);
+        print_field("action", agent_wiring_action_name(plan.action), output);
+        print_field(
+            "current sha256",
+            plan.current_sha256.as_deref().unwrap_or("absent"),
+            output,
+        );
+        print_field("result sha256", &plan.result_sha256, output);
+        print_field("plan id", &plan.plan_id, output);
+        print_field(
+            "patch range",
+            format_args!("{}..{}", plan.patch.start, plan.patch.end),
+            output,
+        );
+        print_field("replacement bytes", plan.patch.replacement.len(), output);
+        if plan.patch.replacement.is_empty() {
+            print_field("replacement", "none", output);
+        } else {
+            print_field("replacement", "", output);
+            print!("{}", plan.patch.replacement);
+        }
+    }
     Ok(())
 }
 
@@ -318,5 +354,14 @@ const fn recovery_name(recovery: NoteEditRecovery) -> &'static str {
         NoteEditRecovery::Discarded => "discarded",
         NoteEditRecovery::RolledBack => "rolled-back",
         NoteEditRecovery::Finalized => "finalized",
+    }
+}
+
+const fn agent_wiring_action_name(action: AgentWiringAction) -> &'static str {
+    match action {
+        AgentWiringAction::Create => "create",
+        AgentWiringAction::Append => "append",
+        AgentWiringAction::RefreshManagedSection => "refresh-managed-section",
+        AgentWiringAction::NoChange => "no-change",
     }
 }
