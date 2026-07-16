@@ -4,9 +4,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use akasha_core::{
-    InitRequest, OnboardingBatchRequest, OnboardingNoteAction, ProposedNote, ResolutionEnvironment,
-    ResolveRequest, apply_approved_onboarding_batch, apply_onboarding_batch, initialize_project,
-    prepare_onboarding, preview_onboarding_batch, validate_project,
+    InitRequest, NOTE_EDIT_JOURNAL_FILE, OnboardingBatchRequest, OnboardingNoteAction,
+    ProposedNote, ResolutionEnvironment, ResolveRequest, apply_approved_onboarding_batch,
+    apply_onboarding_batch, initialize_project, prepare_onboarding, preview_onboarding_batch,
+    validate_project,
 };
 use sha2::{Digest, Sha256};
 
@@ -41,6 +42,7 @@ fn applies_valid_notes_projections_and_state_as_one_checked_batch() {
     assert_eq!(report.projections["index"].sources, 1);
     assert_eq!(report.projections["roadmap"].sources, 1);
     assert_eq!(report.wikilinks, 2);
+    assert!(!fixture.project.join(NOTE_EDIT_JOURNAL_FILE).exists());
 }
 
 #[test]

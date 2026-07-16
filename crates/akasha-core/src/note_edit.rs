@@ -25,6 +25,7 @@ use crate::writes::{
 pub const NOTE_EDIT_JOURNAL_FILE: &str = ".akasha-edit-journal.json";
 const NOTE_EDIT_JOURNAL_SCHEMA_VERSION: u32 = 1;
 const NOTE_PROJECTION_JOURNAL_SCHEMA_VERSION: u32 = 2;
+const ONBOARDING_BATCH_JOURNAL_SCHEMA_VERSION: u32 = 3;
 
 /// Recovery work performed before a checked note edit or library load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -174,6 +175,49 @@ struct JournalProjection {
     id: String,
     before: String,
     after: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct OnboardingBatchJournal {
+    schema_version: u32,
+    project: String,
+    notes: Vec<JournalCreatedNote>,
+    projections: Vec<JournalProjection>,
+    state_before: String,
+    state_after: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct JournalCreatedNote {
+    id: String,
+    after: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum NoteMutationJournal {
+    Note(NoteEditJournal),
+    Onboarding(OnboardingBatchJournal),
+}
+
+pub(crate) struct OnboardingJournalNote {
+    pub(crate) id: String,
+    pub(crate) after: String,
+}
+
+pub(crate) struct OnboardingBatchJournalInput<'a> {
+    pub(crate) project: &'a str,
+    pub(crate) notes: Vec<OnboardingJournalNote>,
+    pub(crate) index_id: &'a str,
+    pub(crate) index_before: &'a str,
+    pub(crate) index_after: &'a str,
+    pub(crate) roadmap_id: &'a str,
+    pub(crate) roadmap_before: &'a str,
+    pub(crate) roadmap_after: &'a str,
+    pub(crate) state_before: &'a str,
+    pub(crate) state_after: &'a str,
 }
 
 /// Replace one selected project's mutable canonical note from an exact loaded baseline.
@@ -353,23 +397,50 @@ pub(crate) fn recover_note_mutation_locked(
         return Ok(NoteEditRecovery::None);
     };
     let resolved = resolve_project(request)?;
-    if resolved.project_dir != project_dir || journal.project != resolved.project {
+    let journal_project = match &journal {
+        NoteMutationJournal::Note(journal) => &journal.project,
+        NoteMutationJournal::Onboarding(journal) => &journal.project,
+    };
+    if resolved.project_dir != project_dir || journal_project != &resolved.project {
         return Err(NoteEditError::Conflict {
             path: journal_path,
             message: "the recovery journal does not match the resolved project".to_owned(),
         });
     }
-    let note_path = checked_journal_note_path(&resolved.root, project_dir, &journal)?;
+    let outcome = match journal {
+        NoteMutationJournal::Note(journal) => recover_note_journal(
+            request,
+            &resolved.root,
+            project_dir,
+            &journal_path,
+            &journal,
+        )?,
+        NoteMutationJournal::Onboarding(journal) => recover_onboarding_journal(
+            request,
+            &resolved.root,
+            project_dir,
+            &journal_path,
+            &journal,
+        )?,
+    };
+
+    complete_note_mutation_journal(&journal_path, &journal_source, project_dir)?;
+    Ok(outcome)
+}
+
+fn recover_note_journal(
+    request: &ResolveRequest,
+    root: &Path,
+    project_dir: &Path,
+    journal_path: &Path,
+    journal: &NoteEditJournal,
+) -> Result<NoteEditRecovery, NoteEditError> {
+    let note_path = checked_journal_note_path(root, project_dir, &journal.id, journal_path)?;
     let projection_path = journal
         .projection
         .as_ref()
         .map(|projection| {
-            checked_journal_projection_path(
-                &resolved.root,
-                project_dir,
-                &projection.id,
-                &journal_path,
-            )
+            checked_journal_projection_path(root, project_dir, &projection.id, journal_path)
         })
         .transpose()?;
     let state_path = project_dir.join(PROJECT_STATE_FILE);
@@ -407,7 +478,7 @@ pub(crate) fn recover_note_mutation_locked(
         || (!state_matches_before && !state_matches_after)
     {
         return Err(NoteEditError::Conflict {
-            path: journal_path,
+            path: journal_path.to_path_buf(),
             message: "journaled note, projection, or project state contains unexpected bytes; automatic recovery refused"
                 .to_owned(),
         });
@@ -448,9 +519,129 @@ pub(crate) fn recover_note_mutation_locked(
         validate_project(request)?;
         NoteEditRecovery::RolledBack
     };
-
-    complete_note_mutation_journal(&journal_path, &journal_source, project_dir)?;
     Ok(outcome)
+}
+
+fn recover_onboarding_journal(
+    request: &ResolveRequest,
+    root: &Path,
+    project_dir: &Path,
+    journal_path: &Path,
+    journal: &OnboardingBatchJournal,
+) -> Result<NoteEditRecovery, NoteEditError> {
+    if journal.projections.len() != 2 {
+        return Err(NoteEditError::Validation {
+            path: journal_path.to_path_buf(),
+            message: "onboarding recovery journal must contain the index and roadmap projections"
+                .to_owned(),
+        });
+    }
+
+    let mut note_paths = BTreeSet::new();
+    let mut notes = Vec::with_capacity(journal.notes.len());
+    for note in &journal.notes {
+        let path = checked_journal_note_path(root, project_dir, &note.id, journal_path)?;
+        if !note_paths.insert(path.clone()) {
+            return Err(NoteEditError::Validation {
+                path: journal_path.to_path_buf(),
+                message: "onboarding recovery journal contains duplicate note identities"
+                    .to_owned(),
+            });
+        }
+        let current = read_optional_regular_file(&path, "read a journaled onboarding note")?;
+        let before = current.is_none();
+        let after = current.as_deref() == Some(note.after.as_bytes());
+        if !before && !after {
+            return Err(unexpected_onboarding_bytes(journal_path));
+        }
+        notes.push((path, current, note));
+    }
+
+    let mut projection_paths = BTreeSet::new();
+    let mut projections = Vec::with_capacity(journal.projections.len());
+    for projection in &journal.projections {
+        let path =
+            checked_journal_projection_path(root, project_dir, &projection.id, journal_path)?;
+        if !projection_paths.insert(path.clone()) {
+            return Err(NoteEditError::Validation {
+                path: journal_path.to_path_buf(),
+                message: "onboarding recovery journal contains duplicate projection identities"
+                    .to_owned(),
+            });
+        }
+        let current = read_regular_file(&path, "read a journaled onboarding projection")?;
+        let before = current == projection.before.as_bytes();
+        let after = current == projection.after.as_bytes();
+        if !before && !after {
+            return Err(unexpected_onboarding_bytes(journal_path));
+        }
+        projections.push((path, current, projection));
+    }
+
+    let state_path = project_dir.join(PROJECT_STATE_FILE);
+    let state = read_regular_file(&state_path, "read the journaled project state")?;
+    let state_before = journal.state_before.as_bytes();
+    let state_after = journal.state_after.as_bytes();
+    let state_matches_before = state == state_before;
+    let state_matches_after = state == state_after;
+    if !state_matches_before && !state_matches_after {
+        return Err(unexpected_onboarding_bytes(journal_path));
+    }
+
+    let notes_match_before = notes.iter().all(|(_, current, _)| current.is_none());
+    let notes_match_after = notes
+        .iter()
+        .all(|(_, current, note)| current.as_deref() == Some(note.after.as_bytes()));
+    let projections_match_before = projections
+        .iter()
+        .all(|(_, current, projection)| current == projection.before.as_bytes());
+    let projections_match_after = projections
+        .iter()
+        .all(|(_, current, projection)| current == projection.after.as_bytes());
+
+    if notes_match_before && projections_match_before && state_matches_before {
+        return Ok(NoteEditRecovery::Discarded);
+    }
+    if notes_match_after && projections_match_after && state_matches_after {
+        validate_project(request)?;
+        return Ok(NoteEditRecovery::Finalized);
+    }
+
+    if !state_matches_before {
+        replace_file_if_unchanged(&state_path, state_after, state_before)
+            .map_err(map_checked_replace)?;
+        sync_replacement_directory(&state_path, "sync onboarding recovery of project state")?;
+    }
+    for (path, current, projection) in projections.iter().rev() {
+        if current != projection.before.as_bytes() {
+            replace_file_if_unchanged(
+                path,
+                projection.after.as_bytes(),
+                projection.before.as_bytes(),
+            )
+            .map_err(map_checked_replace)?;
+            sync_replacement_directory(
+                path,
+                "sync onboarding recovery of a maintained projection",
+            )?;
+        }
+    }
+    for (path, current, note) in notes.iter().rev() {
+        if current.is_some() {
+            remove_created_note_if_unchanged(path, note.after.as_bytes())?;
+            sync_replacement_directory(path, "sync onboarding recovery of a canonical note")?;
+        }
+    }
+    validate_project(request)?;
+    Ok(NoteEditRecovery::RolledBack)
+}
+
+fn unexpected_onboarding_bytes(journal_path: &Path) -> NoteEditError {
+    NoteEditError::Conflict {
+        path: journal_path.to_path_buf(),
+        message: "journaled onboarding note, projection, or project state contains unexpected bytes; automatic recovery refused"
+            .to_owned(),
+    }
 }
 
 fn validate_replacement(
@@ -518,16 +709,17 @@ fn collect_candidate_evidence(
 fn checked_journal_note_path(
     root: &Path,
     project_dir: &Path,
-    journal: &NoteEditJournal,
+    id: &str,
+    journal_path: &Path,
 ) -> Result<PathBuf, NoteEditError> {
-    let relative = Path::new(&journal.id);
+    let relative = Path::new(id);
     if relative.extension().and_then(|value| value.to_str()) != Some("md")
         || relative
             .components()
             .any(|component| !matches!(component, Component::Normal(_)))
     {
         return Err(NoteEditError::Validation {
-            path: PathBuf::from(&journal.id),
+            path: journal_path.to_path_buf(),
             message: "journal identity must be a normalized vault-relative Markdown path"
                 .to_owned(),
         });
@@ -590,7 +782,7 @@ fn checked_journal_projection_path(
     Ok(path)
 }
 
-fn read_journal(path: &Path) -> Result<Option<(NoteEditJournal, Vec<u8>)>, NoteEditError> {
+fn read_journal(path: &Path) -> Result<Option<(NoteMutationJournal, Vec<u8>)>, NoteEditError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -613,29 +805,37 @@ fn read_journal(path: &Path) -> Result<Option<(NoteEditJournal, Vec<u8>)>, NoteE
         path: path.to_path_buf(),
         source,
     })?;
-    let journal: NoteEditJournal =
+    let journal: NoteMutationJournal =
         serde_json::from_slice(&source).map_err(|error| NoteEditError::Validation {
             path: path.to_path_buf(),
             message: format!("invalid note edit journal JSON: {error}"),
         })?;
-    let valid_schema = match journal.schema_version {
-        NOTE_EDIT_JOURNAL_SCHEMA_VERSION => journal.projection.is_none(),
-        NOTE_PROJECTION_JOURNAL_SCHEMA_VERSION => journal.projection.is_some(),
-        _ => false,
+    let valid_schema = match &journal {
+        NoteMutationJournal::Note(journal) => match journal.schema_version {
+            NOTE_EDIT_JOURNAL_SCHEMA_VERSION => journal.projection.is_none(),
+            NOTE_PROJECTION_JOURNAL_SCHEMA_VERSION => journal.projection.is_some(),
+            _ => false,
+        },
+        NoteMutationJournal::Onboarding(journal) => {
+            journal.schema_version == ONBOARDING_BATCH_JOURNAL_SCHEMA_VERSION
+        }
     };
     if !valid_schema {
+        let schema_version = match &journal {
+            NoteMutationJournal::Note(journal) => journal.schema_version,
+            NoteMutationJournal::Onboarding(journal) => journal.schema_version,
+        };
         return Err(NoteEditError::Validation {
             path: path.to_path_buf(),
             message: format!(
-                "invalid note edit journal schema_version {}; expected version {NOTE_EDIT_JOURNAL_SCHEMA_VERSION} without a projection or version {NOTE_PROJECTION_JOURNAL_SCHEMA_VERSION} with one",
-                journal.schema_version
+                "invalid note edit journal schema_version {schema_version}; expected version {NOTE_EDIT_JOURNAL_SCHEMA_VERSION} without a projection, version {NOTE_PROJECTION_JOURNAL_SCHEMA_VERSION} with one projection, or version {ONBOARDING_BATCH_JOURNAL_SCHEMA_VERSION} for an onboarding batch"
             ),
         });
     }
     Ok(Some((journal, source)))
 }
 
-fn render_journal(journal: &NoteEditJournal) -> Result<Vec<u8>, NoteEditError> {
+fn render_journal(journal: &impl Serialize) -> Result<Vec<u8>, NoteEditError> {
     let mut source =
         serde_json::to_vec_pretty(journal).map_err(|error| NoteEditError::Validation {
             path: PathBuf::from(NOTE_EDIT_JOURNAL_FILE),
@@ -699,9 +899,42 @@ pub(crate) fn write_note_projection_mutation_journal(
     write_journal(project_dir, journal)
 }
 
+pub(crate) fn write_onboarding_batch_mutation_journal(
+    project_dir: &Path,
+    mutation: OnboardingBatchJournalInput<'_>,
+) -> Result<(PathBuf, Vec<u8>), NoteEditError> {
+    let journal = OnboardingBatchJournal {
+        schema_version: ONBOARDING_BATCH_JOURNAL_SCHEMA_VERSION,
+        project: mutation.project.to_owned(),
+        notes: mutation
+            .notes
+            .into_iter()
+            .map(|note| JournalCreatedNote {
+                id: note.id,
+                after: note.after,
+            })
+            .collect(),
+        projections: vec![
+            JournalProjection {
+                id: mutation.index_id.to_owned(),
+                before: mutation.index_before.to_owned(),
+                after: mutation.index_after.to_owned(),
+            },
+            JournalProjection {
+                id: mutation.roadmap_id.to_owned(),
+                before: mutation.roadmap_before.to_owned(),
+                after: mutation.roadmap_after.to_owned(),
+            },
+        ],
+        state_before: mutation.state_before.to_owned(),
+        state_after: mutation.state_after.to_owned(),
+    };
+    write_journal(project_dir, journal)
+}
+
 fn write_journal(
     project_dir: &Path,
-    journal: NoteEditJournal,
+    journal: impl Serialize,
 ) -> Result<(PathBuf, Vec<u8>), NoteEditError> {
     let source = render_journal(&journal)?;
     let path = project_dir.join(NOTE_EDIT_JOURNAL_FILE);

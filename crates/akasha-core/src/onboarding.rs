@@ -9,7 +9,11 @@ use std::str;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::note_edit::{NoteEditError, recover_note_mutation_locked};
+use crate::note_edit::{
+    NoteEditError, NoteEditRecovery, OnboardingBatchJournalInput, OnboardingJournalNote,
+    complete_note_mutation_journal, recover_note_mutation_locked,
+    write_onboarding_batch_mutation_journal,
+};
 use crate::project_validation::{
     ProjectValidationError, canonical_note_paths, validate_project, validate_wikilinks_with_targets,
 };
@@ -373,7 +377,7 @@ pub fn apply_approved_onboarding_batch(
                 .to_owned(),
         });
     }
-    apply_prepared(request, prepared, || {})
+    apply_prepared(request, prepared, |_| {})
 }
 
 /// Apply one reviewed, create-only onboarding proposal through the shared core.
@@ -383,12 +387,20 @@ pub fn apply_approved_onboarding_batch(
 pub fn apply_onboarding_batch(
     request: &OnboardingBatchRequest,
 ) -> Result<OnboardingBatchResult, OnboardingBatchError> {
-    apply_onboarding_batch_with_hook(request, || {})
+    apply_onboarding_batch_with_hook(request, |_| {})
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OnboardingPublicationStage {
+    Notes,
+    Index,
+    Roadmap,
+    State,
 }
 
 fn apply_onboarding_batch_with_hook(
     request: &OnboardingBatchRequest,
-    after_note_creation: impl FnOnce(),
+    publication_hook: impl FnMut(OnboardingPublicationStage),
 ) -> Result<OnboardingBatchResult, OnboardingBatchError> {
     if request.notes.is_empty() {
         return Err(OnboardingBatchError::Validation {
@@ -400,22 +412,22 @@ fn apply_onboarding_batch_with_hook(
     let resolved = resolve_project(&request.resolution)?;
     let _lock = ProjectWriteLock::acquire(&resolved.project_dir)?;
     recover_note_mutation_locked(&request.resolution, &resolved.project_dir)?;
-    apply_locked(request, &resolved.project_dir, after_note_creation)
+    apply_locked(request, &resolved.project_dir, publication_hook)
 }
 
 fn apply_locked(
     request: &OnboardingBatchRequest,
     locked_project_dir: &Path,
-    after_note_creation: impl FnOnce(),
+    publication_hook: impl FnMut(OnboardingPublicationStage),
 ) -> Result<OnboardingBatchResult, OnboardingBatchError> {
     let prepared = prepare_batch(request, Some(locked_project_dir), EvidencePolicy::Unchecked)?;
-    apply_prepared(request, prepared, after_note_creation)
+    apply_prepared(request, prepared, publication_hook)
 }
 
 fn apply_prepared(
     request: &OnboardingBatchRequest,
     prepared: PreparedBatch,
-    after_note_creation: impl FnOnce(),
+    mut publication_hook: impl FnMut(OnboardingPublicationStage),
 ) -> Result<OnboardingBatchResult, OnboardingBatchError> {
     let PreparedBatch {
         root,
@@ -431,6 +443,56 @@ fn apply_prepared(
         state_after,
     } = prepared;
 
+    let journal_notes = notes
+        .iter()
+        .filter(|note| note.create)
+        .map(|note| {
+            Ok(OnboardingJournalNote {
+                id: vault_relative_identity(&root, &note.path, "onboarding note")?,
+                after: str::from_utf8(&note.source)
+                    .map_err(|error| OnboardingBatchError::Validation {
+                        path: note.path.clone(),
+                        message: format!("onboarding note is not valid UTF-8: {error}"),
+                    })?
+                    .to_owned(),
+            })
+        })
+        .collect::<Result<Vec<_>, OnboardingBatchError>>()?;
+    let index_id = vault_relative_identity(&root, &index_path, "index projection")?;
+    let roadmap_id = vault_relative_identity(&root, &roadmap_path, "roadmap projection")?;
+    let index_before_text =
+        str::from_utf8(&index_before).map_err(|error| OnboardingBatchError::Validation {
+            path: index_path.clone(),
+            message: format!("index projection is not valid UTF-8: {error}"),
+        })?;
+    let roadmap_before_text =
+        str::from_utf8(&roadmap_before).map_err(|error| OnboardingBatchError::Validation {
+            path: roadmap_path.clone(),
+            message: format!("roadmap projection is not valid UTF-8: {error}"),
+        })?;
+    let state_before_text =
+        str::from_utf8(&state_before).map_err(|error| OnboardingBatchError::Validation {
+            path: state_path.clone(),
+            message: format!("project state is not valid UTF-8: {error}"),
+        })?;
+    let state_after_text = str::from_utf8(&state_after)
+        .expect("the deterministic project-state renderer always emits UTF-8");
+    let (journal_path, journal_source) = write_onboarding_batch_mutation_journal(
+        &project_dir,
+        OnboardingBatchJournalInput {
+            project: &project,
+            notes: journal_notes,
+            index_id: &index_id,
+            index_before: index_before_text,
+            index_after: &request.index,
+            roadmap_id: &roadmap_id,
+            roadmap_before: roadmap_before_text,
+            roadmap_after: &request.roadmap,
+            state_before: state_before_text,
+            state_after: state_after_text,
+        },
+    )?;
+
     let mut transaction = Transaction::default();
     let operation = (|| {
         for note in notes.iter().filter(|note| note.create) {
@@ -439,7 +501,7 @@ fn apply_prepared(
                 .created
                 .push((note.path.clone(), note.source.clone()));
         }
-        after_note_creation();
+        publication_hook(OnboardingPublicationStage::Notes);
 
         let mut updated_projections = Vec::new();
         if replace_file_if_unchanged(&index_path, &index_before, request.index.as_bytes())? {
@@ -450,6 +512,7 @@ fn apply_prepared(
             });
             updated_projections.push(index_path.clone());
         }
+        publication_hook(OnboardingPublicationStage::Index);
         if replace_file_if_unchanged(&roadmap_path, &roadmap_before, request.roadmap.as_bytes())? {
             transaction.replaced.push(Replacement {
                 path: roadmap_path.clone(),
@@ -458,6 +521,7 @@ fn apply_prepared(
             });
             updated_projections.push(roadmap_path.clone());
         }
+        publication_hook(OnboardingPublicationStage::Roadmap);
         if replace_file_if_unchanged(&state_path, &state_before, &state_after)? {
             transaction.replaced.push(Replacement {
                 path: state_path.clone(),
@@ -465,13 +529,14 @@ fn apply_prepared(
                 after: state_after,
             });
         }
+        publication_hook(OnboardingPublicationStage::State);
 
         validate_project(&request.resolution)?;
 
         Ok(OnboardingBatchResult {
             root,
             project,
-            project_dir,
+            project_dir: project_dir.clone(),
             created_notes: notes
                 .iter()
                 .filter(|note| note.create)
@@ -488,9 +553,31 @@ fn apply_prepared(
     })();
 
     match operation {
-        Ok(result) => Ok(result),
+        Ok(result) => {
+            match complete_note_mutation_journal(&journal_path, &journal_source, &project_dir) {
+                Ok(()) => Ok(result),
+                Err(original) => {
+                    match recover_note_mutation_locked(&request.resolution, &project_dir) {
+                        Ok(NoteEditRecovery::Finalized) => Ok(result),
+                        Ok(_) => Err(OnboardingBatchError::Mutation(Box::new(original))),
+                        Err(recovery) => Err(OnboardingBatchError::Mutation(Box::new(
+                            NoteEditError::Recovery {
+                                original: Box::new(original),
+                                recovery: Box::new(recovery),
+                            },
+                        ))),
+                    }
+                }
+            }
+        }
         Err(error) => {
-            let failures = transaction.rollback();
+            let mut failures = transaction.rollback();
+            if failures.is_empty()
+                && let Err(cleanup) =
+                    complete_note_mutation_journal(&journal_path, &journal_source, &project_dir)
+            {
+                failures.push(format!("could not remove onboarding journal: {cleanup}"));
+            }
             if failures.is_empty() {
                 Err(error)
             } else {
@@ -502,6 +589,26 @@ fn apply_prepared(
             }
         }
     }
+}
+
+fn vault_relative_identity(
+    root: &Path,
+    path: &Path,
+    kind: &'static str,
+) -> Result<String, OnboardingBatchError> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| OnboardingBatchError::Validation {
+            path: path.to_path_buf(),
+            message: format!("{kind} is outside the resolved data root"),
+        })?;
+    relative
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| OnboardingBatchError::Validation {
+            path: path.to_path_buf(),
+            message: format!("{kind} identity is not valid UTF-8"),
+        })
 }
 
 fn prepare_batch(
@@ -1373,6 +1480,7 @@ impl Transaction {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NOTE_EDIT_JOURNAL_FILE;
     use crate::resolution::ResolutionEnvironment;
     use crate::state::render_empty_project_state;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1386,8 +1494,10 @@ mod tests {
         let index = fixture.project.join("index.md");
         let note = fixture.project.join("entities/core.md");
 
-        let error = apply_onboarding_batch_with_hook(&request, || {
-            fs::write(&index, "human edit\n").expect("change index concurrently")
+        let error = apply_onboarding_batch_with_hook(&request, |stage| {
+            if stage == OnboardingPublicationStage::Notes {
+                fs::write(&index, "human edit\n").expect("change index concurrently");
+            }
         })
         .expect_err("changed index must conflict");
 
@@ -1401,6 +1511,84 @@ mod tests {
             fs::read(fixture.project.join(PROJECT_STATE_FILE)).expect("read state"),
             render_empty_project_state()
         );
+        assert!(!fixture.project.join(NOTE_EDIT_JOURNAL_FILE).exists());
+    }
+
+    #[test]
+    fn recovers_every_interrupted_onboarding_publication_stage() {
+        for stage in [
+            OnboardingPublicationStage::Notes,
+            OnboardingPublicationStage::Index,
+            OnboardingPublicationStage::Roadmap,
+            OnboardingPublicationStage::State,
+        ] {
+            let fixture = Fixture::new(&format!("crash-{stage:?}"));
+            let request = fixture.request();
+            let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = apply_onboarding_batch_with_hook(&request, |published| {
+                    assert_ne!(published, stage, "simulated process interruption");
+                });
+            }));
+
+            assert!(interrupted.is_err());
+            assert!(fixture.project.join(NOTE_EDIT_JOURNAL_FILE).is_file());
+
+            let recovery = crate::note_edit::recover_pending_note_edit(&request.resolution)
+                .expect("recover interrupted onboarding batch");
+            if stage == OnboardingPublicationStage::State {
+                assert_eq!(recovery, NoteEditRecovery::Finalized);
+                assert!(fixture.project.join("entities/core.md").is_file());
+                assert_eq!(
+                    fs::read_to_string(fixture.project.join("index.md")).expect("read index"),
+                    request.index
+                );
+            } else {
+                assert_eq!(recovery, NoteEditRecovery::RolledBack);
+                assert!(!fixture.project.join("entities/core.md").exists());
+                assert_eq!(
+                    fs::read_to_string(fixture.project.join("index.md")).expect("read index"),
+                    ""
+                );
+                assert_eq!(
+                    fs::read_to_string(fixture.project.join("roadmap.md")).expect("read roadmap"),
+                    ""
+                );
+                assert_eq!(
+                    fs::read(fixture.project.join(PROJECT_STATE_FILE)).expect("read state"),
+                    render_empty_project_state()
+                );
+            }
+            assert!(!fixture.project.join(NOTE_EDIT_JOURNAL_FILE).exists());
+            validate_project(&request.resolution).expect("recovered project validates");
+        }
+    }
+
+    #[test]
+    fn refuses_onboarding_recovery_when_created_note_bytes_changed() {
+        let fixture = Fixture::new("crash-unexpected-note");
+        let request = fixture.request();
+        let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = apply_onboarding_batch_with_hook(&request, |published| {
+                assert_ne!(
+                    published,
+                    OnboardingPublicationStage::Notes,
+                    "simulated process interruption"
+                );
+            });
+        }));
+        assert!(interrupted.is_err());
+
+        let note = fixture.project.join("entities/core.md");
+        fs::write(&note, "external writer\n").expect("change interrupted note");
+        let error = crate::note_edit::recover_pending_note_edit(&request.resolution)
+            .expect_err("unexpected note bytes must stop recovery");
+
+        assert_eq!(error.exit_code(), 5);
+        assert_eq!(
+            fs::read_to_string(note).expect("preserve changed note"),
+            "external writer\n"
+        );
+        assert!(fixture.project.join(NOTE_EDIT_JOURNAL_FILE).is_file());
     }
 
     struct Fixture {
