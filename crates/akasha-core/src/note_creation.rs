@@ -299,6 +299,7 @@ pub fn create_mutable_note(
         &NoteProjectionJournal {
             project: &resolved.project,
             id: &id,
+            note_before: None,
             note_after: &source,
             projection_id: &projection_id,
             projection_before: projection_before_text,

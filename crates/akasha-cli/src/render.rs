@@ -4,7 +4,8 @@ use std::io::{self, IsTerminal};
 
 use akasha_core::{
     ContextBundle, EventCreationResult, InitResult, LinkResult, MutableNoteCreationResult,
-    NoteClass, NoteEditRecovery, ProjectValidationReport, ResolvedProject, render_context_markdown,
+    NoteClass, NoteEditRecovery, ProjectValidationReport, RecordUpdateResult, ResolvedProject,
+    render_context_markdown,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -109,6 +110,34 @@ pub(crate) fn render_mutable_note_creation(
             } else {
                 "no"
             },
+            output,
+        );
+        print_field("project state", result.state.display(), output);
+        print_field("recovery", recovery_name(result.recovery), output);
+    }
+    Ok(())
+}
+
+pub(crate) fn render_record_update(
+    result: &RecordUpdateResult,
+    output: OutputMode,
+) -> Result<(), serde_json::Error> {
+    if output.json {
+        println!("{}", serde_json::to_string_pretty(result)?);
+    } else {
+        print_status("updated record", &result.id, output);
+        print_field("project", &result.project, output);
+        print_field("type", &result.note_type, output);
+        print_field("path", result.path.display(), output);
+        print_field(
+            "record changed",
+            if result.changed { "yes" } else { "no" },
+            output,
+        );
+        print_field("roadmap", result.roadmap.display(), output);
+        print_field(
+            "roadmap changed",
+            if result.roadmap_changed { "yes" } else { "no" },
             output,
         );
         print_field("project state", result.state.display(), output);

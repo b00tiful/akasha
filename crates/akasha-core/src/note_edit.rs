@@ -48,6 +48,22 @@ pub struct NoteEditResult {
     pub recovery: NoteEditRecovery,
 }
 
+/// Result of one exact-source record update with an explicitly accepted roadmap.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RecordUpdateResult {
+    pub root: PathBuf,
+    pub project: String,
+    pub project_dir: PathBuf,
+    pub note_type: String,
+    pub id: String,
+    pub path: PathBuf,
+    pub changed: bool,
+    pub roadmap: PathBuf,
+    pub roadmap_changed: bool,
+    pub state: PathBuf,
+    pub recovery: NoteEditRecovery,
+}
+
 /// A resolution, validation, optimistic-concurrency, filesystem, or recovery failure.
 #[derive(Debug)]
 pub enum NoteEditError {
@@ -358,6 +374,182 @@ pub fn replace_library_document(
                 changed: true,
                 recovery: NoteEditRecovery::Finalized,
             }),
+            Ok(_) => Err(original),
+            Err(recovery) => Err(NoteEditError::Recovery {
+                original: Box::new(original),
+                recovery: Box::new(recovery),
+            }),
+        },
+    }
+}
+
+/// Update one selected-project record and explicitly accept its complete roadmap projection.
+pub fn update_record(
+    request: &ResolveRequest,
+    id: &str,
+    expected_source: &str,
+    replacement_source: &str,
+    roadmap_source: &str,
+) -> Result<RecordUpdateResult, NoteEditError> {
+    let resolved = resolve_project(request)?;
+    let _lock = ProjectWriteLock::acquire(&resolved.project_dir)?;
+    let recovery = recover_note_mutation_locked(request, &resolved.project_dir)?;
+    let projection = build_library_projection(request)?;
+    let book = projection
+        .projects
+        .iter()
+        .find(|shelf| shelf.project == resolved.project)
+        .into_iter()
+        .flat_map(|shelf| &shelf.categories)
+        .flat_map(|category| &category.books)
+        .find(|book| book.id == id)
+        .ok_or_else(|| NoteEditError::Validation {
+            path: PathBuf::from(id),
+            message: "only a projected note from the selected project can be updated".to_owned(),
+        })?;
+    if book.class != NoteClass::Record {
+        return Err(NoteEditError::Validation {
+            path: PathBuf::from(id),
+            message: "record updates require a configured project record".to_owned(),
+        });
+    }
+    let note_type = book.note_type.clone();
+
+    let path = resolved.root.join(id);
+    let current = read_regular_file(&path, "read the selected canonical record")?;
+    if current != expected_source.as_bytes() {
+        return Err(NoteEditError::Conflict {
+            path,
+            message: "the canonical record no longer matches the supplied expected source"
+                .to_owned(),
+        });
+    }
+
+    let config = load_root_config(&resolved.root)?;
+    validate_replacement(
+        &resolved.root,
+        &resolved.project,
+        &path,
+        &note_type,
+        replacement_source.as_bytes(),
+        &config,
+    )?;
+    validate_preserved_record_metadata(
+        &path,
+        expected_source.as_bytes(),
+        replacement_source.as_bytes(),
+    )?;
+
+    let evidence = collect_candidate_evidence(
+        &resolved.project_dir,
+        &path,
+        replacement_source.as_bytes(),
+        &config,
+    )?;
+    let index_path = resolved.project_dir.join(&config.project.index);
+    let roadmap_path = resolved.project_dir.join(&config.project.roadmap);
+    let index = read_regular_file(&index_path, "read the current index projection")?;
+    let roadmap_before = read_regular_file(&roadmap_path, "read the current roadmap projection")?;
+    let roadmap_before_text =
+        str::from_utf8(&roadmap_before).map_err(|error| NoteEditError::Validation {
+            path: roadmap_path.clone(),
+            message: format!("current roadmap projection is not valid UTF-8: {error}"),
+        })?;
+    let state_path = resolved.project_dir.join(PROJECT_STATE_FILE);
+    let note_changed = replacement_source != expected_source;
+    let roadmap_changed = roadmap_before != roadmap_source.as_bytes();
+    if !note_changed && !roadmap_changed {
+        return Ok(RecordUpdateResult {
+            root: resolved.root,
+            project: resolved.project,
+            project_dir: resolved.project_dir,
+            note_type,
+            id: id.to_owned(),
+            path,
+            changed: false,
+            roadmap: roadmap_path,
+            roadmap_changed: false,
+            state: state_path,
+            recovery,
+        });
+    }
+
+    let state_before = read_regular_file(&state_path, "read the current project state")?;
+    let state_before_text =
+        str::from_utf8(&state_before).map_err(|error| NoteEditError::Validation {
+            path: state_path.clone(),
+            message: format!("project state is not valid UTF-8: {error}"),
+        })?;
+    let state_after = render_updated_project_state(
+        state_before_text,
+        &resolved.project_dir,
+        &index,
+        roadmap_source.as_bytes(),
+        &evidence,
+        &BTreeSet::new(),
+    )
+    .map_err(|message| NoteEditError::Validation {
+        path: state_path.clone(),
+        message,
+    })?;
+    let state_after_text = str::from_utf8(&state_after)
+        .expect("the deterministic project-state renderer always emits UTF-8");
+    let roadmap_id = vault_relative_identity(&resolved.root, &roadmap_path)?;
+    let (journal_path, journal_source) = write_note_projection_mutation_journal(
+        &resolved.project_dir,
+        &NoteProjectionJournal {
+            project: &resolved.project,
+            id,
+            note_before: Some(expected_source),
+            note_after: replacement_source,
+            projection_id: &roadmap_id,
+            projection_before: roadmap_before_text,
+            projection_after: roadmap_source,
+            state_before: state_before_text,
+            state_after: state_after_text,
+        },
+    )?;
+    let result_for = |recovery| RecordUpdateResult {
+        root: resolved.root.clone(),
+        project: resolved.project.clone(),
+        project_dir: resolved.project_dir.clone(),
+        note_type: note_type.clone(),
+        id: id.to_owned(),
+        path: path.clone(),
+        changed: note_changed,
+        roadmap: roadmap_path.clone(),
+        roadmap_changed,
+        state: state_path.clone(),
+        recovery,
+    };
+
+    let operation = (|| {
+        if note_changed {
+            replace_file_if_unchanged(
+                &path,
+                expected_source.as_bytes(),
+                replacement_source.as_bytes(),
+            )
+            .map_err(map_checked_replace)?;
+            sync_replacement_directory(&path, "sync the canonical record replacement")?;
+        }
+        if roadmap_changed {
+            replace_file_if_unchanged(&roadmap_path, &roadmap_before, roadmap_source.as_bytes())
+                .map_err(map_checked_replace)?;
+            sync_replacement_directory(&roadmap_path, "sync the roadmap replacement")?;
+        }
+        replace_file_if_unchanged(&state_path, &state_before, &state_after)
+            .map_err(map_checked_replace)?;
+        sync_replacement_directory(&state_path, "sync the project state replacement")?;
+        validate_project(request)?;
+        complete_note_mutation_journal(&journal_path, &journal_source, &resolved.project_dir)?;
+        Ok(result_for(recovery))
+    })();
+
+    match operation {
+        Ok(result) => Ok(result),
+        Err(original) => match recover_note_mutation_locked(request, &resolved.project_dir) {
+            Ok(NoteEditRecovery::Finalized) => Ok(result_for(NoteEditRecovery::Finalized)),
             Ok(_) => Err(original),
             Err(recovery) => Err(NoteEditError::Recovery {
                 original: Box::new(original),
@@ -682,6 +874,47 @@ fn validate_replacement(
     Ok(())
 }
 
+fn validate_preserved_record_metadata(
+    path: &Path,
+    expected_source: &[u8],
+    replacement_source: &[u8],
+) -> Result<(), NoteEditError> {
+    let expected = parse_leading_frontmatter_bytes(expected_source).map_err(|error| {
+        NoteEditError::Validation {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        }
+    })?;
+    let replacement = parse_leading_frontmatter_bytes(replacement_source).map_err(|error| {
+        NoteEditError::Validation {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        }
+    })?;
+    if expected.metadata.get("created") != replacement.metadata.get("created") {
+        return Err(NoteEditError::Validation {
+            path: path.to_path_buf(),
+            message: "record field \"created\" must be preserved across lifecycle updates"
+                .to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn vault_relative_identity(root: &Path, path: &Path) -> Result<String, NoteEditError> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| NoteEditError::Validation {
+            path: path.to_path_buf(),
+            message: "maintained projection is outside the configured data root".to_owned(),
+        })?;
+    let text = relative.to_str().ok_or_else(|| NoteEditError::Validation {
+        path: path.to_path_buf(),
+        message: "maintained projection identity is not valid UTF-8".to_owned(),
+    })?;
+    Ok(text.replace(std::path::MAIN_SEPARATOR, "/"))
+}
+
 fn collect_candidate_evidence(
     project_dir: &Path,
     replacement_path: &Path,
@@ -870,6 +1103,7 @@ pub(crate) fn write_note_mutation_journal(
 pub(crate) struct NoteProjectionJournal<'a> {
     pub(crate) project: &'a str,
     pub(crate) id: &'a str,
+    pub(crate) note_before: Option<&'a str>,
     pub(crate) note_after: &'a str,
     pub(crate) projection_id: &'a str,
     pub(crate) projection_before: &'a str,
@@ -886,7 +1120,7 @@ pub(crate) fn write_note_projection_mutation_journal(
         schema_version: NOTE_PROJECTION_JOURNAL_SCHEMA_VERSION,
         project: mutation.project.to_owned(),
         id: mutation.id.to_owned(),
-        note_before: None,
+        note_before: mutation.note_before.map(str::to_owned),
         note_after: mutation.note_after.to_owned(),
         projection: Some(JournalProjection {
             id: mutation.projection_id.to_owned(),

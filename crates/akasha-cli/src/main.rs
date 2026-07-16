@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use akasha_core::{
     InitRequest, LinkRequest, ResolveRequest, assemble_context, create_event, create_mutable_note,
-    initialize_project, link_project, resolve_project, validate_project,
+    initialize_project, link_project, resolve_project, update_record, validate_project,
 };
 use clap::{Parser, Subcommand};
 
@@ -93,6 +93,24 @@ enum Command {
         #[arg(long, value_name = "NAME=VALUE")]
         field: Vec<String>,
     },
+    /// Update one record from exact source bytes and accept its complete roadmap.
+    UpdateRecord {
+        /// Complete vault-relative Markdown identity of the configured project record.
+        #[arg(value_name = "ID")]
+        id: String,
+
+        /// UTF-8 file containing the exact record source previously read by the caller.
+        #[arg(long, value_name = "PATH")]
+        expected: PathBuf,
+
+        /// UTF-8 file containing the complete replacement record source.
+        #[arg(long, value_name = "PATH")]
+        replacement: PathBuf,
+
+        /// UTF-8 file containing the complete accepted roadmap after the update.
+        #[arg(long, value_name = "PATH")]
+        roadmap: PathBuf,
+    },
     /// Resolve and print the current data root and project identity.
     Resolve,
     /// Validate the selected project's configuration, layout, and canonical notes.
@@ -123,6 +141,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             Command::Init { slug } | Command::Link { slug, .. } => Some(slug),
             Command::CreateEvent { .. }
             | Command::CreateNote { .. }
+            | Command::UpdateRecord { .. }
             | Command::Resolve
             | Command::Validate
             | Command::Context => None,
@@ -174,17 +193,34 @@ fn run(cli: Cli) -> Result<(), u8> {
         } => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
             let fields = parse_template_fields(field)?;
-            let projection_source = fs::read_to_string(&projection).map_err(|error| {
-                eprintln!(
-                    "akasha: failed to read projection input {}: {error}",
-                    projection.display()
-                );
-                6
-            })?;
+            let projection_source = read_utf8_input(&projection, "projection")?;
             let result =
                 create_mutable_note(&request, &note_type, &path, &fields, &projection_source)
                     .map_err(report_mutable_note_creation)?;
             render_mutable_note_creation(&result, output).map_err(|error| {
+                eprintln!("akasha: failed to render command output: {error}");
+                6
+            })?;
+        }
+        Command::UpdateRecord {
+            id,
+            expected,
+            replacement,
+            roadmap,
+        } => {
+            let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
+            let expected_source = read_utf8_input(&expected, "expected record")?;
+            let replacement_source = read_utf8_input(&replacement, "replacement record")?;
+            let roadmap_source = read_utf8_input(&roadmap, "roadmap")?;
+            let result = update_record(
+                &request,
+                &id,
+                &expected_source,
+                &replacement_source,
+                &roadmap_source,
+            )
+            .map_err(report_note_edit)?;
+            render::render_record_update(&result, output).map_err(|error| {
                 eprintln!("akasha: failed to render command output: {error}");
                 6
             })?;
@@ -251,6 +287,21 @@ fn report_event_creation(error: akasha_core::EventCreationError) -> u8 {
 fn report_mutable_note_creation(error: akasha_core::MutableNoteCreationError) -> u8 {
     eprintln!("akasha: {error}");
     error.exit_code()
+}
+
+fn report_note_edit(error: akasha_core::NoteEditError) -> u8 {
+    eprintln!("akasha: {error}");
+    error.exit_code()
+}
+
+fn read_utf8_input(path: &std::path::Path, label: &str) -> Result<String, u8> {
+    fs::read_to_string(path).map_err(|error| {
+        eprintln!(
+            "akasha: failed to read {label} input {}: {error}",
+            path.display()
+        );
+        6
+    })
 }
 
 fn parse_template_fields(fields: Vec<String>) -> Result<BTreeMap<String, String>, u8> {
