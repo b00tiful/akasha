@@ -10,7 +10,7 @@ use serde::Serialize;
 use crate::project_validation::{
     ProjectValidationError, ProjectValidationReport, canonical_note_paths, validate_project,
 };
-use crate::resolution::{ResolveRequest, RootConfig, load_root_config};
+use crate::resolution::{ResolveError, ResolveRequest, RootConfig, load_root_config};
 use crate::validation::{ValidationError, parse_leading_frontmatter_bytes};
 
 pub const DEFAULT_CONTEXT_MAX_CHARS: usize = 16_000;
@@ -160,6 +160,28 @@ pub fn assemble_session_breadcrumb(
         .as_secs()
         / 86_400;
     assemble_session_breadcrumb_for_day(request, today as i64)
+}
+
+/// Assemble the breadcrumb when the current directory belongs to an Akasha project.
+///
+/// A missing repository pointer is the only not-applicable state. Invalid pointers, explicit
+/// projects, root configuration, and project contents continue to fail normally.
+pub fn assemble_session_breadcrumb_if_linked(
+    request: &ResolveRequest,
+) -> Result<Option<SessionBreadcrumb>, ContextError> {
+    match assemble_session_breadcrumb(request) {
+        Ok(breadcrumb) => Ok(Some(breadcrumb)),
+        Err(ContextError::ProjectValidation(source))
+            if matches!(
+                source.as_ref(),
+                ProjectValidationError::Resolve(resolve)
+                    if matches!(resolve.as_ref(), ResolveError::ProjectPointerNotFound { .. })
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn assemble_session_breadcrumb_for_day(

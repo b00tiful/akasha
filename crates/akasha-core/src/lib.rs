@@ -13,6 +13,7 @@ pub mod note_template;
 pub mod onboarding;
 pub mod project_validation;
 pub mod resolution;
+pub mod session_hook_wiring;
 mod state;
 pub mod validation;
 mod wikilink;
@@ -25,8 +26,8 @@ pub use agent_wiring::{
 };
 pub use context::{
     ContextBundle, ContextEntry, ContextError, ContextSection, DEFAULT_CONTEXT_MAX_CHARS,
-    SessionBreadcrumb, assemble_context, assemble_session_breadcrumb, render_context_markdown,
-    render_session_breadcrumb,
+    SessionBreadcrumb, assemble_context, assemble_session_breadcrumb,
+    assemble_session_breadcrumb_if_linked, render_context_markdown, render_session_breadcrumb,
 };
 pub use event::{EventCreationError, EventCreationResult, create_event};
 pub use init::{InitError, InitRecovery, InitRequest, InitResult, initialize_project};
@@ -61,6 +62,10 @@ pub use project_validation::{
 pub use resolution::{
     NoteClass, ProjectSource, ResolutionEnvironment, ResolveError, ResolveRequest, ResolvedProject,
     RootSource, resolve_project,
+};
+pub use session_hook_wiring::{
+    SessionHookWiringAction, SessionHookWiringError, SessionHookWiringPatch, SessionHookWiringPlan,
+    prepare_session_hook_wiring,
 };
 pub use validation::{
     ParsedNote, ProjectRegistry, ProjectRegistryEntry, ValidationError, parse_leading_frontmatter,

@@ -97,6 +97,9 @@ pub struct ResolvedProject {
 #[derive(Debug)]
 pub enum ResolveError {
     Configuration(String),
+    ProjectPointerNotFound {
+        start: PathBuf,
+    },
     Validation {
         path: PathBuf,
         source: Box<ValidationError>,
@@ -112,7 +115,7 @@ impl ResolveError {
     #[must_use]
     pub const fn exit_code(&self) -> u8 {
         match self {
-            Self::Configuration(_) => 3,
+            Self::Configuration(_) | Self::ProjectPointerNotFound { .. } => 3,
             Self::Validation { source, .. } => source.exit_code(),
             Self::FileSystem { .. } => 6,
         }
@@ -123,6 +126,11 @@ impl fmt::Display for ResolveError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Configuration(message) => formatter.write_str(message),
+            Self::ProjectPointerNotFound { start } => write!(
+                formatter,
+                "no {POINTER_FILE} found from {} upward; pass --project explicitly",
+                start.display()
+            ),
             Self::Validation { path, source } => {
                 write!(
                     formatter,
@@ -146,7 +154,7 @@ impl fmt::Display for ResolveError {
 impl std::error::Error for ResolveError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Configuration(_) => None,
+            Self::Configuration(_) | Self::ProjectPointerNotFound { .. } => None,
             Self::Validation { source, .. } => Some(source.as_ref()),
             Self::FileSystem { source, .. } => Some(source),
         }
@@ -660,10 +668,9 @@ fn find_nearest_pointer(cwd: &Path) -> Result<PathBuf, ResolveError> {
         }
 
         if !current.pop() {
-            return Err(ResolveError::Configuration(format!(
-                "no {POINTER_FILE} found from {} upward; pass --project explicitly",
-                cwd.display()
-            )));
+            return Err(ResolveError::ProjectPointerNotFound {
+                start: cwd.to_path_buf(),
+            });
         }
     }
 }

@@ -6,8 +6,9 @@ use std::process::ExitCode;
 
 use akasha_core::{
     AgentClient, InitRequest, LinkRequest, ResolveRequest, apply_agent_wiring, assemble_context,
-    assemble_session_breadcrumb, create_event, create_mutable_note, initialize_project,
-    link_project, prepare_agent_wiring, prepare_agent_wiring_removal, remove_agent_wiring,
+    assemble_session_breadcrumb, assemble_session_breadcrumb_if_linked, create_event,
+    create_mutable_note, initialize_project, link_project, prepare_agent_wiring,
+    prepare_agent_wiring_removal, prepare_session_hook_wiring, remove_agent_wiring,
     resolve_project, update_entity, update_record, validate_project,
 };
 use clap::{Parser, Subcommand, ValueEnum};
@@ -17,7 +18,7 @@ mod render;
 use render::{
     OutputMode, render_agent_wiring_plan, render_agent_wiring_result, render_breadcrumb,
     render_context, render_event_creation, render_init, render_link, render_mutable_note_creation,
-    render_resolution, render_validation,
+    render_resolution, render_session_hook_wiring_plan, render_validation,
 };
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -190,6 +191,16 @@ enum Command {
         #[arg(long, value_name = "PATH")]
         home: Option<PathBuf>,
     },
+    /// Prepare an exact, read-only session-start hook change for one agent client.
+    PrepareSessionHook {
+        /// Agent client whose user-level session start should load the Akasha breadcrumb.
+        #[arg(value_enum, value_name = "CLIENT")]
+        client: AgentClientArgument,
+
+        /// Client configuration directory. Defaults to CODEX_HOME/~/.codex or ~/.claude.
+        #[arg(long, value_name = "PATH")]
+        home: Option<PathBuf>,
+    },
     /// Resolve and print the current data root and project identity.
     Resolve,
     /// Validate the selected project's configuration, layout, and canonical notes.
@@ -197,7 +208,11 @@ enum Command {
     /// Assemble a deterministic, bounded orientation bundle for the selected project.
     Context,
     /// Print the compact session-start project breadcrumb.
-    Breadcrumb,
+    Breadcrumb {
+        /// Succeed without output only when no project pointer exists above the current directory.
+        #[arg(long)]
+        optional: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -227,10 +242,11 @@ fn run(cli: Cli) -> Result<(), u8> {
             | Command::PrepareAgentWiring { .. }
             | Command::ApplyAgentWiring { .. }
             | Command::RemoveAgentWiring { .. }
+            | Command::PrepareSessionHook { .. }
             | Command::Resolve
             | Command::Validate
             | Command::Context
-            | Command::Breadcrumb => None,
+            | Command::Breadcrumb { .. } => None,
         };
         if let Some(slug) = positional
             && slug != selected
@@ -383,6 +399,17 @@ fn run(cli: Cli) -> Result<(), u8> {
                 6
             })?;
         }
+        Command::PrepareSessionHook { client, home } => {
+            let client = AgentClient::from(client);
+            let home = resolve_agent_home(client, home)?;
+            let request = ResolveRequest::from_process(root, None).map_err(report_resolution)?;
+            let plan = prepare_session_hook_wiring(&request, client, &home)
+                .map_err(report_session_hook_wiring)?;
+            render_session_hook_wiring_plan(&plan, output).map_err(|error| {
+                eprintln!("akasha: failed to render command output: {error}");
+                6
+            })?;
+        }
         Command::Resolve => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
             let resolved = resolve_project(&request).map_err(report_resolution)?;
@@ -407,13 +434,19 @@ fn run(cli: Cli) -> Result<(), u8> {
                 6
             })?;
         }
-        Command::Breadcrumb => {
+        Command::Breadcrumb { optional } => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
-            let breadcrumb = assemble_session_breadcrumb(&request).map_err(report_context)?;
-            render_breadcrumb(&breadcrumb, output).map_err(|error| {
-                eprintln!("akasha: failed to render command output: {error}");
-                6
-            })?;
+            let breadcrumb = if optional {
+                assemble_session_breadcrumb_if_linked(&request).map_err(report_context)?
+            } else {
+                Some(assemble_session_breadcrumb(&request).map_err(report_context)?)
+            };
+            if let Some(breadcrumb) = breadcrumb {
+                render_breadcrumb(&breadcrumb, output).map_err(|error| {
+                    eprintln!("akasha: failed to render command output: {error}");
+                    6
+                })?;
+            }
         }
     }
 
@@ -461,6 +494,11 @@ fn report_note_edit(error: akasha_core::NoteEditError) -> u8 {
 }
 
 fn report_agent_wiring(error: akasha_core::AgentWiringError) -> u8 {
+    eprintln!("akasha: {error}");
+    error.exit_code()
+}
+
+fn report_session_hook_wiring(error: akasha_core::SessionHookWiringError) -> u8 {
     eprintln!("akasha: {error}");
     error.exit_code()
 }

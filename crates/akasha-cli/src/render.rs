@@ -7,7 +7,8 @@ use akasha_core::{
     AgentWiringResult, ContextBundle, EntityUpdateResult, EventCreationResult, InitRecovery,
     InitResult, LinkResult, MutableNoteCreationResult, NoteClass, NoteEditRecovery,
     ProjectValidationReport, RecordUpdateResult, ResolvedProject, SessionBreadcrumb,
-    render_context_markdown, render_session_breadcrumb,
+    SessionHookWiringAction, SessionHookWiringPlan, render_context_markdown,
+    render_session_breadcrumb,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -144,6 +145,50 @@ pub(crate) fn render_agent_wiring_result(
         );
     }
     Ok(())
+}
+
+pub(crate) fn render_session_hook_wiring_plan(
+    plan: &SessionHookWiringPlan,
+    output: OutputMode,
+) -> Result<(), serde_json::Error> {
+    if output.json {
+        println!("{}", serde_json::to_string_pretty(plan)?);
+    } else {
+        print_status("prepared session hook", plan.client.as_str(), output);
+        print_field("data root", plan.root.display(), output);
+        print_field("target", plan.target.display(), output);
+        print_field("action", session_hook_action_name(plan.action), output);
+        print_field(
+            "current sha256",
+            plan.current_sha256.as_deref().unwrap_or("absent"),
+            output,
+        );
+        print_field("result sha256", &plan.result_sha256, output);
+        print_field("plan id", &plan.plan_id, output);
+        print_field(
+            "patch range",
+            format_args!("{}..{}", plan.patch.start, plan.patch.end),
+            output,
+        );
+        print_field("replacement bytes", plan.patch.replacement.len(), output);
+        if plan.patch.replacement.is_empty() {
+            print_field("replacement", "none", output);
+        } else {
+            print_field("replacement", "", output);
+            print!("{}", plan.patch.replacement);
+        }
+    }
+    Ok(())
+}
+
+fn session_hook_action_name(action: SessionHookWiringAction) -> &'static str {
+    match action {
+        SessionHookWiringAction::Create => "create",
+        SessionHookWiringAction::AddHooks => "add-hooks",
+        SessionHookWiringAction::AddSessionStart => "add-session-start",
+        SessionHookWiringAction::AppendSessionStart => "append-session-start",
+        SessionHookWiringAction::NoChange => "no-change",
+    }
 }
 
 pub(crate) fn render_event_creation(
