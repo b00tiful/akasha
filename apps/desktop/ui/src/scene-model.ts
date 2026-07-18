@@ -21,6 +21,17 @@ export interface ShelfMotion {
   velocityZ: number;
 }
 
+export interface ShelfRoamingCell {
+  minimumX: number;
+  maximumX: number;
+  minimumY: number;
+  maximumY: number;
+  minimumZ: number;
+  maximumZ: number;
+  centerX: number;
+  centerY: number;
+}
+
 export interface ProjectedShelf {
   id: string;
   x: number;
@@ -231,26 +242,77 @@ export function sealSymbol(label: string, global: boolean): PixelSymbol {
   return { name: "deterministic rune", rows: fallbackRune(label) };
 }
 
-export function initialShelfMotion(id: string, index: number): ShelfMotion {
+export function shelfRoamingCells(count: number): ShelfRoamingCell[] {
+  const cabinetCount = Math.max(1, Math.floor(count));
+  const columns = Math.min(
+    cabinetCount,
+    Math.max(1, Math.ceil(Math.sqrt(cabinetCount * 2))),
+  );
+  const rows = Math.ceil(cabinetCount / columns);
+  const totalWidth = SHELF_MOTION_BOUNDS.maximumX - SHELF_MOTION_BOUNDS.minimumX;
+  const totalHeight = SHELF_MOTION_BOUNDS.maximumY - SHELF_MOTION_BOUNDS.minimumY;
+  const slotWidth = totalWidth / columns;
+  const slotHeight = totalHeight / rows;
+  const cells: ShelfRoamingCell[] = [];
+  for (let row = 0; row < rows; row += 1) {
+    const rowStart = row * columns;
+    const rowCount = Math.min(columns, cabinetCount - rowStart);
+    for (let column = 0; column < rowCount; column += 1) {
+      const centerX = (column - (rowCount - 1) / 2) * slotWidth;
+      const centerY = SHELF_MOTION_BOUNDS.maximumY - (row + 0.5) * slotHeight;
+      const roamX = Math.min(0.07, slotWidth * 0.13);
+      const roamY = Math.min(0.05, slotHeight * 0.13);
+      const depthRow = rows === 1 ? 0.5 : row / (rows - 1);
+      const depthCenter = 0.74 - depthRow * 0.16 + (column % 2) * 0.025;
+      cells.push({
+        minimumX: centerX - roamX,
+        maximumX: centerX + roamX,
+        minimumY: centerY - roamY,
+        maximumY: centerY + roamY,
+        minimumZ: depthCenter - 0.035,
+        maximumZ: depthCenter + 0.035,
+        centerX,
+        centerY,
+      });
+    }
+  }
+  return cells;
+}
+
+export function cabinetScaleForCount(count: number): number {
+  return clamp(Math.sqrt(2 / Math.max(2, count)), 0.48, 1);
+}
+
+export function initialShelfMotion(
+  id: string,
+  index: number,
+  cell?: ShelfRoamingCell,
+): ShelfMotion {
   let state = hashString(`${id}:${index}`);
   const next = (): number => {
     state = nextHash(state);
     return state / 0xffff_ffff;
   };
-  const speed = 0.014 + next() * 0.012;
+  const speed = cell ? 0.0045 + next() * 0.0045 : 0.014 + next() * 0.012;
   const angle = next() * Math.PI * 2;
+  const bounds = cell ?? SHELF_MOTION_BOUNDS;
   return {
-    x: -1.08 + next() * 2.16,
-    y: -0.56 + next() * 1.12,
-    z: 0.38 + next() * 0.66,
+    x: bounds.minimumX + (bounds.maximumX - bounds.minimumX) * next(),
+    y: bounds.minimumY + (bounds.maximumY - bounds.minimumY) * next(),
+    z: bounds.minimumZ + (bounds.maximumZ - bounds.minimumZ) * next(),
     velocityX: Math.cos(angle) * speed,
     velocityY: Math.sin(angle) * speed * 0.72,
-    velocityZ: (next() - 0.5) * 0.014,
+    velocityZ: (next() - 0.5) * (cell ? 0.006 : 0.014),
   };
 }
 
-export function advanceShelfMotion(motion: ShelfMotion, seconds: number): ShelfMotion {
+export function advanceShelfMotion(
+  motion: ShelfMotion,
+  seconds: number,
+  cell?: ShelfRoamingCell,
+): ShelfMotion {
   const next = { ...motion };
+  const bounds = cell ?? SHELF_MOTION_BOUNDS;
   next.x += next.velocityX * seconds;
   next.y += next.velocityY * seconds;
   next.z += next.velocityZ * seconds;
@@ -258,22 +320,22 @@ export function advanceShelfMotion(motion: ShelfMotion, seconds: number): ShelfM
     next,
     "x",
     "velocityX",
-    SHELF_MOTION_BOUNDS.minimumX,
-    SHELF_MOTION_BOUNDS.maximumX,
+    bounds.minimumX,
+    bounds.maximumX,
   );
   bounce(
     next,
     "y",
     "velocityY",
-    SHELF_MOTION_BOUNDS.minimumY,
-    SHELF_MOTION_BOUNDS.maximumY,
+    bounds.minimumY,
+    bounds.maximumY,
   );
   bounce(
     next,
     "z",
     "velocityZ",
-    SHELF_MOTION_BOUNDS.minimumZ,
-    SHELF_MOTION_BOUNDS.maximumZ,
+    bounds.minimumZ,
+    bounds.maximumZ,
   );
   return next;
 }
@@ -316,12 +378,69 @@ export function resolveShelfOverlaps(
   }
 }
 
+export function steerShelfMotions(
+  motions: ShelfMotion[],
+  seconds: number,
+): void {
+  const delta = clamp(seconds, 0, 0.05);
+  if (delta === 0 || motions.length < 2) {
+    return;
+  }
+  const steering = motions.map(() => ({ x: 0, y: 0 }));
+  for (let leftIndex = 0; leftIndex < motions.length; leftIndex += 1) {
+    const left = motions[leftIndex];
+    if (!left) {
+      continue;
+    }
+    const leftProjection = projectShelf(String(leftIndex), left);
+    for (let rightIndex = leftIndex + 1; rightIndex < motions.length; rightIndex += 1) {
+      const right = motions[rightIndex];
+      if (!right) {
+        continue;
+      }
+      const rightProjection = projectShelf(String(rightIndex), right);
+      let deltaX = rightProjection.x - leftProjection.x;
+      let deltaY = rightProjection.y - leftProjection.y;
+      if (Math.abs(deltaX) + Math.abs(deltaY) < 0.001) {
+        deltaX = (leftIndex + rightIndex) % 2 === 0 ? 1 : -1;
+        deltaY = leftIndex % 2 === 0 ? 0.35 : -0.35;
+      }
+      const scaleSum = leftProjection.scale + rightProjection.scale;
+      const radiusX = 190 * scaleSum;
+      const radiusY = 226 * scaleSum;
+      const distance = Math.hypot(deltaX / radiusX, deltaY / radiusY);
+      const influence = 1.42;
+      if (distance >= influence) {
+        continue;
+      }
+      const urgency = Math.pow((influence - distance) / influence, 1.35);
+      const directionLength = Math.max(Math.hypot(deltaX / radiusX, deltaY / radiusY), 0.001);
+      const directionX = deltaX / radiusX / directionLength;
+      const directionY = deltaY / radiusY / directionLength;
+      const horizontal = directionX * urgency * 0.022;
+      const vertical = directionY * urgency * 0.015;
+      steering[leftIndex]!.x -= horizontal;
+      steering[leftIndex]!.y -= vertical;
+      steering[rightIndex]!.x += horizontal;
+      steering[rightIndex]!.y += vertical;
+    }
+  }
+  motions.forEach((motion, index) => {
+    const adjustment = steering[index];
+    if (!adjustment) {
+      return;
+    }
+    motion.velocityX = clamp(motion.velocityX + adjustment.x * delta, -0.042, 0.042);
+    motion.velocityY = clamp(motion.velocityY + adjustment.y * delta, -0.034, 0.034);
+  });
+}
+
 export function edgeShelfOrbitTarget(x: number): number {
   const edge = smoothstep(0.7, SHELF_MOTION_BOUNDS.maximumX, Math.abs(x));
   if (edge === 0) {
     return 0;
   }
-  return Math.sign(x) * edge * (52 * Math.PI / 180);
+  return Math.sign(x) * edge * (30 * Math.PI / 180);
 }
 
 export function orbitAroundGroundAxis(
@@ -389,25 +508,27 @@ export function spatialNeighbor(
 
 export function sealFrame(progress: number): SealFrame {
   const value = clamp(progress, 0, 1);
-  const circlePosition = clamp(value / 0.42, 0, 1);
-  const circleAlpha = value <= 0.42 ? Math.sin(circlePosition * Math.PI) : 0;
+  const circlePosition = smoothstep(0.06, 0.36, value);
+  const circleAlpha = circlePosition === 0 || circlePosition === 1
+    ? 0
+    : Math.sin(circlePosition * Math.PI);
   const glowAlpha =
-    smoothstep(0.06, 0.36, value) * (1 - smoothstep(0.82, 1, value));
+    smoothstep(0.04, 0.3, value) * (1 - smoothstep(0.76, 0.98, value));
   const crackAlpha =
-    smoothstep(0.22, 0.4, value) * (1 - smoothstep(0.64, 0.82, value));
-  const particlePosition = smoothstep(0.44, 1, value);
+    smoothstep(0.18, 0.36, value) * (1 - smoothstep(0.5, 0.7, value));
+  const particlePosition = smoothstep(0.36, 0.96, value);
   return {
     circleAlpha,
     glowAlpha,
     crackAlpha,
-    fragmentOffset: smoothstep(0.34, 0.78, value) * 7,
-    fragmentAlpha: 1 - smoothstep(0.58, 0.86, value),
+    fragmentOffset: smoothstep(0.28, 0.72, value) * 7,
+    fragmentAlpha: 1 - smoothstep(0.42, 0.76, value),
     particleAlpha:
       particlePosition === 0 || particlePosition === 1
         ? 0
         : Math.sin(particlePosition * Math.PI),
-    contentReveal: smoothstep(0.88, 1, value),
-    approach: smoothstep(0.34, 1, value),
+    contentReveal: smoothstep(0.48, 0.82, value),
+    approach: smoothstep(0.12, 1, value),
   };
 }
 
@@ -419,11 +540,11 @@ export function stellarDialTarget(
 }
 
 export function minorEffectDelay(random: number): number {
-  return 1.8 + clamp(random, 0, 1) * 2;
+  return 8 + clamp(random, 0, 1) * 7;
 }
 
 export function majorEffectDelay(random: number): number {
-  return 5 + clamp(random, 0, 1) * 4;
+  return 24 + clamp(random, 0, 1) * 18;
 }
 
 function fallbackRune(label: string): readonly string[] {

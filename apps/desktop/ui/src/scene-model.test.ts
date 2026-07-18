@@ -5,6 +5,7 @@ import {
   SCENE_WIDTH,
   SHELF_MOTION_BOUNDS,
   advanceShelfMotion,
+  cabinetScaleForCount,
   edgeShelfOrbitTarget,
   initialShelfMotion,
   majorEffectDelay,
@@ -14,7 +15,9 @@ import {
   resolveShelfOverlaps,
   sealFrame,
   sealSymbol,
+  shelfRoamingCells,
   spatialNeighbor,
+  steerShelfMotions,
   stellarDialTarget,
   topLeftShelf,
 } from "./scene-model";
@@ -39,6 +42,32 @@ describe("global library scene model", () => {
     expect(projected.x).toBeLessThan(SCENE_WIDTH);
     expect(projected.y).toBeGreaterThan(0);
     expect(projected.y).toBeLessThan(SCENE_HEIGHT);
+  });
+
+  it("assigns each cabinet a narrow deterministic cell and scales density monotonically", () => {
+    const cells = shelfRoamingCells(7);
+    expect(cells).toHaveLength(7);
+    cells.slice(0, 4).forEach((cell) => expect(cell.centerY).toBeCloseTo(0.31));
+    cells.slice(4).forEach((cell) => expect(cell.centerY).toBeCloseTo(-0.31));
+    expect(cells[0]?.centerX).toBeCloseTo(-0.885);
+    expect(cells[3]?.centerX).toBeCloseTo(0.885);
+    expect(cells[4]?.centerX).toBeCloseTo(-0.59);
+    for (const cell of cells) {
+      expect(cell.maximumX - cell.minimumX).toBeCloseTo(0.14);
+      expect(cell.maximumY - cell.minimumY).toBeCloseTo(0.1);
+    }
+    expect(cabinetScaleForCount(2)).toBe(1);
+    expect(cabinetScaleForCount(4)).toBeLessThan(cabinetScaleForCount(3));
+    expect(cabinetScaleForCount(7)).toBeLessThan(cabinetScaleForCount(4));
+
+    const motion = initialShelfMotion("mirror:global:3", 3, cells[3]);
+    const advanced = advanceShelfMotion(
+      { ...motion, x: cells[3]!.maximumX - 0.001, velocityX: 0.02 },
+      1,
+      cells[3],
+    );
+    expect(advanced.x).toBeLessThanOrEqual(cells[3]!.maximumX);
+    expect(advanced.velocityX).toBeLessThan(0);
   });
 
   it("separates projected shelf footprints and starts orbit only near side edges", () => {
@@ -67,8 +96,34 @@ describe("global library scene model", () => {
         Math.abs((right?.y ?? 0) - (left?.y ?? 0)) > 190,
     ).toBe(true);
     expect(edgeShelfOrbitTarget(0.4)).toBe(0);
-    expect(degrees(edgeShelfOrbitTarget(1.18))).toBeCloseTo(52);
-    expect(degrees(edgeShelfOrbitTarget(-1.18))).toBeCloseTo(-52);
+    expect(degrees(edgeShelfOrbitTarget(1.18))).toBeCloseTo(30);
+    expect(degrees(edgeShelfOrbitTarget(-1.18))).toBeCloseTo(-30);
+  });
+
+  it("steers nearby shelves apart before applying bounded overlap correction", () => {
+    const motions = [
+      {
+        x: -0.01,
+        y: 0,
+        z: 0.5,
+        velocityX: 0.01,
+        velocityY: 0.002,
+        velocityZ: 0.001,
+      },
+      {
+        x: 0.01,
+        y: 0,
+        z: 0.51,
+        velocityX: -0.008,
+        velocityY: -0.001,
+        velocityZ: -0.001,
+      },
+    ];
+    steerShelfMotions(motions, 0.05);
+    expect(motions[0]?.velocityX).toBeLessThan(0.01);
+    expect(motions[1]?.velocityX).toBeGreaterThan(-0.008);
+    expect(motions[0]?.velocityZ).toBe(0.001);
+    expect(motions[1]?.velocityZ).toBe(-0.001);
   });
 
   it("orbits shelves around the ground-circle axis instead of the seal axis", () => {
@@ -111,7 +166,7 @@ describe("global library scene model", () => {
     }
   });
 
-  it("models the seal as a reversible circle-glow-crack-particle sequence", () => {
+  it("models the seal as a reversible trace-collapse-energy sequence", () => {
     expect(sealFrame(0)).toMatchObject({
       circleAlpha: 0,
       fragmentOffset: 0,
@@ -119,10 +174,11 @@ describe("global library scene model", () => {
       contentReveal: 0,
       approach: 0,
     });
-    expect(sealFrame(0.18).circleAlpha).toBeGreaterThan(0.95);
-    expect(sealFrame(0.5).crackAlpha).toBeGreaterThan(0.8);
-    expect(sealFrame(0.78).particleAlpha).toBeGreaterThan(0.5);
-    expect(sealFrame(0.8).contentReveal).toBe(0);
+    expect(sealFrame(0.2).circleAlpha).toBeGreaterThan(0.85);
+    expect(sealFrame(0.34).crackAlpha).toBeGreaterThan(0.8);
+    expect(sealFrame(0.68).particleAlpha).toBeGreaterThan(0.8);
+    expect(sealFrame(0.46).contentReveal).toBe(0);
+    expect(sealFrame(0.82).contentReveal).toBe(1);
     expect(sealFrame(1)).toMatchObject({
       circleAlpha: 0,
       fragmentAlpha: 0,
@@ -136,8 +192,8 @@ describe("global library scene model", () => {
   });
 
   it("bounds minor and major random-event cadence", () => {
-    expect([minorEffectDelay(0), minorEffectDelay(1)]).toEqual([1.8, 3.8]);
-    expect([majorEffectDelay(0), majorEffectDelay(1)]).toEqual([5, 9]);
+    expect([minorEffectDelay(0), minorEffectDelay(1)]).toEqual([8, 15]);
+    expect([majorEffectDelay(0), majorEffectDelay(1)]).toEqual([24, 42]);
   });
 });
 

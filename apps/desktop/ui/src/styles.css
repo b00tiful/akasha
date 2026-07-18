@@ -306,11 +306,37 @@ h3 {
   padding: 1.05% 1.15%;
   overflow: hidden;
   transform-origin: right bottom;
+  background:
+    radial-gradient(circle at 82% 18%, rgba(167, 109, 206, 0.13), transparent 31%),
+    radial-gradient(circle at 18% 92%, rgba(95, 53, 122, 0.12), transparent 38%),
+    rgba(5, 5, 6, 0.96);
+  animation: dashboard-aura 9s ease-in-out infinite;
   transition:
-    inset 420ms steps(8),
-    width 420ms steps(8),
-    height 420ms steps(8),
+    inset 520ms cubic-bezier(0.22, 0.72, 0.2, 1),
+    width 520ms cubic-bezier(0.22, 0.72, 0.2, 1),
+    height 520ms cubic-bezier(0.22, 0.72, 0.2, 1),
     background-color 260ms linear;
+}
+
+.dashboard-panel::before {
+  inset: 0;
+  width: auto;
+  height: auto;
+  background-color: transparent;
+  background-image:
+    radial-gradient(circle, rgba(232, 227, 216, 0.72) 0 1px, transparent 1.5px),
+    radial-gradient(circle, rgba(167, 109, 206, 0.68) 0 1px, transparent 1.5px),
+    radial-gradient(circle, rgba(232, 227, 216, 0.38) 0 1px, transparent 1.5px);
+  background-position: 7px 12px, 41px 29px, 23px 53px;
+  background-size: 67px 71px, 89px 83px, 113px 97px;
+  box-shadow: none;
+  opacity: 0.34;
+  animation: dashboard-stars 24s linear infinite;
+}
+
+.dashboard-panel > * {
+  position: relative;
+  z-index: 1;
 }
 
 .dashboard-panel > header,
@@ -348,6 +374,12 @@ h3 {
 .metric strong {
   color: var(--paper);
   font-weight: 400;
+  text-shadow: 0 0 8px rgba(167, 109, 206, 0.24);
+  animation: metric-astral 6.5s ease-in-out infinite;
+}
+
+.metric:nth-child(2n) strong {
+  animation-delay: -2.3s;
 }
 
 .metric.is-warning strong {
@@ -802,6 +834,45 @@ kbd {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes dashboard-stars {
+  from {
+    background-position: 7px 12px, 41px 29px, 23px 53px;
+  }
+  to {
+    background-position: 7px -59px, 41px -54px, 23px -44px;
+  }
+}
+
+@keyframes dashboard-aura {
+  0%,
+  100% {
+    box-shadow:
+      inset 0 0 0 3px #050506,
+      inset 0 0 0 4px rgba(232, 227, 216, 0.22),
+      inset 0 0 28px rgba(75, 45, 92, 0.08),
+      4px 4px 0 rgba(0, 0, 0, 0.84);
+  }
+  50% {
+    box-shadow:
+      inset 0 0 0 3px #050506,
+      inset 0 0 0 4px rgba(232, 227, 216, 0.28),
+      inset 0 0 34px rgba(167, 109, 206, 0.16),
+      4px 4px 0 rgba(0, 0, 0, 0.84);
+  }
+}
+
+@keyframes metric-astral {
+  0%,
+  100% {
+    color: var(--paper);
+    text-shadow: 0 0 7px rgba(167, 109, 206, 0.18);
+  }
+  50% {
+    color: #fff;
+    text-shadow: 0 0 11px rgba(216, 160, 255, 0.42);
   }
 }
 
