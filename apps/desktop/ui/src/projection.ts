@@ -1,19 +1,36 @@
-import type { LibraryBook, LibraryProjection } from "./types";
+import type {
+  LibraryBook,
+  LibraryCategory,
+  LibraryProjection,
+  NoteClass,
+} from "./types";
+
+export const VOLUME_SIZE = 20;
+export const GLOBAL_SHELF_ID = "scope:global";
 
 export interface LibraryLink {
   source: string;
   target: string;
 }
 
-export interface PositionedBook {
-  book: LibraryBook;
-  x: number;
-  y: number;
+export interface VisualShelf {
+  id: string;
+  label: string;
+  status: string;
+  kind: "global" | "project";
+  categories: LibraryCategory[];
+  noteCount: number;
 }
 
-const FIRST_CATEGORY_Y = 74;
-const LAST_CATEGORY_Y = 288;
-const DEFAULT_CATEGORY_STEP = 68;
+export interface LibraryVolume {
+  id: string;
+  shelfId: string;
+  noteType: string;
+  class: NoteClass;
+  index: number;
+  label: string;
+  books: LibraryBook[];
+}
 
 export function allBooks(projection: LibraryProjection): LibraryBook[] {
   return [
@@ -22,6 +39,58 @@ export function allBooks(projection: LibraryProjection): LibraryBook[] {
       shelf.categories.flatMap((category) => category.books),
     ),
   ];
+}
+
+export function libraryShelves(projection: LibraryProjection): VisualShelf[] {
+  const projects = projection.projects.map((shelf) => ({
+    id: projectShelfId(shelf.project),
+    label: shelf.project,
+    status: shelf.status,
+    kind: "project" as const,
+    categories: shelf.categories,
+    noteCount: shelf.categories.reduce((sum, category) => sum + category.books.length, 0),
+  }));
+  const global: VisualShelf = {
+    id: GLOBAL_SHELF_ID,
+    label: "Global knowledge",
+    status: "shared",
+    kind: "global",
+    categories: projection.global.categories,
+    noteCount: projection.global.categories.reduce(
+      (sum, category) => sum + category.books.length,
+      0,
+    ),
+  };
+  return [...projects, global];
+}
+
+export function selectedShelfId(projection: LibraryProjection): string {
+  return projectShelfId(projection.selected_project);
+}
+
+export function volumesForShelf(shelf: VisualShelf): LibraryVolume[] {
+  const volumes: LibraryVolume[] = [];
+  for (const category of shelf.categories) {
+    for (let offset = 0; offset < category.books.length; offset += VOLUME_SIZE) {
+      const index = Math.floor(offset / VOLUME_SIZE) + 1;
+      volumes.push({
+        id: `${shelf.id}/${encodeURIComponent(category.note_type)}/${index}`,
+        shelfId: shelf.id,
+        noteType: category.note_type,
+        class: category.class,
+        index,
+        label: `VOL ${romanNumeral(index)}`,
+        books: category.books.slice(offset, offset + VOLUME_SIZE),
+      });
+    }
+  }
+  return volumes;
+}
+
+export function volumeForBook(shelf: VisualShelf, bookId: string): LibraryVolume | undefined {
+  return volumesForShelf(shelf).find((volume) =>
+    volume.books.some((book) => book.id === bookId),
+  );
 }
 
 export function visibleLinks(projection: LibraryProjection): LibraryLink[] {
@@ -42,34 +111,33 @@ export function visibleLinks(projection: LibraryProjection): LibraryLink[] {
   return links;
 }
 
-export function layoutBooks(projection: LibraryProjection): PositionedBook[] {
-  const positioned: PositionedBook[] = [];
-  layoutCategories(projection.global.categories, 68, positioned);
-  projection.projects.forEach((shelf, shelfIndex) => {
-    layoutCategories(shelf.categories, 230 + shelfIndex * 172, positioned);
-  });
-  return positioned;
+export function projectShelfId(project: string): string {
+  return `project:${project}`;
 }
 
-function layoutCategories(
-  categories: LibraryProjection["global"]["categories"],
-  shelfX: number,
-  output: PositionedBook[],
-): void {
-  const categoryStep =
-    categories.length > 1
-      ? Math.min(
-          DEFAULT_CATEGORY_STEP,
-          Math.floor((LAST_CATEGORY_Y - FIRST_CATEGORY_Y) / (categories.length - 1)),
-        )
-      : DEFAULT_CATEGORY_STEP;
-  categories.forEach((category, categoryIndex) => {
-    category.books.forEach((book, bookIndex) => {
-      output.push({
-        book,
-        x: shelfX + bookIndex * 20,
-        y: FIRST_CATEGORY_Y + categoryIndex * categoryStep,
-      });
-    });
-  });
+function romanNumeral(value: number): string {
+  const numerals: ReadonlyArray<readonly [number, string]> = [
+    [1000, "M"],
+    [900, "CM"],
+    [500, "D"],
+    [400, "CD"],
+    [100, "C"],
+    [90, "XC"],
+    [50, "L"],
+    [40, "XL"],
+    [10, "X"],
+    [9, "IX"],
+    [5, "V"],
+    [4, "IV"],
+    [1, "I"],
+  ];
+  let remaining = value;
+  let output = "";
+  for (const [unit, glyph] of numerals) {
+    while (remaining >= unit) {
+      output += glyph;
+      remaining -= unit;
+    }
+  }
+  return output;
 }

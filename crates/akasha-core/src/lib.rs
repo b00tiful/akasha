@@ -32,9 +32,9 @@ pub use context::{
 pub use event::{EventCreationError, EventCreationResult, capture_handoff, create_event};
 pub use init::{InitError, InitRecovery, InitRequest, InitResult, initialize_project};
 pub use library::{
-    LibraryBook, LibraryCategory, LibraryCollection, LibraryDocument, LibraryProjection,
-    LibraryScope, LibraryShelf, build_library_projection, load_library_document,
-    render_library_markdown,
+    LibraryBook, LibraryCategory, LibraryCollection, LibraryDashboard, LibraryDocument,
+    LibraryProjectDashboard, LibraryProjection, LibraryScope, LibraryShelf,
+    build_library_projection, load_library_document, render_library_markdown,
 };
 pub use link::{LinkError, LinkRequest, LinkResult, link_project};
 pub use note_creation::{MutableNoteCreationError, MutableNoteCreationResult, create_mutable_note};

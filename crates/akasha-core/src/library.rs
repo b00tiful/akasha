@@ -10,7 +10,7 @@ use crate::project_validation::{
     validate_wikilinks_with_targets, wikilink_target_path,
 };
 use crate::resolution::{
-    NoteClass, ResolveRequest, load_project_registry, load_root_config, resolve_project,
+    NoteClass, ResolveRequest, RootConfig, load_project_registry, load_root_config, resolve_project,
 };
 use crate::validation::{
     ParsedNote, ValidationError, parse_leading_frontmatter_bytes, validate_configured_note,
@@ -66,6 +66,34 @@ pub struct LibraryCollection {
     pub categories: Vec<LibraryCategory>,
 }
 
+/// Validated metrics for one project shelf in the global library dashboard.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LibraryProjectDashboard {
+    pub project: String,
+    pub status: String,
+    pub notes: usize,
+    pub populated_categories: usize,
+    pub open_tasks: usize,
+    pub open_problems: usize,
+    pub validated_links: usize,
+    pub latest_activity_date: Option<String>,
+}
+
+/// Renderer-neutral metrics assembled from the same validated library snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LibraryDashboard {
+    pub validation_passed: bool,
+    pub projects: usize,
+    pub notes: usize,
+    pub global_notes: usize,
+    pub configured_categories: usize,
+    pub open_tasks: usize,
+    pub open_problems: usize,
+    pub validated_links: usize,
+    pub latest_activity_date: Option<String>,
+    pub project_metrics: Vec<LibraryProjectDashboard>,
+}
+
 /// Deterministic read-only projection consumed by future CLI and desktop adapters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LibraryProjection {
@@ -74,6 +102,7 @@ pub struct LibraryProjection {
     pub global: LibraryCollection,
     pub projects: Vec<LibraryShelf>,
     pub total_books: usize,
+    pub dashboard: LibraryDashboard,
 }
 
 /// Exact canonical Markdown selected through a validated projection identity.
@@ -182,15 +211,143 @@ pub fn build_library_projection(
         total_books += 1;
     }
 
+    let global = LibraryCollection {
+        categories: global_categories.into_values().collect(),
+    };
+    let dashboard = build_library_dashboard(&config, &projects, &global, total_books);
+
     Ok(LibraryProjection {
         root: selected.root,
         selected_project: selected.project,
-        global: LibraryCollection {
-            categories: global_categories.into_values().collect(),
-        },
+        global,
         projects,
         total_books,
+        dashboard,
     })
+}
+
+fn build_library_dashboard(
+    config: &RootConfig,
+    projects: &[LibraryShelf],
+    global: &LibraryCollection,
+    notes: usize,
+) -> LibraryDashboard {
+    let open_statuses = config
+        .context
+        .open_statuses
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let project_metrics = projects
+        .iter()
+        .map(|shelf| project_dashboard(config, shelf, &open_statuses))
+        .collect::<Vec<_>>();
+    let global_notes = global
+        .categories
+        .iter()
+        .map(|category| category.books.len())
+        .sum();
+    let global_links = global
+        .categories
+        .iter()
+        .flat_map(|category| &category.books)
+        .map(|book| book.outgoing_links.len())
+        .sum::<usize>();
+    let latest_global_date = global
+        .categories
+        .iter()
+        .flat_map(|category| &category.books)
+        .filter_map(|book| book.date.as_deref())
+        .max()
+        .map(str::to_owned);
+    let latest_activity_date = project_metrics
+        .iter()
+        .filter_map(|metric| metric.latest_activity_date.as_deref())
+        .chain(latest_global_date.as_deref())
+        .max()
+        .map(str::to_owned);
+
+    LibraryDashboard {
+        validation_passed: true,
+        projects: projects.len(),
+        notes,
+        global_notes,
+        configured_categories: config.project.note_types.len(),
+        open_tasks: project_metrics.iter().map(|metric| metric.open_tasks).sum(),
+        open_problems: project_metrics
+            .iter()
+            .map(|metric| metric.open_problems)
+            .sum(),
+        validated_links: global_links
+            + project_metrics
+                .iter()
+                .map(|metric| metric.validated_links)
+                .sum::<usize>(),
+        latest_activity_date,
+        project_metrics,
+    }
+}
+
+fn project_dashboard(
+    config: &RootConfig,
+    shelf: &LibraryShelf,
+    open_statuses: &BTreeSet<&str>,
+) -> LibraryProjectDashboard {
+    let notes = shelf
+        .categories
+        .iter()
+        .map(|category| category.books.len())
+        .sum();
+    let populated_categories = shelf
+        .categories
+        .iter()
+        .filter(|category| !category.books.is_empty())
+        .count();
+    let open_tasks = count_open_books(&shelf.categories, &config.context.tasks, open_statuses);
+    let open_problems =
+        count_open_books(&shelf.categories, &config.context.problems, open_statuses);
+    let validated_links = shelf
+        .categories
+        .iter()
+        .flat_map(|category| &category.books)
+        .map(|book| book.outgoing_links.len())
+        .sum();
+    let latest_activity_date = shelf
+        .categories
+        .iter()
+        .flat_map(|category| &category.books)
+        .filter_map(|book| book.date.as_deref())
+        .max()
+        .map(str::to_owned);
+
+    LibraryProjectDashboard {
+        project: shelf.project.clone(),
+        status: shelf.status.clone(),
+        notes,
+        populated_categories,
+        open_tasks,
+        open_problems,
+        validated_links,
+        latest_activity_date,
+    }
+}
+
+fn count_open_books(
+    categories: &[LibraryCategory],
+    note_type: &str,
+    open_statuses: &BTreeSet<&str>,
+) -> usize {
+    categories
+        .iter()
+        .find(|category| category.note_type == note_type)
+        .into_iter()
+        .flat_map(|category| &category.books)
+        .filter(|book| {
+            book.status
+                .as_deref()
+                .is_some_and(|status| open_statuses.contains(status))
+        })
+        .count()
 }
 
 /// Load exact Markdown only when the requested identity belongs to the validated library.

@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { allBooks, layoutBooks, visibleLinks } from "./projection";
+import {
+  VOLUME_SIZE,
+  allBooks,
+  libraryShelves,
+  selectedShelfId,
+  visibleLinks,
+  volumeForBook,
+  volumesForShelf,
+} from "./projection";
 import type { LibraryProjection } from "./types";
 
 const projection: LibraryProjection = {
@@ -34,6 +42,29 @@ const projection: LibraryProjection = {
     },
   ],
   total_books: 2,
+  dashboard: {
+    validation_passed: true,
+    projects: 1,
+    notes: 2,
+    global_notes: 1,
+    configured_categories: 1,
+    open_tasks: 0,
+    open_problems: 0,
+    validated_links: 3,
+    latest_activity_date: null,
+    project_metrics: [
+      {
+        project: "alpha",
+        status: "active",
+        notes: 1,
+        populated_categories: 1,
+        open_tasks: 0,
+        open_problems: 0,
+        validated_links: 2,
+        latest_activity_date: null,
+      },
+    ],
+  },
 };
 
 describe("desktop projection helpers", () => {
@@ -42,9 +73,11 @@ describe("desktop projection helpers", () => {
       "Global/entities/pattern.md",
       "Projects/alpha/entities/core.md",
     ]);
-    expect(layoutBooks(projection).map((item) => item.book.id)).toEqual(
-      allBooks(projection).map((item) => item.id),
-    );
+    expect(selectedShelfId(projection)).toBe("project:alpha");
+    expect(libraryShelves(projection).map((shelf) => shelf.id)).toEqual([
+      "project:alpha",
+      "scope:global",
+    ]);
   });
 
   it("renders traffic only when both validated books are visible", () => {
@@ -60,23 +93,39 @@ describe("desktop projection helpers", () => {
     ]);
   });
 
-  it("keeps five configured categories inside the visible shelf", () => {
-    const categories = Array.from({ length: 5 }, (_, index) => ({
-      note_type: `type-${index}`,
-      class: "entity" as const,
-      books: [book(`Projects/alpha/entities/book-${index}.md`, [])],
-    }));
-    const crowded: LibraryProjection = {
+  it("groups stable path-ordered notes into twenty-note volumes", () => {
+    const books = Array.from({ length: VOLUME_SIZE * 2 + 1 }, (_, index) =>
+      book(`Projects/alpha/entities/book-${String(index).padStart(2, "0")}.md`, []),
+    );
+    const shelf = libraryShelves({
       ...projection,
       global: { categories: [] },
-      projects: [{ project: "alpha", status: "active", categories }],
-      total_books: categories.length,
-    };
+      projects: [
+        {
+          project: "alpha",
+          status: "active",
+          categories: [{ note_type: "entity", class: "entity", books }],
+        },
+      ],
+      total_books: books.length,
+    })[0];
+    expect(shelf).toBeDefined();
+    if (!shelf) {
+      throw new Error("expected project shelf");
+    }
+    const volumes = volumesForShelf(shelf);
 
-    const positions = layoutBooks(crowded);
-
-    expect(positions.map((item) => item.y)).toEqual([74, 127, 180, 233, 286]);
-    expect(Math.max(...positions.map((item) => item.y)) + 24).toBeLessThanOrEqual(314);
+    expect(volumes.map((volume) => [volume.label, volume.books.length])).toEqual([
+      ["VOL I", 20],
+      ["VOL II", 20],
+      ["VOL III", 1],
+    ]);
+    expect(volumes.at(1)?.books.at(0)?.id).toBe(
+      "Projects/alpha/entities/book-20.md",
+    );
+    expect(volumeForBook(shelf, "Projects/alpha/entities/book-40.md")?.label).toBe(
+      "VOL III",
+    );
   });
 });
 

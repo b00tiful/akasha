@@ -203,6 +203,24 @@ fn projects_and_global_entities_form_a_deterministic_projection() {
         ["alpha", "zeta"]
     );
     assert_eq!(projection.global.categories.len(), 1);
+    assert!(projection.dashboard.validation_passed);
+    assert_eq!(projection.dashboard.projects, 2);
+    assert_eq!(projection.dashboard.notes, 4);
+    assert_eq!(projection.dashboard.global_notes, 1);
+    assert_eq!(projection.dashboard.configured_categories, 5);
+    assert_eq!(projection.dashboard.open_tasks, 1);
+    assert_eq!(projection.dashboard.open_problems, 0);
+    assert_eq!(projection.dashboard.validated_links, 1);
+    assert_eq!(projection.dashboard.latest_activity_date, None);
+    assert_eq!(
+        projection
+            .dashboard
+            .project_metrics
+            .iter()
+            .map(|metric| (metric.project.as_str(), metric.notes, metric.open_tasks))
+            .collect::<Vec<_>>(),
+        [("alpha", 2, 1), ("zeta", 1, 0)]
+    );
     let global = &projection.global.categories[0].books[0];
     assert_eq!(global.id, "Global/entities/rust-pattern.md");
     assert_eq!(global.scope, LibraryScope::Global);

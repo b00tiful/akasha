@@ -14,9 +14,9 @@
       {
         "title": "Akasha",
         "width": 1280,
-        "height": 800,
-        "minWidth": 960,
-        "minHeight": 640
+        "height": 720,
+        "minWidth": 1280,
+        "minHeight": 720
       }
     ],
     "security": {

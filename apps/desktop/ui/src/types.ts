@@ -29,12 +29,37 @@ export interface LibraryShelf {
   categories: LibraryCategory[];
 }
 
+export interface LibraryProjectDashboard {
+  project: string;
+  status: string;
+  notes: number;
+  populated_categories: number;
+  open_tasks: number;
+  open_problems: number;
+  validated_links: number;
+  latest_activity_date: string | null;
+}
+
+export interface LibraryDashboard {
+  validation_passed: boolean;
+  projects: number;
+  notes: number;
+  global_notes: number;
+  configured_categories: number;
+  open_tasks: number;
+  open_problems: number;
+  validated_links: number;
+  latest_activity_date: string | null;
+  project_metrics: LibraryProjectDashboard[];
+}
+
 export interface LibraryProjection {
   root: string;
   selected_project: string;
   global: { categories: LibraryCategory[] };
   projects: LibraryShelf[];
   total_books: number;
+  dashboard: LibraryDashboard;
 }
 
 export interface DesktopLibrary {

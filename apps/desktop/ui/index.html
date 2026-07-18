@@ -3,83 +3,156 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#090b0d" />
-    <title>Akasha</title>
+    <meta name="theme-color" content="#050506" />
+    <title>Akasha Library</title>
   </head>
   <body>
-    <div id="app">
-      <header class="masthead">
-        <div>
-          <p class="eyebrow">AKASHA / SYNTHETIC VERTICAL SLICE</p>
-          <h1>Library of living project memory</h1>
-        </div>
-        <form id="library-form" class="library-form">
-          <label>
-            Data root
-            <input id="root-input" value="../../../tests/fixtures/resolution/valid-root" />
-          </label>
-          <label>
-            Project
-            <input id="project-input" value="example" />
-          </label>
-          <button type="submit">Open library</button>
-        </form>
-      </header>
+    <div id="app" class="app-shell">
+      <main class="pixel-stage" aria-label="Akasha global library">
+        <header class="brand-plaque arcane-frame">
+          <p class="brand-name">AKASHA LIBRARY</p>
+          <p>global archive</p>
+        </header>
 
-      <div class="status-row">
-        <p id="status" role="status">Waiting for the Rust host.</p>
-        <label class="motion-toggle">
-          <input id="reduced-motion" type="checkbox" />
-          Reduced motion
-        </label>
-      </div>
-
-      <main class="workspace">
-        <section class="world-panel" aria-labelledby="world-title">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">SEMANTIC MAP</p>
-              <h2 id="world-title">Arcane library</h2>
-            </div>
-            <p><span class="swatch link"></span> validated wikilink traffic</p>
+        <nav class="shelf-heading arcane-frame" aria-label="Project shelf navigation">
+          <button id="previous-shelf" class="icon-button" type="button" aria-label="Previous shelf">‹</button>
+          <div>
+            <p class="eyebrow">CHOOSE A SHELF</p>
+            <h1 id="active-shelf-label">Loading the archive</h1>
           </div>
-          <div id="scene" class="scene" aria-label="Visual library projection"></div>
-          <p class="scene-caption">
-            Books keep their full vault-relative identities. Movement follows validated links only.
-          </p>
+          <button id="next-shelf" class="icon-button" type="button" aria-label="Next shelf">›</button>
+        </nav>
+
+        <div class="stage-tools arcane-frame" aria-label="Library controls">
+          <button id="dashboard-toggle" class="icon-button" type="button" aria-label="Toggle dashboard">◇</button>
+          <button id="inventory-toggle" class="icon-button" type="button" aria-label="Toggle exact inventory">▤</button>
+          <button id="settings-toggle" class="icon-button" type="button" aria-label="Open library settings">⚙</button>
+        </div>
+
+        <div id="scene" class="scene" aria-label="Floating three-dimensional project bookshelves"></div>
+
+        <section id="dashboard" class="dashboard-panel arcane-frame" aria-labelledby="dashboard-title">
+          <header>
+            <div>
+              <p class="eyebrow">VALIDATED SNAPSHOT</p>
+              <h2 id="dashboard-title">Library status</h2>
+            </div>
+            <button id="dashboard-expand" class="text-button" type="button" aria-expanded="false">
+              Expand
+            </button>
+          </header>
+          <div id="dashboard-compact" class="dashboard-compact"></div>
+          <div class="dashboard-details" aria-label="Expanded library dashboard">
+            <div id="dashboard-summary" class="dashboard-summary"></div>
+            <div class="dashboard-table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Project</th>
+                    <th>Status</th>
+                    <th>Notes</th>
+                    <th>Tasks</th>
+                    <th>Problems</th>
+                    <th>Links</th>
+                    <th>Latest</th>
+                  </tr>
+                </thead>
+                <tbody id="dashboard-projects"></tbody>
+              </table>
+            </div>
+            <p class="dashboard-footnote">Timeline chamber — sealed for a later slice.</p>
+          </div>
         </section>
 
-        <aside class="fallback-panel" aria-labelledby="fallback-title">
-          <div class="panel-heading">
+        <aside class="selection-panel arcane-frame" aria-labelledby="selection-title">
+          <p class="eyebrow" id="selection-title">AIMED / ACTIVE SHELF</p>
+          <h2 id="selection-shelf">No shelf aimed</h2>
+          <div class="selection-sigil" aria-hidden="true">◇</div>
+          <p id="selection-count">0 notes</p>
+          <p id="selection-volume">WASD or arrows to aim</p>
+        </aside>
+
+        <aside id="volume-panel" class="volume-panel arcane-frame" aria-labelledby="volume-title" hidden>
+          <header>
             <div>
-              <p class="eyebrow">EXACT FALLBACK</p>
-              <h2 id="fallback-title">Shelves and books</h2>
+              <p class="eyebrow">OPEN VOLUME</p>
+              <h2 id="volume-title">Volume</h2>
             </div>
-          </div>
+            <button id="volume-close" class="icon-button" type="button" aria-label="Close volume">×</button>
+          </header>
+          <p id="volume-meta" class="volume-meta"></p>
+          <div id="volume-books" class="volume-books"></div>
+        </aside>
+
+        <div class="control-legend arcane-frame" aria-label="Keyboard controls">
+          <span><kbd>WASD</kbd> / arrows aim</span>
+          <span><kbd>Enter</kbd> / <kbd>Space</kbd> activate</span>
+          <span><kbd>Tab</kbd> inventory</span>
+          <span><kbd>Esc</kbd> close</span>
+        </div>
+
+        <p id="status" class="stage-status" role="status">Waiting for the Rust host.</p>
+
+        <aside id="inventory-panel" class="drawer inventory-drawer arcane-frame" aria-labelledby="inventory-title" hidden>
+          <header>
+            <div>
+              <p class="eyebrow">EXACT TEXT FALLBACK</p>
+              <h2 id="inventory-title">Library inventory</h2>
+            </div>
+            <button id="inventory-close" class="icon-button" type="button" aria-label="Close inventory">×</button>
+          </header>
           <div id="fallback" class="fallback"></div>
         </aside>
 
-        <section class="inspector-panel" aria-labelledby="inspector-title">
-          <div class="panel-heading inspector-heading">
+        <aside id="settings-panel" class="drawer settings-drawer arcane-frame" aria-labelledby="settings-title" hidden>
+          <header>
             <div>
-              <p class="eyebrow">CANONICAL NOTE</p>
-              <h2 id="inspector-title">Inspector</h2>
+              <p class="eyebrow">ARCHIVE GATE</p>
+              <h2 id="settings-title">Open library</h2>
             </div>
-            <div class="mode-tabs" role="tablist" aria-label="Note display mode">
-              <button type="button" role="tab" data-mode="live" aria-selected="true">Live Preview</button>
-              <button type="button" role="tab" data-mode="source" aria-selected="false">Source</button>
-              <button type="button" role="tab" data-mode="reading" aria-selected="false">Reading</button>
+            <button id="settings-close" class="icon-button" type="button" aria-label="Close settings">×</button>
+          </header>
+          <form id="library-form" class="library-form">
+            <label>
+              Data root
+              <input id="root-input" value="../../../tests/fixtures/resolution/valid-root" />
+            </label>
+            <label>
+              Project
+              <input id="project-input" value="example" />
+            </label>
+            <button type="submit">Open archive</button>
+          </form>
+          <label class="motion-toggle">
+            <input id="reduced-motion" type="checkbox" />
+            Reduced motion
+          </label>
+        </aside>
+
+        <section id="note-overlay" class="note-overlay" aria-labelledby="inspector-title" hidden>
+          <div class="note-book arcane-frame">
+            <header class="inspector-heading">
+              <div>
+                <p class="eyebrow">CANONICAL NOTE</p>
+                <h2 id="inspector-title">Inspector</h2>
+              </div>
+              <div class="mode-tabs" role="tablist" aria-label="Note display mode">
+                <button type="button" role="tab" data-mode="live" aria-selected="true">Live</button>
+                <button type="button" role="tab" data-mode="source" aria-selected="false">Source</button>
+                <button type="button" role="tab" data-mode="reading" aria-selected="false">Reading</button>
+              </div>
+              <div id="edit-actions" class="edit-actions" aria-label="Note edit actions">
+                <span id="edit-state" class="edit-state" aria-live="polite"></span>
+                <button id="discard-note" type="button" disabled>Discard</button>
+                <button id="save-note" type="button" disabled>Save</button>
+                <button id="note-close" type="button">Close</button>
+              </div>
+            </header>
+            <div id="book-meta" class="book-meta">
+              <p>Select a note from an open volume.</p>
             </div>
-            <div id="edit-actions" class="edit-actions" aria-label="Note edit actions">
-              <span id="edit-state" class="edit-state" aria-live="polite"></span>
-              <button id="discard-note" type="button" disabled>Discard</button>
-              <button id="save-note" type="button" disabled>Save</button>
-            </div>
+            <div id="note-viewer" class="note-viewer"></div>
           </div>
-          <div id="book-meta" class="book-meta">
-            <p>Select a book from the visual map or exact fallback.</p>
-          </div>
-          <div id="note-viewer" class="note-viewer"></div>
         </section>
       </main>
     </div>
