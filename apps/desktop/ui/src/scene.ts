@@ -46,6 +46,15 @@ const COLORS = {
 } as const;
 const PURPLE_DARK_COLOR = new THREE.Color(COLORS.purpleDark);
 const PURPLE_BRIGHT_COLOR = new THREE.Color(COLORS.purpleBright);
+const CABINET_STONE_PALETTE = {
+  bodyEven: 0x745e7c,
+  bodyOdd: 0x7b6484,
+  bodyEmissive: 0x35273c,
+  backing: 0x392f42,
+  backingEmissive: 0x1f1725,
+  frame: 0x896f93,
+  frameEmissive: 0x493552,
+} as const;
 
 const SHELF_WIDTH = 2.75;
 const SHELF_HEIGHT = 3.85;
@@ -70,9 +79,16 @@ const VISUAL_CONTRACT = {
   pixel: {
     seed: 0x41a57a,
     debugParameter: "libraryDebug",
+    resolutionParameter: "libraryScale",
+    renderScale: 2,
+    blockSize: 2,
   },
   density: {
     cabinetCount: 7,
+  },
+  activationShadow: {
+    debugParameter: "libraryCornerShadows",
+    maxOpacity: 0.8,
   },
   effects: {
     groundDuration: 6.4,
@@ -118,11 +134,18 @@ interface CabinetMaterials {
   wood: THREE.MeshStandardMaterial;
   trim: THREE.MeshStandardMaterial;
   dark: THREE.MeshStandardMaterial;
+  crown: THREE.MeshStandardMaterial;
 }
 
 interface CabinetVisual {
   stones: ShelfMagicStone[];
   materials: CabinetMaterials;
+  activationShadow: CabinetActivationShadow;
+}
+
+interface CabinetActivationShadow {
+  mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
+  material: THREE.MeshBasicMaterial;
 }
 
 interface SealEnergyStream {
@@ -186,6 +209,7 @@ interface ShelfActor {
   aimProgress: number;
   focusLight: THREE.PointLight;
   cabinetMaterials: CabinetMaterials;
+  activationShadow: CabinetActivationShadow;
   dial: StellarDial;
   seal: SealVisual;
   volumes: VolumeVisual[];
@@ -300,6 +324,7 @@ interface DragState {
 }
 
 type SceneDebugMode = "final" | "raw" | "monochrome" | "contours";
+type ActivationShadowDiagnostic = "auto" | "on" | "off";
 
 interface PixelPipeline {
   render(
@@ -321,6 +346,9 @@ export async function mountLibraryScene(
   callbacks: LibrarySceneCallbacks,
 ): Promise<SceneHandle> {
   await document.fonts.load('72px "Departure Mono"');
+  const renderScale = sceneRenderScale();
+  const renderWidth = SCENE_WIDTH * renderScale;
+  const renderHeight = SCENE_HEIGHT * renderScale;
   const renderer = new THREE.WebGLRenderer({
     antialias: false,
     alpha: false,
@@ -328,7 +356,7 @@ export async function mountLibraryScene(
     precision: "highp",
   });
   renderer.setPixelRatio(1);
-  renderer.setSize(SCENE_WIDTH, SCENE_HEIGHT, false);
+  renderer.setSize(renderWidth, renderHeight, false);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.domElement.className = "world-canvas";
   renderer.domElement.setAttribute("aria-hidden", "true");
@@ -359,8 +387,17 @@ export async function mountLibraryScene(
 
   const random = deterministicRandom(VISUAL_CONTRACT.pixel.seed);
   const debugMode = sceneDebugMode();
-  const pixelPipeline = createPixelPipeline(renderer, debugMode);
+  const activationShadowDiagnostic = cabinetActivationShadowDiagnostic();
+  const pixelPipeline = createPixelPipeline(
+    renderer,
+    debugMode,
+    renderWidth,
+    renderHeight,
+    renderScale,
+  );
   renderer.domElement.dataset.visualMode = debugMode;
+  renderer.domElement.dataset.renderScale = String(renderScale);
+  renderer.domElement.dataset.cornerShadows = activationShadowDiagnostic;
   addLighting(world);
   const stars = createStarField(world, random);
   const groundCircle = createGroundCircle(world);
@@ -475,6 +512,7 @@ export async function mountLibraryScene(
       elapsed,
       seconds,
       motionReduced,
+      activationShadowDiagnostic,
     );
     updateAmbient(
       stars,
@@ -806,8 +844,11 @@ export async function mountLibraryScene(
 function createPixelPipeline(
   renderer: THREE.WebGLRenderer,
   debugMode: SceneDebugMode,
+  renderWidth: number,
+  renderHeight: number,
+  renderScale: number,
 ): PixelPipeline {
-  const target = new THREE.WebGLRenderTarget(SCENE_WIDTH, SCENE_HEIGHT, {
+  const target = new THREE.WebGLRenderTarget(renderWidth, renderHeight, {
     minFilter: THREE.NearestFilter,
     magFilter: THREE.NearestFilter,
     format: THREE.RGBAFormat,
@@ -826,7 +867,9 @@ function createPixelPipeline(
       voidColor: { value: new THREE.Color(COLORS.void) },
       paperColor: { value: new THREE.Color(COLORS.paper) },
       accentColor: { value: new THREE.Color(COLORS.purpleBright) },
-      texelSize: { value: new THREE.Vector2(1 / SCENE_WIDTH, 1 / SCENE_HEIGHT) },
+      texelSize: { value: new THREE.Vector2(1 / renderWidth, 1 / renderHeight) },
+      pixelBlockSize: { value: VISUAL_CONTRACT.pixel.blockSize },
+      renderScale: { value: renderScale },
       monochrome: { value: debugMode === "monochrome" ? 1 : 0 },
       contours: { value: debugMode === "contours" ? 1 : 0 },
     },
@@ -843,6 +886,8 @@ function createPixelPipeline(
       uniform vec3 paperColor;
       uniform vec3 accentColor;
       uniform vec2 texelSize;
+      uniform float pixelBlockSize;
+      uniform float renderScale;
       uniform float monochrome;
       uniform float contours;
       varying vec2 vUv;
@@ -874,29 +919,31 @@ function createPixelPipeline(
 
       void main() {
         vec2 pixelUv =
-          (floor(vUv / texelSize / 2.0) * 2.0 + vec2(1.0)) * texelSize;
+          (floor(vUv / texelSize / pixelBlockSize) * pixelBlockSize +
+            vec2(pixelBlockSize * 0.5)) * texelSize;
+        vec2 contourOffset = texelSize * pixelBlockSize;
         vec3 source = texture2D(sceneTexture, pixelUv).rgb;
         float luminance = dot(source, vec3(0.2126, 0.7152, 0.0722));
         float leftLuminance = dot(
-          texture2D(sceneTexture, pixelUv - vec2(texelSize.x * 2.0, 0.0)).rgb,
+          texture2D(sceneTexture, pixelUv - vec2(contourOffset.x, 0.0)).rgb,
           vec3(0.2126, 0.7152, 0.0722)
         );
         float rightLuminance = dot(
-          texture2D(sceneTexture, pixelUv + vec2(texelSize.x * 2.0, 0.0)).rgb,
+          texture2D(sceneTexture, pixelUv + vec2(contourOffset.x, 0.0)).rgb,
           vec3(0.2126, 0.7152, 0.0722)
         );
         float lowerLuminance = dot(
-          texture2D(sceneTexture, pixelUv - vec2(0.0, texelSize.y * 2.0)).rgb,
+          texture2D(sceneTexture, pixelUv - vec2(0.0, contourOffset.y)).rgb,
           vec3(0.2126, 0.7152, 0.0722)
         );
         float upperLuminance = dot(
-          texture2D(sceneTexture, pixelUv + vec2(0.0, texelSize.y * 2.0)).rgb,
+          texture2D(sceneTexture, pixelUv + vec2(0.0, contourOffset.y)).rgb,
           vec3(0.2126, 0.7152, 0.0722)
         );
         float neighborMaximum = max(max(leftLuminance, rightLuminance), max(lowerLuminance, upperLuminance));
         float neighborMinimum = min(min(leftLuminance, rightLuminance), min(lowerLuminance, upperLuminance));
         float contourCoverage = smoothstep(0.028, 0.16, neighborMaximum - neighborMinimum);
-        float threshold = clusteredDot(gl_FragCoord.xy);
+        float threshold = clusteredDot(gl_FragCoord.xy / renderScale);
         float tonalCoverage = smoothstep(
           0.018,
           0.88,
@@ -977,6 +1024,20 @@ function sceneDebugMode(): SceneDebugMode {
   return value === "raw" || value === "monochrome" || value === "contours"
     ? value
     : "final";
+}
+
+function sceneRenderScale(): number {
+  const value = new URLSearchParams(window.location.search).get(
+    VISUAL_CONTRACT.pixel.resolutionParameter,
+  );
+  return value === "1" ? 1 : VISUAL_CONTRACT.pixel.renderScale;
+}
+
+function cabinetActivationShadowDiagnostic(): ActivationShadowDiagnostic {
+  const value = new URLSearchParams(window.location.search).get(
+    VISUAL_CONTRACT.activationShadow.debugParameter,
+  );
+  return value === "1" ? "on" : value === "0" ? "off" : "auto";
 }
 
 function createShelfInstances(shelves: VisualShelf[], count: number): ShelfInstance[] {
@@ -1084,6 +1145,7 @@ function createShelfActor(
     aimProgress: 0,
     focusLight,
     cabinetMaterials: cabinet.materials,
+    activationShadow: cabinet.activationShadow,
     dial,
     seal,
     volumes,
@@ -1106,29 +1168,34 @@ function drawShelfCabinet(
   pickables: THREE.Object3D[],
 ): CabinetVisual {
   const magicStones: ShelfMagicStone[] = [];
+  const bodyColor = index % 2 === 0
+    ? CABINET_STONE_PALETTE.bodyEven
+    : CABINET_STONE_PALETTE.bodyOdd;
   const wood = new THREE.MeshStandardMaterial({
-    color: index % 2 === 0 ? 0x584650 : 0x624b59,
-    emissive: 0x211923,
-    emissiveIntensity: 0.95,
-    roughness: 0.78,
-    metalness: 0.12,
+    color: bodyColor,
+    emissive: CABINET_STONE_PALETTE.bodyEmissive,
+    emissiveIntensity: 0.98,
+    roughness: 0.8,
+    metalness: 0.1,
     flatShading: true,
   });
   const trim = new THREE.MeshStandardMaterial({
-    color: 0xc2bac5,
-    emissive: 0x3d3542,
-    emissiveIntensity: 0.82,
-    roughness: 0.58,
-    metalness: 0.42,
+    color: CABINET_STONE_PALETTE.frame,
+    emissive: CABINET_STONE_PALETTE.frameEmissive,
+    emissiveIntensity: 1.02,
+    roughness: 0.76,
+    metalness: 0.1,
     flatShading: true,
   });
   const dark = new THREE.MeshStandardMaterial({
-    color: 0x242029,
-    emissive: 0x100d13,
-    emissiveIntensity: 0.82,
+    color: CABINET_STONE_PALETTE.backing,
+    emissive: CABINET_STONE_PALETTE.backingEmissive,
+    emissiveIntensity: 0.84,
     roughness: 0.9,
-    metalness: 0.05,
+    metalness: 0.06,
+    flatShading: true,
   });
+  const crown = wood.clone();
 
   addCabinetBox(parent, shelf.id, [2.42, 3.34, 0.28], [0, -0.04, -0.19], dark, pickables);
   addCabinetBox(parent, shelf.id, [0.24, 3.5, 0.58], [-1.27, -0.03, 0], wood, pickables);
@@ -1140,6 +1207,10 @@ function drawShelfCabinet(
     [2.78, 0.18, 0.7, 1.72],
     [2.98, 0.15, 0.76, 1.89],
     [2.66, 0.13, 0.66, 2.04],
+  ] as const) {
+    addCabinetBox(parent, shelf.id, [width, height, depth], [0, y, 0.06], crown, pickables);
+  }
+  for (const [width, height, depth, y] of [
     [2.86, 0.18, 0.72, -1.79],
     [2.98, 0.13, 0.78, -1.94],
   ] as const) {
@@ -1161,38 +1232,9 @@ function drawShelfCabinet(
       pickables.push(jewel);
       magicStones.push(magicStoneVisual(jewel, side * 1.7 + y, "frame"));
     }
-    const finial = new THREE.Mesh(new THREE.ConeGeometry(0.13, 0.44, 4), trim);
-    finial.position.set(side * 0.96, 2.28, 0.05);
-    finial.rotation.y = Math.PI / 4;
-    finial.userData.shelfId = shelf.id;
-    parent.add(finial);
-    pickables.push(finial);
   }
 
-  for (const [crownIndex, x] of [-0.46, 0, 0.46].entries()) {
-    const crown = createMagicStone(crownIndex === 1 ? 0.18 : 0.115, index + crownIndex * 0.8);
-    crown.position.set(x, crownIndex === 1 ? 2.36 : 2.24, 0.16);
-    crown.scale.y = crownIndex === 1 ? 1.25 : 1.08;
-    crown.rotation.z = Math.PI / 4;
-    crown.userData.shelfId = shelf.id;
-    parent.add(crown);
-    pickables.push(crown);
-    magicStones.push(magicStoneVisual(crown, index + crownIndex * 0.8, "crown"));
-  }
-
-  const crownLines = lineSegments(
-    [
-      -1.22, 2.06, 0.25, -0.76, 2.24, 0.25,
-      -0.76, 2.24, 0.25, -0.42, 2.12, 0.25,
-      -0.42, 2.12, 0.25, 0, 2.42, 0.25,
-      0, 2.42, 0.25, 0.42, 2.12, 0.25,
-      0.42, 2.12, 0.25, 0.76, 2.24, 0.25,
-      0.76, 2.24, 0.25, 1.22, 2.06, 0.25,
-    ],
-    COLORS.paper,
-    0.74,
-  );
-  parent.add(crownLines);
+  magicStones.push(addCarvedCabinetCrown(parent, shelf.id, index, crown, pickables));
 
   const titlePlate = addCabinetBox(
     parent,
@@ -1228,7 +1270,36 @@ function drawShelfCabinet(
     parent.add(crystal);
     magicStones.push(magicStoneVisual(crystal, side * 2.3 + index, "pendant"));
   }
-  return { stones: magicStones, materials: { wood, trim, dark } };
+  const activationShadow = createCabinetActivationShadow(parent, index);
+  return {
+    stones: magicStones,
+    materials: { wood, trim, dark, crown },
+    activationShadow,
+  };
+}
+
+function createCabinetActivationShadow(
+  parent: THREE.Group,
+  seed: number,
+): CabinetActivationShadow {
+  const geometry = new THREE.PlaneGeometry(3.8, 6);
+  const material = new THREE.MeshBasicMaterial({
+    map: cabinetShadowFogTexture(seed),
+    color: COLORS.void,
+    transparent: true,
+    opacity: 0,
+    alphaTest: 0.015,
+    depthTest: false,
+    depthWrite: false,
+    toneMapped: false,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.name = "activation-perimeter-fog";
+  mesh.position.set(0, -0.05, 0.82);
+  mesh.renderOrder = 5;
+  mesh.visible = false;
+  parent.add(mesh);
+  return { mesh, material };
 }
 
 function createMagicStone(
@@ -1260,6 +1331,121 @@ function magicStoneVisual(
     phase,
     role,
   };
+}
+
+function addCarvedCabinetCrown(
+  parent: THREE.Group,
+  shelfId: string,
+  phase: number,
+  stone: THREE.MeshStandardMaterial,
+  pickables: THREE.Object3D[],
+): ShelfMagicStone {
+  const pedimentProfile = new THREE.Shape();
+  pedimentProfile.moveTo(-1.24, 0);
+  pedimentProfile.lineTo(-1.08, 0.2);
+  pedimentProfile.lineTo(-0.86, 0.14);
+  pedimentProfile.lineTo(-0.64, 0.4);
+  pedimentProfile.lineTo(-0.42, 0.3);
+  pedimentProfile.lineTo(-0.22, 0.54);
+  pedimentProfile.lineTo(0, 0.72);
+  pedimentProfile.lineTo(0.22, 0.54);
+  pedimentProfile.lineTo(0.42, 0.3);
+  pedimentProfile.lineTo(0.64, 0.4);
+  pedimentProfile.lineTo(0.86, 0.14);
+  pedimentProfile.lineTo(1.08, 0.2);
+  pedimentProfile.lineTo(1.24, 0);
+  pedimentProfile.closePath();
+
+  const pointedAperture = new THREE.Path();
+  pointedAperture.moveTo(-0.17, 0.1);
+  pointedAperture.lineTo(-0.17, 0.27);
+  pointedAperture.quadraticCurveTo(-0.16, 0.42, 0, 0.55);
+  pointedAperture.quadraticCurveTo(0.16, 0.42, 0.17, 0.27);
+  pointedAperture.lineTo(0.17, 0.1);
+  pointedAperture.closePath();
+  pedimentProfile.holes.push(pointedAperture);
+
+  const pediment = new THREE.Mesh(
+    new THREE.ExtrudeGeometry(pedimentProfile, {
+      depth: 0.26,
+      bevelEnabled: false,
+      curveSegments: 4,
+    }),
+    stone,
+  );
+  pediment.position.set(0, 2.04, 0.25);
+  registerCabinetOrnament(parent, pediment, shelfId, pickables);
+
+  for (const side of [-1, 1]) {
+    const scroll = new THREE.Mesh(
+      new THREE.TubeGeometry(
+        new THREE.CatmullRomCurve3([
+          new THREE.Vector3(side * 1.12, 2.13, 0.55),
+          new THREE.Vector3(side * 0.9, 2.34, 0.58),
+          new THREE.Vector3(side * 0.65, 2.31, 0.6),
+          new THREE.Vector3(side * 0.56, 2.18, 0.61),
+          new THREE.Vector3(side * 0.72, 2.14, 0.62),
+          new THREE.Vector3(side * 0.42, 2.3, 0.63),
+          new THREE.Vector3(side * 0.2, 2.51, 0.64),
+          new THREE.Vector3(0, 2.62, 0.65),
+        ], false, "centripetal", 0.42),
+        28,
+        0.035,
+        4,
+        false,
+      ),
+      stone,
+    );
+    registerCabinetOrnament(parent, scroll, shelfId, pickables);
+
+    const rosette = new THREE.Mesh(new THREE.TorusGeometry(0.13, 0.035, 4, 12), stone);
+    rosette.position.set(side * 0.62, 2.27, 0.64);
+    rosette.rotation.z = side * Math.PI / 12;
+    registerCabinetOrnament(parent, rosette, shelfId, pickables);
+
+    const finialBase = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.09, 0.14, 0.28, 6),
+      stone,
+    );
+    finialBase.position.set(side * 1.08, 2.31, 0.4);
+    registerCabinetOrnament(parent, finialBase, shelfId, pickables);
+    const finialTip = new THREE.Mesh(new THREE.ConeGeometry(0.13, 0.34, 4), stone);
+    finialTip.position.set(side * 1.08, 2.61, 0.4);
+    finialTip.rotation.y = Math.PI / 4;
+    registerCabinetOrnament(parent, finialTip, shelfId, pickables);
+  }
+
+  for (const x of [-0.9, -0.6, -0.3, 0, 0.3, 0.6, 0.9]) {
+    const dentil = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.13, 0.24), stone);
+    dentil.position.set(x, 2.12, 0.5);
+    registerCabinetOrnament(parent, dentil, shelfId, pickables);
+  }
+
+  const cartouche = new THREE.Mesh(new THREE.OctahedronGeometry(0.2, 0), stone);
+  cartouche.position.set(0, 2.43, 0.61);
+  cartouche.scale.set(1.5, 1.18, 0.52);
+  cartouche.rotation.z = Math.PI / 4;
+  registerCabinetOrnament(parent, cartouche, shelfId, pickables);
+
+  const core = createMagicStone(0.075, phase + 0.8);
+  core.position.set(0, 2.43, 0.74);
+  core.rotation.z = Math.PI / 4;
+  core.userData.shelfId = shelfId;
+  parent.add(core);
+  pickables.push(core);
+  return magicStoneVisual(core, phase + 0.8, "crown");
+}
+
+function registerCabinetOrnament(
+  parent: THREE.Group,
+  ornament: THREE.Mesh,
+  shelfId: string,
+  pickables: THREE.Object3D[],
+): void {
+  ornament.userData.shelfId = shelfId;
+  parent.add(ornament);
+  pickables.push(ornament);
+  addCabinetContour(parent, ornament);
 }
 
 function addBaroqueCabinetOrnaments(
@@ -1296,19 +1482,6 @@ function addBaroqueCabinetOrnaments(
         pickables,
       );
     }
-
-    const upperScroll = baroqueCurve([
-      new THREE.Vector3(side * 1.46, 2.02, 0.46),
-      new THREE.Vector3(side * 1.3, 2.24, 0.49),
-      new THREE.Vector3(side * 1.02, 2.32, 0.5),
-      new THREE.Vector3(side * 0.82, 2.18, 0.51),
-      new THREE.Vector3(side * 0.98, 2.08, 0.52),
-      new THREE.Vector3(side * 0.68, 2.12, 0.53),
-      new THREE.Vector3(side * 0.44, 2.32, 0.54),
-      new THREE.Vector3(0, 2.48, 0.55),
-    ], COLORS.paper, 0.78);
-    upperScroll.userData.shelfId = shelfId;
-    parent.add(upperScroll);
 
     const lowerScroll = baroqueCurve([
       new THREE.Vector3(side * 1.45, -1.93, 0.42),
@@ -2041,6 +2214,7 @@ function updateActors(
   elapsed: number,
   seconds: number,
   reducedMotion: boolean,
+  activationShadowDiagnostic: ActivationShadowDiagnostic,
 ): void {
   const focusPresence = actors.reduce(
     (maximum, actor) => Math.max(maximum, smoothstep(0, 1, actor.focusProgress)),
@@ -2142,9 +2316,21 @@ function updateActors(
     );
     actor.aimLight.intensity = actor.aimProgress * 0.72;
     actor.focusLight.intensity = focus * 2.35;
-    actor.cabinetMaterials.wood.emissiveIntensity = mix(0.95, 1.2, focus);
-    actor.cabinetMaterials.trim.emissiveIntensity = mix(0.82, 1.08, focus);
-    actor.cabinetMaterials.dark.emissiveIntensity = mix(0.82, 1.05, focus);
+    actor.cabinetMaterials.wood.emissiveIntensity = mix(0.98, 1.18, focus);
+    actor.cabinetMaterials.trim.emissiveIntensity = mix(1.02, 1.22, focus);
+    actor.cabinetMaterials.dark.emissiveIntensity = mix(0.84, 1, focus);
+    actor.cabinetMaterials.crown.emissiveIntensity = mix(0.98, 1.18, focus);
+    const activationShadow = activationShadowDiagnostic === "on"
+      ? 1
+      : activationShadowDiagnostic === "off"
+        ? 0
+        : smoothstep(0.18, 0.92, actor.focusProgress);
+    actor.activationShadow.mesh.visible = activationShadow > 0.002;
+    const shadowBreath = reducedMotion
+      ? 1
+      : 0.92 + Math.sin(elapsed * 0.48 + actor.phase) * 0.08;
+    actor.activationShadow.material.opacity =
+      activationShadow * VISUAL_CONTRACT.activationShadow.maxOpacity * shadowBreath;
 
     updateDial(actor.dial, actor.dialProgress, elapsed, reducedMotion);
     updateSeal(actor.seal, actor.sealProgress, elapsed);
@@ -2954,13 +3140,19 @@ function addCabinetBox(
   mesh.userData.shelfId = shelfId;
   parent.add(mesh);
   pickables.push(mesh);
+  addCabinetContour(parent, mesh);
+  return mesh;
+}
+
+function addCabinetContour(parent: THREE.Group, mesh: THREE.Mesh): void {
   const edges = new THREE.LineSegments(
-    new THREE.EdgesGeometry(geometry),
-    new THREE.LineBasicMaterial({ color: 0xb8b1ba, transparent: true, opacity: 0.68 }),
+    new THREE.EdgesGeometry(mesh.geometry),
+    new THREE.LineBasicMaterial({ color: COLORS.dim, transparent: true, opacity: 0.68 }),
   );
   edges.position.copy(mesh.position);
+  edges.quaternion.copy(mesh.quaternion);
+  edges.scale.copy(mesh.scale);
   parent.add(edges);
-  return mesh;
 }
 
 function labelPlane(
@@ -3210,6 +3402,56 @@ function cornerFogTexture(side: -1 | 1, seed: number): THREE.CanvasTexture {
         const alpha = Math.round(Math.min(0.98, density * (0.72 + random() * 0.48)) * 255);
         context.fillStyle = `rgba(220,216,224,${alpha / 255})`;
         const block = random() > 0.78 ? 6 : 3;
+        if (random() > 0.67) {
+          context.beginPath();
+          context.arc(x + block / 2, y + block / 2, block * 0.52, 0, Math.PI * 2);
+          context.fill();
+        } else {
+          context.fillRect(x, y, block, block);
+        }
+      }
+    }
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.magFilter = THREE.NearestFilter;
+  texture.minFilter = THREE.NearestFilter;
+  texture.generateMipmaps = false;
+  return texture;
+}
+
+function cabinetShadowFogTexture(seed: number): THREE.CanvasTexture {
+  const width = 256;
+  const height = 400;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("2D canvas is unavailable for cabinet fog textures");
+  }
+  context.imageSmoothingEnabled = false;
+  const random = deterministicRandom(0x51a7 + seed * 0x29);
+  const innerHalfWidth = 0.6;
+  const innerHalfHeight = 0.64;
+  for (let y = 0; y < height; y += 4) {
+    for (let x = 0; x < width; x += 4) {
+      const normalizedX = Math.abs(((x + 2) / width) * 2 - 1);
+      const normalizedY = Math.abs(((y + 2) / height) * 2 - 1);
+      const frameDistance = Math.max(
+        normalizedX / innerHalfWidth,
+        normalizedY / innerHalfHeight,
+      );
+      const innerFade = smoothstep(1, 1.2, frameDistance);
+      const outerDistance = Math.max(normalizedX, normalizedY);
+      const outerFade = 1 - smoothstep(0.84, 1, outerDistance);
+      const wave = 0.78 +
+        Math.sin(x * 0.071 + y * 0.029 + seed * 1.7) * 0.14 +
+        Math.sin(x * 0.027 - y * 0.047 + seed * 2.3) * 0.08;
+      const density = innerFade * outerFade * wave;
+      if (density > 0.025 && random() < Math.min(0.985, density * 1.52)) {
+        const alpha = Math.min(0.98, density * (0.72 + random() * 0.52));
+        context.fillStyle = `rgba(255,255,255,${alpha})`;
+        const block = random() > 0.78 ? 8 : 4;
         if (random() > 0.67) {
           context.beginPath();
           context.arc(x + block / 2, y + block / 2, block * 0.52, 0, Math.PI * 2);
