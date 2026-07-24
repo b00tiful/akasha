@@ -88,7 +88,28 @@ const VISUAL_CONTRACT = {
   },
   activationShadow: {
     debugParameter: "libraryCornerShadows",
-    maxOpacity: 0.8,
+    width: 4.05,
+    height: 6.05,
+    maxOpacity: 0.99,
+    visibilityGain: 1.55,
+    appearanceResponse: 1,
+    disappearanceResponse: 1.1,
+    flowSpeed: 0.72,
+    domainWarp: 0.1,
+    pixelGrid: new THREE.Vector2(96, 144),
+    flarePeriod: 6.5,
+    flareChance: 0.45,
+  },
+  cabinetTitle: {
+    plateWidth: 2.36,
+    plateHeight: 0.48,
+    labelWidth: 2.3,
+    labelHeight: 0.4,
+    canvasWidth: 768,
+    canvasHeight: 192,
+    singleLineFontSize: 92,
+    twoLineFontSize: 66,
+    minimumFontSize: 42,
   },
   effects: {
     groundDuration: 6.4,
@@ -144,8 +165,16 @@ interface CabinetVisual {
 }
 
 interface CabinetActivationShadow {
-  mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
-  material: THREE.MeshBasicMaterial;
+  mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
+  material: THREE.ShaderMaterial;
+  progress: number;
+  time: number;
+  uniforms: {
+    progress: THREE.IUniform<number>;
+    time: THREE.IUniform<number>;
+    debugMode: THREE.IUniform<number>;
+    motionEnabled: THREE.IUniform<number>;
+  };
 }
 
 interface SealEnergyStream {
@@ -324,7 +353,7 @@ interface DragState {
 }
 
 type SceneDebugMode = "final" | "raw" | "monochrome" | "contours";
-type ActivationShadowDiagnostic = "auto" | "on" | "off";
+type ActivationShadowDiagnostic = "auto" | "on" | "off" | "mask" | "flow" | "flare";
 
 interface PixelPipeline {
   render(
@@ -1037,7 +1066,15 @@ function cabinetActivationShadowDiagnostic(): ActivationShadowDiagnostic {
   const value = new URLSearchParams(window.location.search).get(
     VISUAL_CONTRACT.activationShadow.debugParameter,
   );
-  return value === "1" ? "on" : value === "0" ? "off" : "auto";
+  if (value === "1") {
+    return "on";
+  }
+  if (value === "0") {
+    return "off";
+  }
+  return value === "mask" || value === "flow" || value === "flare"
+    ? value
+    : "auto";
 }
 
 function createShelfInstances(shelves: VisualShelf[], count: number): ShelfInstance[] {
@@ -1239,14 +1276,26 @@ function drawShelfCabinet(
   const titlePlate = addCabinetBox(
     parent,
     shelf.id,
-    [2.14, 0.34, 0.14],
+    [
+      VISUAL_CONTRACT.cabinetTitle.plateWidth,
+      VISUAL_CONTRACT.cabinetTitle.plateHeight,
+      0.14,
+    ],
     [0, 1.7, 0.5],
     wood,
     pickables,
   );
   titlePlate.rotation.x = -0.04;
-  const title = labelPlane(shelf.label, 2.08, 0.27, 68, COLORS.bright, 0x070708);
-  title.position.set(0, 1.7, 0.585);
+  const title = labelPlane(
+    shelf.label,
+    VISUAL_CONTRACT.cabinetTitle.labelWidth,
+    VISUAL_CONTRACT.cabinetTitle.labelHeight,
+    VISUAL_CONTRACT.cabinetTitle.singleLineFontSize,
+    COLORS.bright,
+    0x070708,
+    "cabinet-title",
+  );
+  title.position.set(0, 1.7, 0.595);
   title.userData.shelfId = shelf.id;
   parent.add(title);
   pickables.push(title);
@@ -1282,24 +1331,329 @@ function createCabinetActivationShadow(
   parent: THREE.Group,
   seed: number,
 ): CabinetActivationShadow {
-  const geometry = new THREE.PlaneGeometry(3.8, 6);
-  const material = new THREE.MeshBasicMaterial({
-    map: cabinetShadowFogTexture(seed),
-    color: COLORS.void,
+  const geometry = new THREE.PlaneGeometry(
+    VISUAL_CONTRACT.activationShadow.width,
+    VISUAL_CONTRACT.activationShadow.height,
+  );
+  const uniforms = {
+    progress: { value: 0 },
+    time: { value: seed * 0.731 },
+    debugMode: { value: 0 },
+    motionEnabled: { value: 1 },
+  };
+  const material = new THREE.ShaderMaterial({
+    uniforms: {
+      uProgress: uniforms.progress,
+      uTime: uniforms.time,
+      uSeed: { value: (seed + 1) * 0.731 },
+      uVoidColor: { value: new THREE.Color(COLORS.void) },
+      uMaxOpacity: { value: VISUAL_CONTRACT.activationShadow.maxOpacity },
+      uVisibilityGain: { value: VISUAL_CONTRACT.activationShadow.visibilityGain },
+      uDomainWarp: { value: VISUAL_CONTRACT.activationShadow.domainWarp },
+      uPixelGrid: { value: VISUAL_CONTRACT.activationShadow.pixelGrid },
+      uFlarePeriod: { value: VISUAL_CONTRACT.activationShadow.flarePeriod },
+      uFlareChance: { value: VISUAL_CONTRACT.activationShadow.flareChance },
+      uDebugMode: uniforms.debugMode,
+      uMotionEnabled: uniforms.motionEnabled,
+    },
+    vertexShader: `
+      varying vec2 vUv;
+
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform float uProgress;
+      uniform float uTime;
+      uniform float uSeed;
+      uniform vec3 uVoidColor;
+      uniform float uMaxOpacity;
+      uniform float uVisibilityGain;
+      uniform float uDomainWarp;
+      uniform vec2 uPixelGrid;
+      uniform float uFlarePeriod;
+      uniform float uFlareChance;
+      uniform float uDebugMode;
+      uniform float uMotionEnabled;
+      varying vec2 vUv;
+
+      float hash21(vec2 value) {
+        vec3 p = fract(vec3(value.xyx) * 0.1031);
+        p += dot(p, p.yzx + 33.33 + uSeed);
+        return fract((p.x + p.y) * p.z);
+      }
+
+      float valueNoise(vec2 position) {
+        vec2 cell = floor(position);
+        vec2 local = fract(position);
+        local = local * local * (3.0 - 2.0 * local);
+        float bottomLeft = hash21(cell);
+        float bottomRight = hash21(cell + vec2(1.0, 0.0));
+        float topLeft = hash21(cell + vec2(0.0, 1.0));
+        float topRight = hash21(cell + vec2(1.0));
+        return mix(
+          mix(bottomLeft, bottomRight, local.x),
+          mix(topLeft, topRight, local.x),
+          local.y
+        );
+      }
+
+      float fogField(vec2 position) {
+        float field = 0.0;
+        float amplitude = 0.54;
+        mat2 turn = mat2(0.8, -0.6, 0.6, 0.8);
+        for (int octave = 0; octave < 4; octave += 1) {
+          field += valueNoise(position) * amplitude;
+          position = turn * position * 2.03 + vec2(9.1, 3.7);
+          amplitude *= 0.49;
+        }
+        return field;
+      }
+
+      float rectangleDistance(vec2 point, vec2 halfExtent) {
+        vec2 scaled = abs(point) / halfExtent;
+        return max(scaled.x, scaled.y);
+      }
+
+      float taperedSegmentMask(
+        vec2 point,
+        vec2 start,
+        vec2 end,
+        float startWidth,
+        float endWidth
+      ) {
+        vec2 line = end - start;
+        float amount = clamp(
+          dot(point - start, line) / max(dot(line, line), 0.0001),
+          0.0,
+          1.0
+        );
+        float width = mix(startWidth, endWidth, amount);
+        float distanceToSegment = length(point - start - line * amount);
+        return 1.0 - smoothstep(width, width + 0.018, distanceToSegment);
+      }
+
+      void main() {
+        vec2 pixelUv = (floor(vUv * uPixelGrid) + 0.5) / uPixelGrid;
+        vec2 point = pixelUv * 2.0 - 1.0;
+        float time = uTime;
+        vec2 drift = vec2(time * 0.075, -time * 0.052);
+        vec2 flow = vec2(
+          fogField(point * 1.54 + drift + vec2(uSeed, 2.1)),
+          fogField(point * 1.49 - drift.yx + vec2(7.3, uSeed))
+        ) - 0.5;
+        vec2 warped = point + flow * uDomainWarp;
+
+        float macroFog = fogField(warped * 1.92 + vec2(time * 0.11, -time * 0.08));
+        float detailFog = fogField(warped * 5.1 - vec2(time * 0.17, time * 0.1));
+        float shadowNoise = clamp(macroFog * 0.72 + detailFog * 0.28, 0.0, 1.0);
+
+        float rectangularDistance = rectangleDistance(warped, vec2(0.82, 0.88));
+        float roundedDistance = length(warped / vec2(0.95, 1.0));
+        float silhouetteDistance = mix(
+          rectangularDistance,
+          roundedDistance,
+          0.52
+        );
+        float boundaryDistortion = (macroFog - 0.5) * 0.36 +
+          (detailFog - 0.5) * 0.22;
+        float silhouette = 1.0 - smoothstep(
+          0.82,
+          1.12,
+          silhouetteDistance - boundaryDistortion
+        );
+        float frayNoise = clamp(
+          detailFog * 0.68 +
+            fogField(warped * 9.2 + vec2(-time * 0.2, time * 0.16)) * 0.32,
+          0.0,
+          1.0
+        );
+        float edgeAmount = smoothstep(0.44, 1.06, silhouetteDistance);
+        float frayGate = mix(
+          1.0,
+          smoothstep(0.34, 0.73, frayNoise + (macroFog - 0.5) * 0.18),
+          edgeAmount * 0.92
+        );
+        float distanceFade = 1.0 - smoothstep(
+          0.34,
+          1.16,
+          silhouetteDistance + (detailFog - 0.5) * 0.08
+        );
+        float densityFlow = fogField(
+          warped * 3.35 + vec2(time * 0.23, -time * 0.18)
+        );
+        float densityPulse = 0.9 + 0.1 * sin(
+          time * 0.63 + macroFog * 6.28318 + uSeed
+        );
+        float dynamicDensity = mix(
+          0.5,
+          1.0,
+          smoothstep(
+            0.2,
+            0.82,
+            shadowNoise * 0.55 + densityFlow * 0.45
+          )
+        ) * densityPulse;
+        float lowerCoverage = smoothstep(0.08, 0.92, -point.y);
+        float lowerWeight = mix(0.72, 1.2, lowerCoverage);
+        float contentInterior = 1.0 - smoothstep(
+          0.88,
+          1.06,
+          rectangleDistance(point, vec2(0.5, 0.55))
+        );
+        float contentRelief = 1.0 - contentInterior * (1.0 - lowerCoverage) * 0.5;
+        float baseMask = clamp(
+          silhouette * frayGate * distanceFade * dynamicDensity *
+            lowerWeight * contentRelief * uVisibilityGain,
+          0.0,
+          1.0
+        );
+        float coreWeight = 1.0 - smoothstep(0.58, 0.88, silhouetteDistance);
+        float coreShadow = baseMask * coreWeight;
+        float fringeShadow = baseMask * (1.0 - coreWeight);
+
+        float eventClock = (time + uSeed * 1.91) / uFlarePeriod;
+        if (uDebugMode > 2.5) {
+          eventClock = (time + uSeed * 0.47) / 2.8;
+        }
+        float eventCycle = floor(eventClock);
+        float eventAge = fract(eventClock);
+        float eventRoll = hash21(vec2(eventCycle + 17.0, uSeed + 4.1));
+        float eventEnabled = step(1.0 - uFlareChance, eventRoll) * uMotionEnabled;
+        if (uDebugMode > 2.5) {
+          eventEnabled = uMotionEnabled;
+        }
+        float eventEnvelope = smoothstep(0.02, 0.2, eventAge) *
+          (1.0 - smoothstep(0.62, 0.94, eventAge)) * eventEnabled;
+
+        float edgeChoice = hash21(vec2(eventCycle + 2.7, uSeed + 8.3));
+        float edgeOffset = mix(
+          -0.48,
+          0.48,
+          hash21(vec2(eventCycle + 11.6, uSeed + 1.9))
+        );
+        vec2 outward;
+        vec2 tangent;
+        vec2 anchor;
+        if (edgeChoice < 0.35) {
+          outward = vec2(0.0, -1.0);
+          tangent = vec2(1.0, 0.0);
+          anchor = vec2(edgeOffset, -0.72);
+        } else if (edgeChoice < 0.62) {
+          outward = vec2(1.0, 0.0);
+          tangent = vec2(0.0, 1.0);
+          anchor = vec2(0.7, edgeOffset);
+        } else if (edgeChoice < 0.89) {
+          outward = vec2(-1.0, 0.0);
+          tangent = vec2(0.0, 1.0);
+          anchor = vec2(-0.7, edgeOffset);
+        } else {
+          outward = vec2(0.0, 1.0);
+          tangent = vec2(1.0, 0.0);
+          anchor = vec2(edgeOffset, 0.72);
+        }
+
+        float growth = smoothstep(0.0, 0.44, eventAge);
+        float release = smoothstep(0.43, 0.72, eventAge);
+        float curveDirection = mix(
+          -1.0,
+          1.0,
+          hash21(vec2(eventCycle + 29.4, uSeed + 6.7))
+        );
+        vec2 flareStart = anchor + outward * (0.008 + release * 0.08);
+        vec2 flareBend = anchor + outward * mix(0.06, 0.13, growth) +
+          tangent * curveDirection * sin(eventAge * 5.7) * 0.07;
+        vec2 flareShoulder = anchor + outward * mix(0.1, 0.2, growth) +
+          tangent * curveDirection * mix(0.035, 0.12, growth);
+        vec2 flareTip = anchor + outward * mix(0.14, 0.28, growth) +
+          tangent * curveDirection * mix(0.075, 0.17, growth);
+        float flareCurve = max(
+          taperedSegmentMask(point, flareStart, flareBend, 0.046, 0.035),
+          taperedSegmentMask(point, flareBend, flareShoulder, 0.035, 0.023)
+        );
+        flareCurve = max(
+          flareCurve,
+          taperedSegmentMask(point, flareShoulder, flareTip, 0.023, 0.004)
+        );
+        float flareTexture = mix(
+          0.68,
+          1.0,
+          fogField(point * 8.2 + vec2(eventCycle * 3.1, uSeed))
+        );
+        float flareMask = flareCurve * flareTexture * eventEnvelope *
+          smoothstep(0.68, 1.0, uProgress);
+        float splitNotch = (1.0 - smoothstep(
+          0.025,
+          0.085,
+          length(point - anchor)
+        )) * eventEnvelope * release;
+        baseMask *= 1.0 - splitNotch * 0.45;
+
+        float edgeFade =
+          (1.0 - smoothstep(0.975, 1.0, abs(point.x))) *
+          (1.0 - smoothstep(0.975, 1.0, abs(point.y)));
+        baseMask *= edgeFade;
+        flareMask *= edgeFade;
+
+        float revealField = clamp(
+          fogField(warped * 3.15 + vec2(-time * 0.15, time * 0.11)) * 0.82 +
+            shadowNoise * 0.18,
+          0.0,
+          1.0
+        );
+        float revealThreshold = mix(1.08, -0.08, uProgress);
+        float reveal = smoothstep(
+          revealThreshold - 0.12,
+          revealThreshold + 0.12,
+          revealField
+        );
+        float finalMask = clamp(baseMask * reveal + flareMask, 0.0, 1.0);
+        float alpha = finalMask * uMaxOpacity;
+
+        if (uDebugMode > 1.5 && uDebugMode < 2.5) {
+          gl_FragColor = vec4(
+            flow * 0.5 + 0.5,
+            eventEnvelope,
+            max(baseMask, 0.34)
+          );
+          return;
+        }
+        if (uDebugMode > 0.5 && uDebugMode < 1.5) {
+          gl_FragColor = vec4(
+            coreShadow,
+            fringeShadow,
+            flareMask,
+            max(max(baseMask, flareMask), 0.34)
+          );
+          return;
+        }
+        if (alpha < 0.008) {
+          discard;
+        }
+        gl_FragColor = vec4(uVoidColor, alpha);
+      }
+    `,
     transparent: true,
-    opacity: 0,
-    alphaTest: 0.015,
     depthTest: false,
     depthWrite: false,
     toneMapped: false,
+    side: THREE.DoubleSide,
   });
   const mesh = new THREE.Mesh(geometry, material);
-  mesh.name = "activation-perimeter-fog";
-  mesh.position.set(0, -0.05, 0.82);
+  mesh.name = "activation-pixel-shadow";
+  mesh.position.set(0, -0.08, 0.82);
   mesh.renderOrder = 5;
   mesh.visible = false;
   parent.add(mesh);
-  return { mesh, material };
+  return {
+    mesh,
+    material,
+    progress: 0,
+    time: uniforms.time.value,
+    uniforms,
+  };
 }
 
 function createMagicStone(
@@ -1642,13 +1996,13 @@ function drawShelfBooks(
     const category = shelf.categories[row % Math.max(shelf.categories.length, 1)];
     const rowLabel = labelPlane(
       category?.note_type ?? "ARCHIVE",
-      1.62,
-      0.13,
-      48,
-      COLORS.paper,
+      1.82,
+      0.17,
+      66,
+      COLORS.bright,
       0x070708,
     );
-    rowLabel.position.set(0, (rowBases[row] ?? 0) + 0.015, 0.54);
+    rowLabel.position.set(0, (rowBases[row] ?? 0) + 0.015, 0.57);
     rowLabel.userData.shelfId = shelf.id;
     parent.add(rowLabel);
     shelfPickables.push(rowLabel);
@@ -2320,17 +2674,40 @@ function updateActors(
     actor.cabinetMaterials.trim.emissiveIntensity = mix(1.02, 1.22, focus);
     actor.cabinetMaterials.dark.emissiveIntensity = mix(0.84, 1, focus);
     actor.cabinetMaterials.crown.emissiveIntensity = mix(0.98, 1.18, focus);
-    const activationShadow = activationShadowDiagnostic === "on"
-      ? 1
-      : activationShadowDiagnostic === "off"
-        ? 0
-        : smoothstep(0.18, 0.92, actor.focusProgress);
-    actor.activationShadow.mesh.visible = activationShadow > 0.002;
-    const shadowBreath = reducedMotion
-      ? 1
-      : 0.92 + Math.sin(elapsed * 0.48 + actor.phase) * 0.08;
-    actor.activationShadow.material.opacity =
-      activationShadow * VISUAL_CONTRACT.activationShadow.maxOpacity * shadowBreath;
+    const activationShadowTarget = activationShadowDiagnostic === "off"
+      ? 0
+      : activationShadowDiagnostic === "on"
+        ? 1
+        : actor.focusProgress >= 0.985
+          ? 1
+          : 0;
+    if (reducedMotion || activationShadowDiagnostic === "on") {
+      actor.activationShadow.progress = activationShadowTarget;
+    } else {
+      const response = activationShadowTarget > actor.activationShadow.progress
+        ? VISUAL_CONTRACT.activationShadow.appearanceResponse
+        : VISUAL_CONTRACT.activationShadow.disappearanceResponse;
+      actor.activationShadow.progress = mix(
+        actor.activationShadow.progress,
+        activationShadowTarget,
+        1 - Math.exp(-response * seconds),
+      );
+    }
+    if (!reducedMotion && actor.activationShadow.progress > 0.001) {
+      actor.activationShadow.time += seconds * VISUAL_CONTRACT.activationShadow.flowSpeed;
+    }
+    actor.activationShadow.mesh.visible = actor.activationShadow.progress > 0.002;
+    actor.activationShadow.uniforms.progress.value = actor.activationShadow.progress;
+    actor.activationShadow.uniforms.time.value = actor.activationShadow.time;
+    actor.activationShadow.uniforms.motionEnabled.value = reducedMotion ? 0 : 1;
+    actor.activationShadow.uniforms.debugMode.value =
+      activationShadowDiagnostic === "mask"
+        ? 1
+        : activationShadowDiagnostic === "flow"
+          ? 2
+          : activationShadowDiagnostic === "flare"
+            ? 3
+            : 0;
 
     updateDial(actor.dial, actor.dialProgress, elapsed, reducedMotion);
     updateSeal(actor.seal, actor.sealProgress, elapsed);
@@ -3162,10 +3539,12 @@ function labelPlane(
   fontSize: number,
   foreground: number,
   background: number,
+  layout: "single-line" | "cabinet-title" = "single-line",
 ): THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial> {
   const canvas = document.createElement("canvas");
-  canvas.width = 512;
-  canvas.height = 128;
+  const cabinetTitle = layout === "cabinet-title";
+  canvas.width = cabinetTitle ? VISUAL_CONTRACT.cabinetTitle.canvasWidth : 512;
+  canvas.height = cabinetTitle ? VISUAL_CONTRACT.cabinetTitle.canvasHeight : 128;
   const context = canvas.getContext("2d");
   if (!context) {
     throw new Error("2D canvas is unavailable for shelf labels");
@@ -3179,15 +3558,37 @@ function labelPlane(
   context.fillStyle = cssColor(foreground);
   context.textAlign = "center";
   context.textBaseline = "middle";
-  const label = text.toUpperCase();
-  const fittedFontSize = fitLabelFontSize(
-    context,
-    label,
-    fontSize,
-    canvas.width - 34,
-  );
-  context.font = `${fittedFontSize}px "Departure Mono", monospace`;
-  context.fillText(label, canvas.width / 2, canvas.height / 2 + 3);
+  const label = cabinetTitle
+    ? text.toUpperCase().trim().replace(/\s+/gu, " ")
+    : text.toUpperCase();
+  const maxWidth = canvas.width - (cabinetTitle ? 58 : 34);
+  if (cabinetTitle) {
+    const lines = cabinetTitleLines(context, label, maxWidth);
+    const fittedFontSize = fitLabelLinesFontSize(
+      context,
+      lines,
+      lines.length === 1
+        ? VISUAL_CONTRACT.cabinetTitle.singleLineFontSize
+        : VISUAL_CONTRACT.cabinetTitle.twoLineFontSize,
+      VISUAL_CONTRACT.cabinetTitle.minimumFontSize,
+      maxWidth,
+    );
+    context.font = `${fittedFontSize}px "Departure Mono", monospace`;
+    const lineHeight = fittedFontSize * 1.03;
+    const firstLineY = canvas.height / 2 - ((lines.length - 1) * lineHeight) / 2 + 3;
+    lines.forEach((line, index) => {
+      context.fillText(line, canvas.width / 2, firstLineY + index * lineHeight);
+    });
+  } else {
+    const fittedFontSize = fitLabelFontSize(
+      context,
+      label,
+      fontSize,
+      maxWidth,
+    );
+    context.font = `${fittedFontSize}px "Departure Mono", monospace`;
+    context.fillText(label, canvas.width / 2, canvas.height / 2 + 3);
+  }
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.magFilter = THREE.NearestFilter;
@@ -3402,56 +3803,6 @@ function cornerFogTexture(side: -1 | 1, seed: number): THREE.CanvasTexture {
         const alpha = Math.round(Math.min(0.98, density * (0.72 + random() * 0.48)) * 255);
         context.fillStyle = `rgba(220,216,224,${alpha / 255})`;
         const block = random() > 0.78 ? 6 : 3;
-        if (random() > 0.67) {
-          context.beginPath();
-          context.arc(x + block / 2, y + block / 2, block * 0.52, 0, Math.PI * 2);
-          context.fill();
-        } else {
-          context.fillRect(x, y, block, block);
-        }
-      }
-    }
-  }
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.magFilter = THREE.NearestFilter;
-  texture.minFilter = THREE.NearestFilter;
-  texture.generateMipmaps = false;
-  return texture;
-}
-
-function cabinetShadowFogTexture(seed: number): THREE.CanvasTexture {
-  const width = 256;
-  const height = 400;
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext("2d");
-  if (!context) {
-    throw new Error("2D canvas is unavailable for cabinet fog textures");
-  }
-  context.imageSmoothingEnabled = false;
-  const random = deterministicRandom(0x51a7 + seed * 0x29);
-  const innerHalfWidth = 0.6;
-  const innerHalfHeight = 0.64;
-  for (let y = 0; y < height; y += 4) {
-    for (let x = 0; x < width; x += 4) {
-      const normalizedX = Math.abs(((x + 2) / width) * 2 - 1);
-      const normalizedY = Math.abs(((y + 2) / height) * 2 - 1);
-      const frameDistance = Math.max(
-        normalizedX / innerHalfWidth,
-        normalizedY / innerHalfHeight,
-      );
-      const innerFade = smoothstep(1, 1.2, frameDistance);
-      const outerDistance = Math.max(normalizedX, normalizedY);
-      const outerFade = 1 - smoothstep(0.84, 1, outerDistance);
-      const wave = 0.78 +
-        Math.sin(x * 0.071 + y * 0.029 + seed * 1.7) * 0.14 +
-        Math.sin(x * 0.027 - y * 0.047 + seed * 2.3) * 0.08;
-      const density = innerFade * outerFade * wave;
-      if (density > 0.025 && random() < Math.min(0.985, density * 1.52)) {
-        const alpha = Math.min(0.98, density * (0.72 + random() * 0.52));
-        context.fillStyle = `rgba(255,255,255,${alpha})`;
-        const block = random() > 0.78 ? 8 : 4;
         if (random() > 0.67) {
           context.beginPath();
           context.arc(x + block / 2, y + block / 2, block * 0.52, 0, Math.PI * 2);
@@ -3760,6 +4111,85 @@ function fitLabelFontSize(
   let size = requestedSize;
   context.font = `${size}px "Departure Mono", monospace`;
   while (size > 22 && context.measureText(value).width > maxWidth) {
+    size -= 1;
+    context.font = `${size}px "Departure Mono", monospace`;
+  }
+  return size;
+}
+
+function cabinetTitleLines(
+  context: CanvasRenderingContext2D,
+  value: string,
+  maxWidth: number,
+): string[] {
+  context.font = `${VISUAL_CONTRACT.cabinetTitle.singleLineFontSize}px "Departure Mono", monospace`;
+  if (context.measureText(value).width <= maxWidth) {
+    return [value];
+  }
+
+  const semanticBreaks: number[] = [];
+  for (let index = 1; index < value.length; index += 1) {
+    if (value[index] === " ") {
+      semanticBreaks.push(index);
+    } else if (value[index - 1] === "-") {
+      semanticBreaks.push(index);
+    }
+  }
+  const split = bestCabinetTitleSplit(
+    context,
+    value,
+    semanticBreaks.length > 0 ? semanticBreaks : centeredBreaks(value.length),
+  );
+  context.font = `${VISUAL_CONTRACT.cabinetTitle.minimumFontSize}px "Departure Mono", monospace`;
+  if (split.some((line) => context.measureText(line).width > maxWidth)) {
+    return bestCabinetTitleSplit(context, value, centeredBreaks(value.length));
+  }
+  return split;
+}
+
+function centeredBreaks(length: number): number[] {
+  return Array.from({ length: Math.max(0, length - 1) }, (_, index) => index + 1);
+}
+
+function bestCabinetTitleSplit(
+  context: CanvasRenderingContext2D,
+  value: string,
+  breaks: number[],
+): [string, string] {
+  context.font = `${VISUAL_CONTRACT.cabinetTitle.twoLineFontSize}px "Departure Mono", monospace`;
+  let best: [string, string] = [value, ""];
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const splitAt of breaks) {
+    const candidate: [string, string] = [
+      value.slice(0, splitAt).trim(),
+      value.slice(splitAt).trim(),
+    ];
+    if (candidate[0].length === 0 || candidate[1].length === 0) {
+      continue;
+    }
+    const widths = candidate.map((line) => context.measureText(line).width);
+    const score = Math.max(...widths) + Math.abs(widths[0]! - widths[1]!) * 0.15;
+    if (score < bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function fitLabelLinesFontSize(
+  context: CanvasRenderingContext2D,
+  lines: string[],
+  requestedSize: number,
+  minimumSize: number,
+  maxWidth: number,
+): number {
+  let size = requestedSize;
+  context.font = `${size}px "Departure Mono", monospace`;
+  while (
+    size > minimumSize &&
+    lines.some((line) => context.measureText(line).width > maxWidth)
+  ) {
     size -= 1;
     context.font = `${size}px "Departure Mono", monospace`;
   }

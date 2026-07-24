@@ -42,7 +42,11 @@ const volumeClose = required<HTMLButtonElement>("volume-close");
 const dashboard = required<HTMLElement>("dashboard");
 const dashboardToggle = required<HTMLButtonElement>("dashboard-toggle");
 const dashboardExpand = required<HTMLButtonElement>("dashboard-expand");
+const dashboardActionLabel = required<HTMLElement>("dashboard-action-label");
 const dashboardCompact = required<HTMLElement>("dashboard-compact");
+const dashboardSigil = required<HTMLElement>("dashboard-sigil");
+const dashboardSigilProjects = required<HTMLElement>("dashboard-sigil-projects");
+const dashboardSigilCategories = required<HTMLElement>("dashboard-sigil-categories");
 const dashboardSummary = required<HTMLElement>("dashboard-summary");
 const dashboardProjects = required<HTMLElement>("dashboard-projects");
 const inventoryPanel = required<HTMLElement>("inventory-panel");
@@ -66,6 +70,7 @@ let activeVolume: LibraryVolume | null = null;
 let activeResolution: { root: string; project: string } | null = null;
 
 reducedMotion.checked = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+document.documentElement.classList.toggle("reduced-motion", reducedMotion.checked);
 
 form.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -94,6 +99,7 @@ discardButton.addEventListener("click", () => {
 });
 
 reducedMotion.addEventListener("change", () => {
+  document.documentElement.classList.toggle("reduced-motion", reducedMotion.checked);
   scene?.setReducedMotion(reducedMotion.checked);
 });
 
@@ -419,6 +425,15 @@ function renderVolume(): void {
 
 function renderDashboard(current: DesktopLibrary): void {
   const metrics = current.projection.dashboard;
+  dashboardSigilProjects.textContent = `P ${metrics.projects}`;
+  dashboardSigilProjects.title = `${metrics.projects} projects`;
+  dashboardSigilCategories.textContent = `C ${metrics.configured_categories}`;
+  dashboardSigilCategories.title = `${metrics.configured_categories} configured categories`;
+  dashboardSigil.dataset.validation = metrics.validation_passed ? "passed" : "failed";
+  dashboardSigil.setAttribute(
+    "aria-label",
+    `Archive map: ${metrics.projects} projects and ${metrics.configured_categories} configured categories orbit the ${metrics.validation_passed ? "validated" : "unvalidated"} library core.`,
+  );
   dashboardCompact.replaceChildren(
     metric("Projects", metrics.projects),
     metric("Notes", metrics.notes),
@@ -479,9 +494,10 @@ function summaryCard(label: string, value: string | number): HTMLElement {
 
 function toggleDashboard(): void {
   const expanded = dashboard.classList.toggle("is-expanded");
-  dashboardExpand.textContent = expanded ? "Collapse" : "Expand";
+  dashboardActionLabel.textContent = expanded ? "Collapse" : "Expand";
   dashboardExpand.setAttribute("aria-expanded", String(expanded));
   dashboardToggle.setAttribute("aria-pressed", String(expanded));
+  dashboardToggle.setAttribute("aria-expanded", String(expanded));
 }
 
 function toggleDrawer(panel: HTMLElement, trigger: HTMLButtonElement): void {

@@ -24,24 +24,59 @@
         </nav>
 
         <div class="stage-tools arcane-frame" aria-label="Library controls">
-          <button id="dashboard-toggle" class="icon-button" type="button" aria-label="Toggle dashboard">◇</button>
+          <button id="dashboard-toggle" class="icon-button" type="button" aria-label="Toggle dashboard" aria-expanded="false" aria-pressed="false">◇</button>
           <button id="inventory-toggle" class="icon-button" type="button" aria-label="Toggle exact inventory">▤</button>
           <button id="settings-toggle" class="icon-button" type="button" aria-label="Open library settings">⚙</button>
         </div>
 
         <div id="scene" class="scene" aria-label="Floating three-dimensional project bookshelves"></div>
 
-        <section id="dashboard" class="dashboard-panel arcane-frame" aria-labelledby="dashboard-title">
-          <header>
-            <div>
-              <p class="eyebrow">VALIDATED SNAPSHOT</p>
+        <section id="dashboard" class="dashboard-panel" aria-labelledby="dashboard-title">
+          <div class="dashboard-frame" aria-hidden="true">
+            <span class="dashboard-frame-rail dashboard-frame-rail-top"></span>
+            <span class="dashboard-frame-rail dashboard-frame-rail-bottom"></span>
+            <span class="dashboard-frame-rail dashboard-frame-rail-left"></span>
+            <span class="dashboard-frame-rail dashboard-frame-rail-right"></span>
+            <span class="dashboard-frame-corner dashboard-frame-corner-nw"></span>
+            <span class="dashboard-frame-corner dashboard-frame-corner-ne"></span>
+            <span class="dashboard-frame-corner dashboard-frame-corner-sw"></span>
+            <span class="dashboard-frame-corner dashboard-frame-corner-se"></span>
+            <span class="dashboard-frame-node dashboard-frame-node-west"></span>
+            <span class="dashboard-frame-node dashboard-frame-node-east"></span>
+          </div>
+          <header class="dashboard-header">
+            <div class="dashboard-title-plaque">
+              <span aria-hidden="true">◆</span>
               <h2 id="dashboard-title">Library status</h2>
+              <span aria-hidden="true">◆</span>
             </div>
-            <button id="dashboard-expand" class="text-button" type="button" aria-expanded="false">
-              Expand
+            <button id="dashboard-expand" class="dashboard-expand" type="button" aria-expanded="false">
+              <span aria-hidden="true">[</span>
+              <span id="dashboard-action-label">Expand</span>
+              <span aria-hidden="true">]</span>
             </button>
           </header>
-          <div id="dashboard-compact" class="dashboard-compact"></div>
+          <div class="dashboard-compact-shell">
+            <div id="dashboard-sigil" class="dashboard-sigil" role="img" aria-label="Archive map awaiting validated metrics">
+              <span class="dashboard-sigil-orbit dashboard-sigil-orbit-outer" aria-hidden="true">
+                <span id="dashboard-sigil-projects" class="dashboard-sigil-marker dashboard-sigil-marker-projects">P 0</span>
+              </span>
+              <span class="dashboard-sigil-orbit dashboard-sigil-orbit-inner" aria-hidden="true">
+                <span id="dashboard-sigil-categories" class="dashboard-sigil-marker dashboard-sigil-marker-categories">C 0</span>
+              </span>
+              <span class="dashboard-sigil-axis"></span>
+              <span class="dashboard-sigil-core" aria-hidden="true">
+                <span class="dashboard-sigil-spine"></span>
+              </span>
+              <span class="dashboard-sigil-drop dashboard-sigil-drop-left"></span>
+              <span class="dashboard-sigil-drop dashboard-sigil-drop-center"></span>
+              <span class="dashboard-sigil-drop dashboard-sigil-drop-right"></span>
+            </div>
+            <div class="dashboard-ledger">
+              <p class="dashboard-ledger-title">VALIDATED SNAPSHOT</p>
+              <div id="dashboard-compact" class="dashboard-compact"></div>
+            </div>
+          </div>
           <div class="dashboard-details" aria-label="Expanded library dashboard">
             <div id="dashboard-summary" class="dashboard-summary"></div>
             <div class="dashboard-table-wrap">
