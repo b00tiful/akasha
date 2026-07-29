@@ -1052,7 +1052,7 @@ td:first-child {
 
 .control-legend {
   bottom: 1.4%;
-  left: 50%;
+  left: 47%;
   display: flex;
   width: max-content;
   max-width: 55%;
@@ -1076,7 +1076,7 @@ kbd {
   position: absolute;
   z-index: 8;
   right: 22%;
-  bottom: 5.2%;
+  bottom: 7.2%;
   left: 22%;
   margin: 0;
   overflow: hidden;

@@ -6,7 +6,7 @@ schema_version = 1
 "events/sessions/2026-07-13.md" = "sha256:63725f2bd13fe116c0c473cc55f933d8962621ad9459108e1c358d63aed09b28"
 
 [projections.index]
-sources = "sha256:4816f669e28b38036af021dbac97cfdfef59bd8cc0c5abe51b4bd0b65ec36127"
+sources = "sha256:7c188b569e830a68c7ec091bccef793def440aac21844c27f7a57602296d989a"
 output = "sha256:c0bb54c3d5bd960e58b6cabc2cc856be0c0613e940b327491e37364dfb1f8794"
 
 [projections.roadmap]
