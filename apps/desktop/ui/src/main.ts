@@ -2,7 +2,9 @@ import "./styles.css";
 
 import { loadDocument, loadLibrary, saveDocument } from "./api";
 import { NoteViewer, type ViewerMode } from "./editor";
-import { renderFallback } from "./fallback";
+import { renderFallback, renderLocalFallback } from "./fallback";
+import { localAkashaModel } from "./local-akasha-model";
+import { mountLocalAkasha, type LocalNavigation, type LocalSceneHandle } from "./local-akasha-scene";
 import {
   allBooks,
   libraryShelves,
@@ -20,6 +22,8 @@ const rootInput = required<HTMLInputElement>("root-input");
 const projectInput = required<HTMLInputElement>("project-input");
 const status = required<HTMLElement>("status");
 const sceneHost = required<HTMLElement>("scene");
+const scopeToggle = required<HTMLButtonElement>("scope-toggle");
+const stage = document.querySelector<HTMLElement>(".pixel-stage")!;
 const fallbackHost = required<HTMLElement>("fallback");
 const metaHost = required<HTMLElement>("book-meta");
 const editActions = required<HTMLElement>("edit-actions");
@@ -68,6 +72,11 @@ let aimedShelfId: string | null = null;
 let activeShelfId: string | null = null;
 let activeVolume: LibraryVolume | null = null;
 let activeResolution: { root: string; project: string } | null = null;
+let localScene: LocalSceneHandle | null = null;
+let localMode = new URLSearchParams(location.search).get("view") === "local";
+const localNavigation = new Map<string, LocalNavigation>();
+let documentRequest = 0;
+let switchingScope = false;
 
 reducedMotion.checked = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 document.documentElement.classList.toggle("reduced-motion", reducedMotion.checked);
@@ -101,7 +110,14 @@ discardButton.addEventListener("click", () => {
 reducedMotion.addEventListener("change", () => {
   document.documentElement.classList.toggle("reduced-motion", reducedMotion.checked);
   scene?.setReducedMotion(reducedMotion.checked);
+  localScene?.setReducedMotion(reducedMotion.checked);
 });
+
+window.matchMedia("(prefers-reduced-motion: reduce)").addEventListener("change", (event) => {
+  reducedMotion.checked = event.matches;
+  reducedMotion.dispatchEvent(new Event("change"));
+});
+scopeToggle.addEventListener("click", () => void switchScope());
 
 for (const button of modeButtons) {
   button.addEventListener("click", () => {
@@ -114,6 +130,13 @@ for (const button of modeButtons) {
 }
 
 window.addEventListener("keydown", (event) => {
+  if (localMode) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeTopLayer();
+    }
+    return;
+  }
   if (isTypingTarget(event.target)) {
     return;
   }
@@ -161,10 +184,11 @@ async function openLibrary(
   requestedResolution = { root: rootInput.value, project: projectInput.value },
 ): Promise<void> {
   setStatus("Validating the library through Akasha Core…");
+  documentRequest++;
   form.classList.add("is-loading");
   try {
     library = await loadLibrary(requestedResolution.root, requestedResolution.project);
-    activeResolution = requestedResolution;
+    activeResolution = { root: library.projection.root, project: library.projection.selected_project };
     rootInput.value = requestedResolution.root;
     projectInput.value = requestedResolution.project;
     selectedId = null;
@@ -200,7 +224,9 @@ async function openLibrary(
 
     const recovery = library.recovery === "none" ? "" : ` / recovery ${library.recovery}`;
     setStatus(
-      `${library.projection.total_books} canonical notes / ${library.projection.projects.length} projects / validation passed${recovery}`,
+      localMode
+        ? `Local project ${library.projection.selected_project} / validation passed${recovery}`
+        : `${library.projection.total_books} canonical notes / ${library.projection.projects.length} projects / validation passed${recovery}`,
       "success",
     );
   } catch (error) {
@@ -211,6 +237,8 @@ async function openLibrary(
     activeVolume = null;
     scene?.destroy();
     scene = null;
+    localScene?.destroy();
+    localScene = null;
     sceneHost.replaceChildren();
     fallbackHost.replaceChildren();
     noteOverlay.hidden = true;
@@ -226,6 +254,33 @@ async function openLibrary(
 
 async function renderScene(current: DesktopLibrary): Promise<void> {
   scene?.destroy();
+  scene = null;
+  localScene?.destroy();
+  localScene = null;
+  stage.classList.toggle("is-local", localMode);
+  stage.setAttribute("aria-label", localMode ? "Akasha local vault" : "Akasha global library");
+  scopeToggle.textContent = localMode ? "Global library" : "Local Akasha";
+  sceneHost.setAttribute("aria-label", localMode ? "Selected project directory sky" : "Floating three-dimensional project bookshelves");
+  (localMode ? renderLocalFallback : renderFallback)(fallbackHost, current.projection, (book) => void openBookFromInventory(book));
+  if (localMode) {
+    const model = localAkashaModel(current.projection);
+    let navigation = localNavigation.get(model.key);
+    if (!navigation) {
+      navigation = { section: null, skyPage: 0, pages: {} };
+      localNavigation.set(model.key, navigation);
+    }
+    localScene = mountLocalAkasha(sceneHost, model, navigation, reducedMotion.checked, {
+      canNavigate: () => {
+        if (viewer.dirty) { requireDirtyDecision("leaving this note"); return false; }
+        closeNote();
+        return true;
+      },
+      onSelect: (book) => void selectBook(book),
+      onBack: () => { if (!noteOverlay.hidden) closeNote(); else localScene?.back(); },
+    });
+    volumePanel.hidden = true;
+    return;
+  }
   scene = await mountLibraryScene(
     sceneHost,
     current.projection,
@@ -244,6 +299,28 @@ async function renderScene(current: DesktopLibrary): Promise<void> {
   );
   aimedShelfId = scene.aimedShelfId();
   scene.select(selectedId);
+}
+
+async function switchScope(): Promise<void> {
+  if (!library || switchingScope) return;
+  if (viewer.dirty) { requireDirtyDecision("switching between local and global views"); return; }
+  switchingScope = true;
+  scopeToggle.disabled = true;
+  closeNote();
+  closeDrawer(inventoryPanel, inventoryToggle);
+  closeDrawer(settingsPanel, settingsToggle);
+  localMode = !localMode;
+  try {
+    await renderScene(library);
+    if (!localMode) renderVolume();
+    setStatus(localMode ? `Local project ${library.projection.selected_project}` : "Global archive", "success");
+    scopeToggle.focus();
+  } catch (error) {
+    setStatus(`View unavailable: ${errorMessage(error)}`, "error");
+  } finally {
+    switchingScope = false;
+    scopeToggle.disabled = false;
+  }
 }
 
 async function chooseShelf(id: string): Promise<void> {
@@ -333,6 +410,15 @@ async function openBookFromInventory(book: LibraryBook): Promise<void> {
     requireDirtyDecision("selecting another note");
     return;
   }
+  if (localMode) {
+    if (book.scope.kind !== "project" || book.scope.project !== library.projection.selected_project) {
+      setStatus("This note belongs to the global archive. Switch to Global library to open it.", "warning");
+      return;
+    }
+    closeDrawer(inventoryPanel, inventoryToggle);
+    await selectBook(book);
+    return;
+  }
   const shelf = libraryShelves(library.projection).find(
     (candidate) => volumeForBook(candidate, book.id) !== undefined,
   );
@@ -358,7 +444,10 @@ async function selectBook(book: LibraryBook): Promise<void> {
     return;
   }
   selectedId = book.id;
+  const request = ++documentRequest;
+  viewer.setDocument("", false);
   scene?.select(book.id);
+  localScene?.select(book.id);
   renderBookMeta(book);
   noteOverlay.hidden = false;
   const requestedId = book.id;
@@ -368,11 +457,12 @@ async function selectBook(book: LibraryBook): Promise<void> {
       throw new Error("the active library resolution is unavailable");
     }
     const document = await loadDocument(resolution.root, resolution.project, requestedId);
-    if (selectedId === requestedId) {
+    if (selectedId === requestedId && request === documentRequest) {
       viewer.setDocument(document.source, isEditable(book));
+      if (localMode) noteClose.focus();
     }
   } catch (error) {
-    if (selectedId === requestedId) {
+    if (selectedId === requestedId && request === documentRequest) {
       viewer.setDocument("", false);
       setStatus(`Document unavailable: ${errorMessage(error)}`, "error");
     }
@@ -385,8 +475,10 @@ function closeNote(): void {
     return;
   }
   noteOverlay.hidden = true;
+  documentRequest++;
   selectedId = null;
   scene?.select(null);
+  localScene?.select(null);
   viewer.setDocument("", false);
   metaHost.innerHTML = "<p>Select a note from an open volume.</p>";
 }
@@ -524,6 +616,8 @@ function closeTopLayer(): void {
     closeDrawer(settingsPanel, settingsToggle);
   } else if (dashboard.classList.contains("is-expanded")) {
     toggleDashboard();
+  } else if (localMode) {
+    localScene?.back();
   } else if (activeShelfId) {
     closeShelf();
   }

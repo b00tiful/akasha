@@ -17,6 +17,16 @@ export function renderFallback(
   }
 }
 
+export function renderLocalFallback(
+  host: HTMLElement,
+  projection: LibraryProjection,
+  onSelect: (book: LibraryBook) => void,
+): void {
+  host.replaceChildren();
+  const shelf = projection.projects.find((item) => item.project === projection.selected_project);
+  if (shelf) appendCollection(host, `${shelf.project} / ${shelf.status}`, shelf.categories, onSelect);
+}
+
 function appendCollection(
   host: HTMLElement,
   label: string,
