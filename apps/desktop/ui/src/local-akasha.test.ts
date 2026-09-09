@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ORBIT_PAGE_SIZE, orbitLayout, sectionLayout } from "./local-akasha-layout";
 import { localAkashaModel } from "./local-akasha-model";
 import { mountLocalAkasha, type LocalNavigation } from "./local-akasha-scene";
+import { localSkyEvent, mountLocalSky } from "./local-akasha-sky";
 import type { LibraryBook, LibraryProjection } from "./types";
 
 export function localFixture(count = 53, sectionCount = 5): LibraryProjection {
@@ -54,6 +55,46 @@ describe("Local Akasha hierarchy", () => {
       if (id !== other) expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThan(.18);
     }
     expect(orbitLayout(Array.from({ length: 100 }, (_, i) => String(i))).size).toBe(ORBIT_PAGE_SIZE);
+  });
+
+  it("centers sparse and dense skies without relying on input order", () => {
+    for (const count of [1, 3, 5, 8, 12]) for (const seed of ["alpha", "beta", "gamma"]) {
+      const points = [...sectionLayout(seed, Array.from({ length: count }, (_, i) => `s${i}`)).values()];
+      expect(points.reduce((sum, p) => sum + p.x, 0) / count).toBeCloseTo(.5);
+      expect(points.reduce((sum, p) => sum + p.y, 0) / count).toBeCloseTo(.48);
+      expect(points.every((p) => p.x > 0 && p.x < 1 && p.y > 0 && p.y < 1)).toBe(true);
+    }
+  });
+
+  it("keeps events rare with quiet intervals and all three seeded event types", () => {
+    const active = Array.from({ length: 200 }, (_, time) => localSkyEvent(time, "example"));
+    expect(active.slice(0, 18).every((event) => event === null)).toBe(true);
+    expect(active.filter(Boolean).length).toBeLessThan(36);
+    expect(new Set(active.flatMap((event) => event ? [event.kind] : []))).toEqual(new Set(["comet", "rift", "eclipse"]));
+  });
+
+  it("stops the canvas clock for reader, reduced motion, hidden document, and teardown", () => {
+    const context = { fillRect: vi.fn(), drawImage: vi.fn(), beginPath() {}, moveTo() {}, lineTo() {}, closePath() {}, fill() {} };
+    vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue(context as unknown as CanvasRenderingContext2D);
+    const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    const request = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(123);
+    const cancel = vi.spyOn(window, "cancelAnimationFrame");
+    const sky = mountLocalSky(document.createElement("canvas"), "fixture", false);
+    expect(request).toHaveBeenCalledTimes(1);
+    sky.setPaused(true);
+    expect(cancel).toHaveBeenLastCalledWith(123);
+    expect(request).toHaveBeenCalledTimes(1);
+    sky.setPaused(false);
+    expect(request).toHaveBeenCalledTimes(2);
+    sky.setReducedMotion(true);
+    expect(request).toHaveBeenCalledTimes(2);
+    hidden.mockReturnValue(true);
+    sky.setReducedMotion(false);
+    expect(request).toHaveBeenCalledTimes(2);
+    sky.destroy();
+    hidden.mockReturnValue(false);
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
   it("shows empty directories and empty configured sections truthfully", () => {

@@ -22,9 +22,14 @@ describe("local scene and shared editor integration", () => {
         root: "/resolved/root", selected_project: "example", total_books: 2,
         global: { categories: [] }, projects: [{ project: "example", status: "active",
           categories: [{ note_type: "entity", class: "entity", books }] }],
-        dashboard: { validation_passed: true, projects: 1, notes: 2, global_notes: 0,
-          configured_categories: 1, open_tasks: 0, open_problems: 0, validated_links: 0,
-          latest_activity_date: null, project_metrics: [] },
+        dashboard: { validation_passed: true, projects: 2, notes: 1001, global_notes: 0,
+          configured_categories: 1, open_tasks: 99, open_problems: 98, validated_links: 97,
+          latest_activity_date: null, project_metrics: [
+            { project: "example", status: "active", notes: 2, populated_categories: 1,
+              open_tasks: 3, open_problems: 4, validated_links: 5, latest_activity_date: null },
+            { project: "other", status: "active", notes: 999, populated_categories: 1,
+              open_tasks: 96, open_problems: 94, validated_links: 92, latest_activity_date: null },
+          ] },
       },
     };
     const loads: Array<{ id: string; resolve(value: LibraryDocument): void }> = [];
@@ -32,11 +37,17 @@ describe("local scene and shared editor integration", () => {
       new Promise<LibraryDocument>((resolve) => loads.push({ id, resolve })));
     const saveDocument = vi.fn(async () => ({ changed: true }));
     vi.doMock("./api", () => ({ loadLibrary: vi.fn(async () => library), loadDocument, saveDocument }));
-    vi.doMock("./scene", () => ({ mountLibraryScene: vi.fn() }));
+    vi.doMock("./scene", () => ({ mountLibraryScene: vi.fn(async () => ({
+      aimedShelfId: () => null, select: vi.fn(), destroy: vi.fn(),
+    })) }));
     const { NoteViewer } = await import("./editor");
     const documents = vi.spyOn(NoteViewer.prototype, "setDocument");
     await import("./main");
     await vi.waitFor(() => expect(document.querySelectorAll(".local-section")).toHaveLength(1));
+    expect(document.querySelector(".brand-name")!.textContent).toBe("AKASHA LOCAL VAULT");
+    expect(document.querySelector("#dashboard-title")!.textContent).toBe("Vault status");
+    expect(document.querySelector("#dashboard-compact")!.textContent).toContain("Open tasks3");
+    expect(document.querySelector("#dashboard-projects")!.textContent).not.toContain("other");
     const click = (selector: string) => document.querySelector<HTMLButtonElement>(selector)!.click();
     click(".local-section");
     click(".local-note");
@@ -70,6 +81,10 @@ describe("local scene and shared editor integration", () => {
     click("#note-close");
     expect((document.activeElement as HTMLElement).dataset.note).toBe(books[1]!.id);
     expect(document.querySelector(".local-akasha")!.getAttribute("data-phase")).toBe("section");
+    click("#scope-toggle");
+    await vi.waitFor(() => expect(document.querySelector("#dashboard-title")!.textContent).toBe("Library status"));
+    expect(document.querySelector("#dashboard-compact")!.textContent).toContain("Open tasks99");
+    expect(document.querySelector("#dashboard-projects")!.textContent).toContain("other");
     viewer.destroy();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();

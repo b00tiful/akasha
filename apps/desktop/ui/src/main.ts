@@ -131,6 +131,17 @@ for (const button of modeButtons) {
 
 window.addEventListener("keydown", (event) => {
   if (localMode) {
+    if (event.key === "Tab" && !noteOverlay.hidden) {
+      const controls = [...noteOverlay.querySelectorAll<HTMLElement>('button:not(:disabled), [tabindex="0"], .cm-content')]
+        .filter((node) => node.getClientRects().length > 0);
+      const first = controls[0];
+      const last = controls.at(-1);
+      if (first && last && ((event.shiftKey && document.activeElement === first) ||
+        (!event.shiftKey && document.activeElement === last))) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      }
+    }
     if (event.key === "Escape") {
       event.preventDefault();
       closeTopLayer();
@@ -258,6 +269,12 @@ async function renderScene(current: DesktopLibrary): Promise<void> {
   localScene?.destroy();
   localScene = null;
   stage.classList.toggle("is-local", localMode);
+  noteOverlay.setAttribute("role", localMode ? "dialog" : "region");
+  if (localMode) noteOverlay.setAttribute("aria-modal", "true");
+  else noteOverlay.removeAttribute("aria-modal");
+  stage.querySelector(".brand-name")!.textContent = localMode ? "AKASHA LOCAL VAULT" : "AKASHA LIBRARY";
+  stage.querySelector(".brand-plaque p:last-child")!.textContent = localMode ? current.projection.selected_project : "global archive";
+  renderDashboard(current);
   stage.setAttribute("aria-label", localMode ? "Akasha local vault" : "Akasha global library");
   scopeToggle.textContent = localMode ? "Global library" : "Local Akasha";
   sceneHost.setAttribute("aria-label", localMode ? "Selected project directory sky" : "Floating three-dimensional project bookshelves");
@@ -517,6 +534,12 @@ function renderVolume(): void {
 
 function renderDashboard(current: DesktopLibrary): void {
   const metrics = current.projection.dashboard;
+  const local = localMode ? localAkashaModel(current.projection) : null;
+  const selectedMetrics = metrics.project_metrics.find((project) => project.project === current.projection.selected_project);
+  required<HTMLElement>("dashboard-title").textContent = local ? "Vault status" : "Library status";
+  dashboard.querySelector<HTMLElement>(".dashboard-ledger-title")!.textContent = local ? "LOCAL SNAPSHOT" : "VALIDATED SNAPSHOT";
+  dashboard.querySelector<HTMLElement>(".dashboard-footnote")!.textContent = local
+    ? `Selected project: ${local.project}` : "Timeline chamber — sealed for a later slice.";
   dashboardSigilProjects.textContent = `P ${metrics.projects}`;
   dashboardSigilProjects.title = `${metrics.projects} projects`;
   dashboardSigilCategories.textContent = `C ${metrics.configured_categories}`;
@@ -544,6 +567,7 @@ function renderDashboard(current: DesktopLibrary): void {
 
   dashboardProjects.replaceChildren();
   for (const project of metrics.project_metrics) {
+    if (local && project.project !== local.project) continue;
     const row = document.createElement("tr");
     for (const value of [
       project.project,
@@ -559,6 +583,25 @@ function renderDashboard(current: DesktopLibrary): void {
       row.append(cell);
     }
     dashboardProjects.append(row);
+  }
+  if (local) {
+    dashboardSigilProjects.textContent = `N ${local.noteCount}`;
+    dashboardSigilProjects.title = `${local.noteCount} local notes`;
+    dashboardSigilCategories.textContent = `S ${local.sections.length}`;
+    dashboardSigilCategories.title = `${local.sections.length} local sections`;
+    dashboardSigil.setAttribute("aria-label", `Local vault: ${local.project}, ${local.noteCount} notes and ${local.sections.length} sections; validation ${metrics.validation_passed ? "passed" : "failed"}.`);
+    dashboardCompact.replaceChildren(
+      metric("Sections", local.sections.length), metric("Notes", local.noteCount),
+      metric("Open tasks", selectedMetrics?.open_tasks ?? "—", (selectedMetrics?.open_tasks ?? 0) > 0),
+      metric("Problems", selectedMetrics?.open_problems ?? "—", (selectedMetrics?.open_problems ?? 0) > 0),
+      metric("Links", selectedMetrics?.validated_links ?? "—"),
+      metric("Validated", metrics.validation_passed ? "yes" : "no", !metrics.validation_passed),
+    );
+    dashboardSummary.replaceChildren(
+      summaryCard("Project", local.project), summaryCard("Local notes", local.noteCount),
+      summaryCard("Populated sections", selectedMetrics?.populated_categories ?? "—"),
+      summaryCard("Latest activity", selectedMetrics ? selectedMetrics.latest_activity_date ?? "none" : "—"),
+    );
   }
 }
 
