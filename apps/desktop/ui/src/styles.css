@@ -488,6 +488,23 @@ h3 {
   bottom: 3px;
 }
 
+/* Echo the dashboard's nested seals on both views' shared chrome. */
+.brand-plaque::before, .brand-plaque::after,
+.stage-tools::before, .stage-tools::after {
+  content: none;
+}
+
+.chrome-frame-corner {
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+}
+
+.chrome-frame-corner.dashboard-frame-corner-nw { top: -8px; left: -8px; }
+.chrome-frame-corner.dashboard-frame-corner-ne { top: -8px; right: -8px; }
+.chrome-frame-corner.dashboard-frame-corner-sw { bottom: -8px; left: -8px; }
+.chrome-frame-corner.dashboard-frame-corner-se { bottom: -8px; right: -8px; }
+
 .dashboard-frame-node {
   position: absolute;
   top: 50%;

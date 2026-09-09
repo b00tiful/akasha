@@ -172,7 +172,11 @@ export function mountLocalSky(canvas: HTMLCanvasElement, seed: string, reduced: 
       const y = (mote.y - time * mote.speed % H + H) % H;
       if (y > H * .6 && Math.sin(time * .3 + mote.phase) > .15) dot(mote.x + Math.sin(time * .08 + mote.phase) * 9, y, DIM);
     }
-    ctx!.drawImage(landscape, 0, 0);
+    // A distant, translucent mirage: stars remain visible through the ruin.
+    // Keep the base anchored and reuse the sky clock so pause/reduced motion still freeze it.
+    ctx!.globalAlpha = .34 + Math.sin(time * .16) * .04;
+    ctx!.drawImage(landscape, 0, Math.round(H * .38), Math.round(W * .62), Math.round(H * .62));
+    ctx!.globalAlpha = 1;
     if (!reduced && !paused && !voyage) {
       const current = forcedEvent ? { kind: forcedEvent, progress: (time % 9) / 5 } : localSkyEvent(time, seed);
       if (current && current.progress <= 1) event(current.kind, current.progress);
