@@ -336,3 +336,91 @@ fn canonical_resolution_fixture_projects_without_rewriting_it() {
         "Global/entities/rust-pattern.md"
     );
 }
+
+#[test]
+fn search_has_explicit_scope_stable_limits_and_source_hits() {
+    use akasha_core::search_library;
+    let fixture = fixture("search");
+    let all = search_library(&fixture.request, "schema_version", None, 1).unwrap();
+    assert!(all.total_matches > 1);
+    assert!(all.truncated);
+    assert_eq!(all.hits.len(), 1);
+    assert!(all.hits[0].snippet.contains("schema_version"));
+    assert_eq!(all.hits[0].line, Some(2));
+    let again = search_library(&fixture.request, "schema_version", None, 100).unwrap();
+    assert_eq!(all.total_matches, again.hits.len());
+    assert!(again.hits.windows(2).all(|hits| hits[0].id < hits[1].id));
+    let scope = LibraryScope::Project {
+        project: "alpha".into(),
+    };
+    let project = search_library(&fixture.request, "SCHEMA_VERSION", Some(&scope), 100).unwrap();
+    assert!(!project.hits.is_empty());
+    assert!(project.hits.iter().all(|hit| hit.scope == scope));
+    let global = search_library(
+        &fixture.request,
+        "SCHEMA_VERSION",
+        Some(&LibraryScope::Global),
+        100,
+    )
+    .unwrap();
+    assert_eq!(global.hits.len(), 1);
+    assert_eq!(global.hits[0].scope, LibraryScope::Global);
+    assert!(
+        search_library(&fixture.request, "no_such_text_!", None, 100)
+            .unwrap()
+            .hits
+            .is_empty()
+    );
+    for query in ["", "   ", &"a".repeat(257)] {
+        assert!(search_library(&fixture.request, query, None, 1).is_err());
+    }
+    for limit in [0, 101] {
+        assert!(search_library(&fixture.request, "x", None, limit).is_err());
+    }
+    assert!(
+        search_library(
+            &fixture.request,
+            "core",
+            Some(&LibraryScope::Project {
+                project: "absent".into()
+            }),
+            10
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn search_matches_unicode_title_and_exact_path_with_bounded_snippets() {
+    use akasha_core::search_library;
+    let fixture = fixture("search-unicode");
+    // Global entities have no immutable-event fingerprint; changing a body remains valid.
+    let path = fixture.root.join("Global/entities/rust-pattern.md");
+    let original = fs::read_to_string(&path).unwrap();
+    fs::write(
+        &path,
+        format!("{original}\nПРИВЕТ 世界 {}\n", "x".repeat(1000)),
+    )
+    .unwrap();
+    let found =
+        search_library(&fixture.request, "привет", Some(&LibraryScope::Global), 10).unwrap();
+    assert_eq!(found.total_matches, 1);
+    assert!(found.hits[0].snippet.chars().count() <= 160);
+    assert_eq!(
+        search_library(
+            &fixture.request,
+            "Global/entities/rust-pattern.md",
+            None,
+            10
+        )
+        .unwrap()
+        .total_matches,
+        1
+    );
+    assert!(
+        search_library(&fixture.request, "../../", None, 10)
+            .unwrap()
+            .hits
+            .is_empty()
+    );
+}

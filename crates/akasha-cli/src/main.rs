@@ -15,6 +15,7 @@ use akasha_core::{
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod render;
+mod tui;
 
 use render::{
     OutputMode, render_agent_wiring_plan, render_agent_wiring_result, render_breadcrumb,
@@ -62,11 +63,32 @@ struct Cli {
     no_color: bool,
 
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Open the persistent human terminal interface (also the interactive default).
+    Tui {
+        /// Freeze decorative animation.
+        #[arg(long)]
+        no_motion: bool,
+        /// Use ASCII frames and decoration for limited terminal fonts.
+        #[arg(long)]
+        ascii: bool,
+    },
+    /// Search canonical note text, titles and paths in the selected project.
+    Search {
+        query: String,
+        /// Search every project and global knowledge.
+        #[arg(long, conflicts_with = "global")]
+        all: bool,
+        /// Search only global knowledge.
+        #[arg(long)]
+        global: bool,
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u16).range(1..=100))]
+        limit: u16,
+    },
     /// Create, register, and link a new empty Akasha project.
     Init {
         /// New project slug for the current repository.
@@ -275,11 +297,20 @@ fn run(cli: Cli) -> Result<(), u8> {
         command,
     } = cli;
     let output = OutputMode::detect(json, no_color);
+    let command = command.unwrap_or(Command::Tui {
+        no_motion: false,
+        ascii: false,
+    });
+    if let Command::Tui { no_motion, ascii } = command {
+        return tui::run(root, project, json, no_color, no_motion, ascii);
+    }
 
     if let Some(selected) = project.as_ref() {
         let positional = match &command {
             Command::Init { slug } | Command::Link { slug, .. } => Some(slug),
             Command::CreateEvent { .. }
+            | Command::Search { .. }
+            | Command::Tui { .. }
             | Command::CaptureHandoff { .. }
             | Command::CreateNote { .. }
             | Command::UpdateRecord { .. }
@@ -304,6 +335,35 @@ fn run(cli: Cli) -> Result<(), u8> {
     }
 
     match command {
+        Command::Tui { .. } => unreachable!("interactive dispatch handled above"),
+        Command::Search {
+            query,
+            all,
+            global,
+            limit,
+        } => {
+            let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
+            let selected = resolve_project(&request).map_err(report_resolution)?;
+            let scope = if all {
+                None
+            } else if global {
+                Some(akasha_core::LibraryScope::Global)
+            } else {
+                Some(akasha_core::LibraryScope::Project {
+                    project: selected.project,
+                })
+            };
+            let result =
+                akasha_core::search_library(&request, &query, scope.as_ref(), usize::from(limit))
+                    .map_err(|error| {
+                    eprintln!("akasha: {error}");
+                    error.exit_code()
+                })?;
+            render::render_search(&result, output).map_err(|error| {
+                eprintln!("akasha: failed to render command output: {error}");
+                6
+            })?;
+        }
         Command::Init { slug } => {
             let request = InitRequest::from_process(root, slug).map_err(report_resolution)?;
             let result = initialize_project(&request).map_err(report_init)?;

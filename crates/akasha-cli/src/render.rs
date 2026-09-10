@@ -30,6 +30,40 @@ impl OutputMode {
     }
 }
 
+pub(crate) fn render_search(
+    result: &akasha_core::LibrarySearchResult,
+    output: OutputMode,
+) -> Result<(), serde_json::Error> {
+    if output.json {
+        println!("{}", serde_json::to_string_pretty(result)?);
+    } else {
+        println!(
+            "{} matches; showing {}{}",
+            result.total_matches,
+            result.hits.len(),
+            if result.truncated {
+                " (truncated; narrow the query or increase --limit)"
+            } else {
+                ""
+            }
+        );
+        for hit in &result.hits {
+            let id: String = hit
+                .id
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect();
+            println!(
+                "{}{}\n  {}",
+                id,
+                hit.line.map(|line| format!(":{line}")).unwrap_or_default(),
+                hit.snippet
+            );
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn render_init(
     result: &InitResult,
     output: OutputMode,

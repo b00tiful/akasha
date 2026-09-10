@@ -48,7 +48,7 @@ fn help_and_invalid_usage_follow_the_stream_and_exit_contract() {
     assert!(help.stderr.is_empty());
     assert_uncolored(&help.stdout);
     let stdout = String::from_utf8(help.stdout).expect("help stdout is UTF-8");
-    assert!(stdout.contains("Usage: akasha [OPTIONS] <COMMAND>"));
+    assert!(stdout.contains("Usage: akasha [OPTIONS] [COMMAND]"));
     assert!(stdout.contains("context"));
     assert!(stdout.contains("breadcrumb"));
     assert!(stdout.contains("capture-handoff"));
@@ -141,4 +141,38 @@ fn terminal_plain_output_is_styled_unless_color_is_disabled() {
     assert!(json.status.success());
     assert!(json.stderr.is_empty());
     assert_uncolored(&json.stdout);
+}
+
+#[test]
+fn tui_requires_interactive_streams_and_search_is_bounded_plain_or_json() {
+    let binary = env!("CARGO_BIN_EXE_akasha");
+    for args in [vec![], vec!["tui"], vec!["--json", "tui"]] {
+        let output = Command::new(binary).args(args).output().unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert_uncolored(&output.stderr);
+        assert!(String::from_utf8_lossy(&output.stderr).contains("interactive terminal"));
+    }
+    let root = fixtures().join("valid-root");
+    let run = |json| {
+        let mut command = Command::new(binary);
+        command.args(["--root", root.to_str().unwrap(), "--project", "example"]);
+        if json {
+            command.arg("--json");
+        }
+        command
+            .args(["search", "schema_version", "--all", "--limit", "1"])
+            .output()
+            .unwrap()
+    };
+    let plain = run(false);
+    assert!(plain.status.success());
+    assert!(plain.stderr.is_empty());
+    assert_uncolored(&plain.stdout);
+    assert!(String::from_utf8_lossy(&plain.stdout).contains("truncated"));
+    let json = run(true);
+    assert!(json.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(value["hits"].as_array().unwrap().len(), 1);
+    assert_eq!(value["truncated"], true);
 }

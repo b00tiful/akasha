@@ -112,6 +112,114 @@ pub struct LibraryDocument {
     pub source: String,
 }
 
+/// One literal search hit; snippets are bounded plain source, never rendered markup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LibrarySearchHit {
+    pub id: String,
+    pub label: String,
+    pub scope: LibraryScope,
+    pub line: Option<usize>,
+    pub snippet: String,
+}
+
+/// A bounded deterministic result from a freshly validated library.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LibrarySearchResult {
+    pub query: String,
+    /// None means the entire library; a project/global scope is explicit otherwise.
+    pub scope: Option<LibraryScope>,
+    pub total_matches: usize,
+    pub truncated: bool,
+    pub hits: Vec<LibrarySearchHit>,
+}
+
+/// Literal Unicode-lowercase substring search. No regex, ranking or semantic inference.
+/// Output is bounded independently of the number of canonical notes scanned.
+pub fn search_library(
+    request: &ResolveRequest,
+    query: &str,
+    scope: Option<&LibraryScope>,
+    limit: usize,
+) -> Result<LibrarySearchResult, ProjectValidationError> {
+    let query = query.trim();
+    if query.is_empty() || query.chars().count() > 256 || !(1..=100).contains(&limit) {
+        return Err(invalid_library_layout(
+            &request.cwd,
+            "search requires 1–256 query characters and a result limit between 1 and 100",
+        ));
+    }
+    let projection = build_library_projection(request)?;
+    if let Some(LibraryScope::Project { project }) = scope
+        && !projection
+            .projects
+            .iter()
+            .any(|shelf| &shelf.project == project)
+    {
+        return Err(invalid_library_layout(
+            &projection.root,
+            "unknown search project",
+        ));
+    }
+    let needle = query.to_lowercase();
+    let mut books: Vec<_> = projection
+        .global
+        .categories
+        .iter()
+        .chain(
+            projection
+                .projects
+                .iter()
+                .flat_map(|shelf| &shelf.categories),
+        )
+        .flat_map(|category| &category.books)
+        .filter(|book| scope.is_none_or(|scope| scope == &book.scope))
+        .collect();
+    books.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut hits = Vec::new();
+    let mut total_matches = 0;
+    for book in books {
+        let path = projection.root.join(&book.id);
+        let source = read_note(&path)?;
+        let source = str::from_utf8(&source)
+            .map_err(|error| invalid_note(&path, ValidationError::InvalidUtf8(error)))?;
+        let matched_line = source
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.to_lowercase().contains(&needle));
+        if matched_line.is_none()
+            && !book.id.to_lowercase().contains(&needle)
+            && !book.label.to_lowercase().contains(&needle)
+        {
+            continue;
+        }
+        total_matches += 1;
+        if hits.len() < limit {
+            let (line, snippet) = matched_line
+                .map_or((None, book.label.as_str()), |(index, text)| {
+                    (Some(index + 1), text)
+                });
+            hits.push(LibrarySearchHit {
+                id: book.id.clone(),
+                label: book.label.chars().take(160).collect(),
+                scope: book.scope.clone(),
+                line,
+                snippet: snippet
+                    .chars()
+                    .take(160)
+                    .map(|c| if c.is_control() { ' ' } else { c })
+                    .collect(),
+            });
+        }
+    }
+    Ok(LibrarySearchResult {
+        query: query.to_owned(),
+        scope: scope.cloned(),
+        total_matches,
+        truncated: total_matches > hits.len(),
+        hits,
+    })
+}
+
 /// Validate every registered project and project the shared library from canonical notes.
 pub fn build_library_projection(
     request: &ResolveRequest,
