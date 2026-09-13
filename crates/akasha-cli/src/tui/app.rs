@@ -9,11 +9,137 @@ use akasha_core::{
     recover_pending_note_edit, render_context_markdown, replace_library_document, search_library,
     validate_project,
 };
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
 use ratatui::widgets::ListState;
-use ratatui_textarea::TextArea;
+use ratatui_textarea::{CursorMove, TextArea};
 
-pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab / Shift-Tab  switch prompt, library and reader\nEnter           open selected item / run command\nEscape          return to prompt (keeps your draft)\nCtrl-S          save the current source\nCtrl-Q / Ctrl-C quit; unsaved changes prevent exit\nF2              edit selected note\nF5              refresh library\nF1              this help\n\nCOMMANDS\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes\ncontext         bounded project orientation\nvalidate        validate selected project\nrefresh         reload data (or press F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc returns to the prompt without discarding your draft.\n\nReading: arrows/PageUp/PageDown scroll.\nCommand prompt: Up/Down recall session history.\n\nWave one edits project records/entities. Events and global\nknowledge are readable. Creation and administration forms\nwill arrive in subsequent waves; existing CLI commands remain available.\n\nOpen from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
+const PROMPT_PLACEHOLDER: &str = "Type / for commands; /search words to find notes";
+
+pub(super) struct Completion {
+    pub command: &'static str,
+    pub argument: &'static str,
+    pub description: &'static str,
+}
+
+#[derive(Clone)]
+pub(super) struct Suggestion {
+    pub command: String,
+    pub argument: String,
+    pub description: String,
+}
+
+const COMMANDS: &[Completion] = &[
+    Completion {
+        command: "home",
+        argument: "",
+        description: "Return to the welcome dashboard",
+    },
+    Completion {
+        command: "projects",
+        argument: "",
+        description: "Browse projects and shared knowledge",
+    },
+    Completion {
+        command: "project",
+        argument: "SLUG",
+        description: "Switch to a registered project",
+    },
+    Completion {
+        command: "global",
+        argument: "",
+        description: "Browse shared knowledge",
+    },
+    Completion {
+        command: "ls",
+        argument: "",
+        description: "Browse categories in the current scope",
+    },
+    Completion {
+        command: "type",
+        argument: "NAME",
+        description: "Browse a configured note category",
+    },
+    Completion {
+        command: "open",
+        argument: "NUMBER/PATH",
+        description: "Open a listed item or exact note path",
+    },
+    Completion {
+        command: "search",
+        argument: "TEXT",
+        description: "Search the current project or global scope",
+    },
+    Completion {
+        command: "search-all",
+        argument: "TEXT",
+        description: "Search every project and shared knowledge",
+    },
+    Completion {
+        command: "context",
+        argument: "",
+        description: "Read bounded project orientation",
+    },
+    Completion {
+        command: "validate",
+        argument: "",
+        description: "Check the selected project's memory",
+    },
+    Completion {
+        command: "edit",
+        argument: "",
+        description: "Edit the current note's Markdown source",
+    },
+    Completion {
+        command: "read",
+        argument: "",
+        description: "Return to reading mode",
+    },
+    Completion {
+        command: "save",
+        argument: "",
+        description: "Save through a checked core transaction",
+    },
+    Completion {
+        command: "discard",
+        argument: "",
+        description: "Discard unsaved editor changes",
+    },
+    Completion {
+        command: "back",
+        argument: "",
+        description: "Return to the previous library list",
+    },
+    Completion {
+        command: "refresh",
+        argument: "",
+        description: "Reload the library snapshot",
+    },
+    Completion {
+        command: "motion",
+        argument: "",
+        description: "Pause or resume ambient animation",
+    },
+    Completion {
+        command: "help",
+        argument: "",
+        description: "Show commands and keyboard shortcuts",
+    },
+    Completion {
+        command: "quit",
+        argument: "",
+        description: "Exit after saving or discarding changes",
+    },
+];
+
+fn prompt_area(text: String) -> TextArea<'static> {
+    let mut prompt = TextArea::new(vec![text]);
+    prompt.set_placeholder_text(PROMPT_PLACEHOLDER);
+    prompt.move_cursor(CursorMove::End);
+    prompt
+}
+
+pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save the current source\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes\ncontext         bounded project orientation\nvalidate        validate selected project\nrefresh         reload data (or press F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nWave one edits project records/entities. Events and global\nknowledge are readable. Creation and administration forms\nwill arrive in subsequent waves; existing CLI commands remain available.\n\nOpen from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Focus {
@@ -100,6 +226,15 @@ fn execute_job(job: Job) -> WorkResult {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum Action {
+    Command(&'static str),
+    Focus(Focus),
+    Open(usize),
+    Search,
+    Completion(usize),
+}
+
 pub(super) struct App {
     pub request: ResolveRequest,
     pub projection: Option<LibraryProjection>,
@@ -123,9 +258,13 @@ pub(super) struct App {
     pub ascii: bool,
     pub color: bool,
     pub tick: u64,
+    pub sigil_tick: u64,
+    pub hits: Vec<(Rect, Action)>,
     history: Vec<String>,
     history_index: usize,
     history_draft: String,
+    completion_index: usize,
+    completion_dismissed: bool,
     navigation: Vec<Navigation>,
     jobs: Sender<Job>,
 }
@@ -141,8 +280,6 @@ impl App {
         let scope = LibraryScope::Project {
             project: request.project_override.clone().unwrap_or_default(),
         };
-        let mut prompt = TextArea::default();
-        prompt.set_placeholder_text("help · projects · search <text>");
         Self {
             request,
             projection: None,
@@ -151,7 +288,7 @@ impl App {
             list: ListState::default(),
             title: "LIBRARY".into(),
             focus: Focus::Prompt,
-            prompt,
+            prompt: prompt_area(String::new()),
             document: None,
             editor: None,
             editing: false,
@@ -166,9 +303,13 @@ impl App {
             ascii,
             color,
             tick: 0,
+            sigil_tick: 0,
+            hits: vec![],
             history: vec![],
             history_index: 0,
             history_draft: String::new(),
+            completion_index: 0,
+            completion_dismissed: false,
             navigation: vec![],
             jobs,
         }
@@ -225,6 +366,7 @@ impl App {
         }
     }
     fn set_rows(&mut self, title: String, rows: Vec<Row>) {
+        self.close_reader();
         self.title = title;
         self.rows = rows;
         self.list
@@ -342,12 +484,15 @@ impl App {
         }
         self.submit(Job::Open(self.request.clone(), id.to_owned()));
     }
+    pub fn editable(&self) -> bool {
+        self.book().is_some_and(|book| book.class != NoteClass::Event && matches!(&book.scope, LibraryScope::Project { project } if Some(project) == self.request.project_override.as_ref()))
+    }
+
     fn edit(&mut self) {
         if self.busy {
             return;
         }
-        let editable = self.book().is_some_and(|book| book.class != NoteClass::Event && matches!(&book.scope, LibraryScope::Project { project } if Some(project) == self.request.project_override.as_ref()));
-        if !editable {
+        if !self.editable() {
             self.message("Open a record or entity in its project to edit. Events and global notes are read-only.");
             return;
         }
@@ -402,7 +547,7 @@ impl App {
                 self.categories(self.scope.clone());
                 self.navigation.clear();
                 self.focus = Focus::Prompt;
-                self.message("Library loaded. Tab to browse, or type a command. F1 opens help.");
+                self.message("Library loaded.");
             }
             Ok(Response::Opened(document)) => {
                 self.body_title = document.id.clone();
@@ -501,6 +646,15 @@ impl App {
                 self.message("Editor changes discarded; loaded source retained. Refresh to load external changes.");
             }
             _ if !self.can_leave() => {}
+            "home" => {
+                self.document = None;
+                self.editor = None;
+                self.editing = false;
+                self.body_title = "WELCOME TO AKASHA".into();
+                self.body = HELP.into();
+                self.scroll = 0;
+                self.focus = Focus::Prompt;
+            }
             "projects" => self.projects(),
             "project" => self.categories(LibraryScope::Project {
                 project: argument.to_owned(),
@@ -508,6 +662,14 @@ impl App {
             "global" => self.categories(LibraryScope::Global),
             "ls" => self.categories(self.scope.clone()),
             "type" => self.notes(self.scope.clone(), argument),
+            "open" if argument.is_empty() => {
+                self.prompt = prompt_area("/open ".into());
+                self.prompt_changed();
+                self.focus = Focus::Prompt;
+                self.message(
+                    "Choose a note with arrows and Enter, or type a list item number: /open 1.",
+                );
+            }
             "open" => {
                 if let Ok(index) = argument.parse::<usize>() {
                     if let Some(index) = index.checked_sub(1) {
@@ -520,6 +682,11 @@ impl App {
                 }
             }
             "back" => {
+                if self.document.is_some() || self.body_title != "WELCOME TO AKASHA" {
+                    self.close_reader();
+                    self.focus = Focus::List;
+                    return;
+                }
                 if let Some(previous) = self.navigation.pop() {
                     self.title = previous.title;
                     self.rows = previous.rows;
@@ -529,7 +696,15 @@ impl App {
                     }
                     self.list.select(previous.selection);
                     self.focus = Focus::List;
+                } else {
+                    self.projects();
                 }
+            }
+            "search" | "search-all" if argument.is_empty() => {
+                self.prompt = prompt_area(format!("/{command} "));
+                self.prompt_changed();
+                self.focus = Focus::Prompt;
+                self.message("Type words to find in note titles or contents, then Enter. Example: /search memory");
             }
             "search" | "search-all" => self.submit(Job::Search(
                 self.request.clone(),
@@ -552,13 +727,282 @@ impl App {
                 self.scroll = 0;
                 self.focus = Focus::Reader;
             }
-            _ => self.message("Unknown command. Type help for available operations."),
+            _ => self.message("Unknown command. Type / for available operations."),
+        }
+    }
+
+    fn close_reader(&mut self) {
+        self.document = None;
+        self.editor = None;
+        self.editing = false;
+        self.body_title = "WELCOME TO AKASHA".into();
+        self.body = HELP.into();
+        self.scroll = 0;
+    }
+
+    pub fn action(&mut self, action: Action) {
+        match action {
+            Action::Command(command) => self.command(command),
+            Action::Focus(focus) => self.focus = focus,
+            Action::Open(index) => {
+                if self.can_leave() {
+                    self.list.select(Some(index));
+                    self.activate(index);
+                }
+            }
+            Action::Search => {
+                self.focus = Focus::Prompt;
+                if self.prompt.lines()[0].trim().is_empty() {
+                    self.prompt = prompt_area("/search ".into());
+                    self.prompt_changed();
+                } else {
+                    self.message("Command draft kept. Ctrl-C clears it; F3 starts a search.");
+                }
+            }
+            Action::Completion(index) => {
+                self.completion_index = index;
+                self.complete(true);
+            }
+        }
+    }
+
+    pub fn mouse(&mut self, mouse: MouseEvent) {
+        let point = (mouse.column, mouse.row).into();
+        let action = self
+            .hits
+            .iter()
+            .rev()
+            .find(|(r, _)| r.contains(point))
+            .map(|(_, a)| *a);
+        match (mouse.kind, action) {
+            (MouseEventKind::Down(MouseButton::Left), Some(action)) => self.action(action),
+            (MouseEventKind::ScrollUp | MouseEventKind::ScrollDown, Some(action)) => {
+                let down = mouse.kind == MouseEventKind::ScrollDown;
+                match action {
+                    Action::Open(_) | Action::Focus(Focus::List) => {
+                        self.focus = Focus::List;
+                        self.move_selection(if down { 3 } else { -3 });
+                    }
+                    Action::Focus(Focus::Reader) if !self.editing => {
+                        self.focus = Focus::Reader;
+                        self.scroll = if down {
+                            self.scroll.saturating_add(3).min(self.max_scroll)
+                        } else {
+                            self.scroll.saturating_sub(3)
+                        };
+                    }
+                    Action::Completion(_) => {
+                        self.prompt_key(KeyEvent::new(
+                            if down { KeyCode::Down } else { KeyCode::Up },
+                            KeyModifiers::NONE,
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn completions(&self) -> Vec<Suggestion> {
+        if self.focus != Focus::Prompt || self.completion_dismissed {
+            return vec![];
+        }
+        let Some(prefix) = self.prompt.lines()[0].strip_prefix('/') else {
+            return vec![];
+        };
+        if let Some(query) = prefix.strip_prefix("open ") {
+            let query = query.trim().to_lowercase();
+            if query.parse::<usize>().is_ok() {
+                return vec![];
+            }
+            return self
+                .books()
+                .into_iter()
+                .filter(|book| {
+                    book.id.to_lowercase().contains(&query)
+                        || book.label.to_lowercase().contains(&query)
+                })
+                .take(100)
+                .map(|book| Suggestion {
+                    command: format!("open {}", book.id),
+                    argument: String::new(),
+                    description: book.label.clone(),
+                })
+                .collect();
+        }
+        if prefix.chars().any(char::is_whitespace) {
+            return vec![];
+        }
+        let mut matches: Vec<_> = COMMANDS
+            .iter()
+            .filter(|completion| completion.command.starts_with(prefix))
+            .map(|c| Suggestion {
+                command: c.command.into(),
+                argument: c.argument.into(),
+                description: c.description.into(),
+            })
+            .collect();
+        matches.sort_by_key(|completion| completion.command != prefix);
+        matches
+    }
+
+    pub fn completion_selection(&self) -> usize {
+        self.completion_index
+            .min(self.completions().len().saturating_sub(1))
+    }
+
+    fn prompt_changed(&mut self) {
+        self.completion_index = 0;
+        self.completion_dismissed = false;
+    }
+
+    fn reset_prompt(&mut self) {
+        self.prompt = prompt_area(String::new());
+        self.history_index = self.history.len();
+        self.history_draft.clear();
+        self.prompt_changed();
+    }
+
+    fn complete(&mut self, execute: bool) {
+        let Some(completion) = self.completions().get(self.completion_selection()).cloned() else {
+            return;
+        };
+        self.prompt = prompt_area(format!(
+            "/{}{}",
+            completion.command,
+            if completion.argument.is_empty() {
+                ""
+            } else {
+                " "
+            }
+        ));
+        self.completion_index = 0;
+        self.completion_dismissed = completion.command != "open";
+        if completion.command == "open" && self.completions().is_empty() {
+            self.message(
+                "No notes loaded. /open also accepts a list item number, for example /open 1.",
+            );
+        }
+        if execute && completion.argument.is_empty() {
+            self.run_prompt();
+        }
+    }
+
+    fn run_prompt(&mut self) {
+        let input = self.prompt.lines().join(" ");
+        self.reset_prompt();
+        if !input.trim().is_empty() {
+            if self.history.last() != Some(&input) {
+                self.history.push(input.clone());
+                if self.history.len() > 100 {
+                    self.history.remove(0);
+                }
+            }
+            self.history_index = self.history.len();
+            self.message(&format!("> {input}"));
+            self.command(&input);
+        }
+    }
+
+    fn prompt_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let palette_len = self.completions().len();
+        match key.code {
+            KeyCode::Enter if palette_len > 0 => self.complete(true),
+            KeyCode::Enter if self.prompt.lines()[0].trim().is_empty() => {
+                self.focus = Focus::List;
+                if let Some(index) = self.list.selected() {
+                    self.activate(index);
+                }
+            }
+            KeyCode::Enter => self.run_prompt(),
+            KeyCode::Up | KeyCode::Down if palette_len > 0 => {
+                let selected = self.completion_selection();
+                self.completion_index = if key.code == KeyCode::Up {
+                    selected.checked_sub(1).unwrap_or(palette_len - 1)
+                } else {
+                    (selected + 1) % palette_len
+                };
+            }
+            KeyCode::Up | KeyCode::Down => {
+                if self.history_index == self.history.len() {
+                    self.history_draft = self.prompt.lines().join(" ");
+                }
+                if key.code == KeyCode::Up {
+                    self.history_index = self.history_index.saturating_sub(1);
+                } else {
+                    self.history_index = (self.history_index + 1).min(self.history.len());
+                }
+                let line = self
+                    .history
+                    .get(self.history_index)
+                    .unwrap_or(&self.history_draft)
+                    .clone();
+                self.prompt = prompt_area(line);
+                // History uses Up/Down until the user edits the recalled command.
+                self.completion_dismissed = true;
+            }
+            _ => {
+                let before = self.prompt.lines()[0].clone();
+                match key.code {
+                    KeyCode::Char('a') if ctrl => self.prompt.move_cursor(CursorMove::Head),
+                    KeyCode::Char('e') if ctrl => self.prompt.move_cursor(CursorMove::End),
+                    KeyCode::Char('b') if ctrl => self.prompt.move_cursor(CursorMove::Back),
+                    KeyCode::Char('f') if ctrl => self.prompt.move_cursor(CursorMove::Forward),
+                    KeyCode::Char('h') if ctrl => {
+                        self.prompt.delete_char();
+                    }
+                    KeyCode::Char('u') if ctrl => {
+                        self.prompt.delete_line_by_head();
+                    }
+                    KeyCode::Char('k') if ctrl => {
+                        self.prompt.delete_line_by_end();
+                    }
+                    KeyCode::Char('w') if ctrl => {
+                        let before_cursor: Vec<_> = self.prompt.lines()[0]
+                            .chars()
+                            .take(self.prompt.cursor().1)
+                            .collect();
+                        let mut chars = before_cursor.iter().rev().peekable();
+                        let mut count = 0;
+                        while chars.peek().is_some_and(|c| c.is_whitespace()) {
+                            chars.next();
+                            count += 1;
+                        }
+                        while chars.peek().is_some_and(|c| !c.is_whitespace()) {
+                            chars.next();
+                            count += 1;
+                        }
+                        for _ in 0..count {
+                            self.prompt.delete_char();
+                        }
+                    }
+                    // The prompt is one bounded line. Control input cannot inject a newline
+                    // or invoke textarea's multiline/editor shortcuts.
+                    _ if !ctrl
+                        && (self.prompt.lines()[0].chars().count() < 4096
+                            || !matches!(key.code, KeyCode::Char(_))) =>
+                    {
+                        self.prompt.input_without_shortcuts(key);
+                    }
+                    _ => {}
+                }
+                if self.prompt.lines()[0] != before {
+                    self.prompt_changed();
+                }
+            }
         }
     }
 
     pub fn key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
+            KeyCode::Char('c') if ctrl && !self.prompt.lines()[0].is_empty() => {
+                self.reset_prompt();
+                self.focus = Focus::Prompt;
+                return;
+            }
             KeyCode::Char('q' | 'c') if ctrl => {
                 self.command("quit");
                 return;
@@ -575,12 +1019,44 @@ impl App {
                 self.edit();
                 return;
             }
+            KeyCode::F(3) => {
+                self.action(Action::Search);
+                return;
+            }
+            KeyCode::F(4) => {
+                self.command("projects");
+                return;
+            }
+            KeyCode::F(6) => {
+                self.command("global");
+                return;
+            }
+            KeyCode::F(7) => {
+                self.command("back");
+                return;
+            }
             KeyCode::F(5) => {
                 self.command("refresh");
                 return;
             }
             KeyCode::Esc => {
+                if !self.completions().is_empty() {
+                    self.completion_dismissed = true;
+                } else {
+                    self.command("back");
+                }
+                return;
+            }
+            KeyCode::Backspace
+                if self.focus != Focus::Prompt
+                    && !(self.focus == Focus::Reader && self.editing) =>
+            {
                 self.focus = Focus::Prompt;
+                return;
+            }
+            KeyCode::Tab if self.focus == Focus::Prompt && !self.prompt.lines()[0].is_empty() => {
+                self.completion_dismissed = false;
+                self.complete(false);
                 return;
             }
             KeyCode::Tab if !(self.focus == Focus::Reader && self.editing) => {
@@ -602,49 +1078,7 @@ impl App {
             _ => {}
         }
         match self.focus {
-            Focus::Prompt => match key.code {
-                KeyCode::Enter => {
-                    let input = self.prompt.lines().join(" ");
-                    self.prompt = TextArea::default();
-                    if !input.trim().is_empty() {
-                        self.history.push(input.clone());
-                        if self.history.len() > 100 {
-                            self.history.remove(0);
-                        }
-                        self.history_index = self.history.len();
-                        self.history_draft.clear();
-                        self.message(&format!("> {input}"));
-                        self.command(&input);
-                    }
-                }
-                KeyCode::Up | KeyCode::Down => {
-                    if self.history_index == self.history.len() {
-                        self.history_draft = self.prompt.lines().join(" ");
-                    }
-                    if key.code == KeyCode::Up {
-                        self.history_index = self.history_index.saturating_sub(1);
-                    } else {
-                        self.history_index = (self.history_index + 1).min(self.history.len());
-                    }
-                    let line = self
-                        .history
-                        .get(self.history_index)
-                        .unwrap_or(&self.history_draft)
-                        .clone();
-                    self.prompt = TextArea::new(vec![line]);
-                    self.prompt.move_cursor(ratatui_textarea::CursorMove::End);
-                }
-                _ => {
-                    // Commands are one line and bounded; input_without_shortcuts prevents Ctrl-M/J
-                    // from injecting command lines or editor-specific multiline operations.
-                    if (self.prompt.lines()[0].len() < 4096
-                        || !matches!(key.code, KeyCode::Char(_)))
-                        && (!ctrl || matches!(key.code, KeyCode::Char('a' | 'e' | 'b' | 'f' | 'h')))
-                    {
-                        self.prompt.input_without_shortcuts(key);
-                    }
-                }
-            },
+            Focus::Prompt => self.prompt_key(key),
             Focus::List => match key.code {
                 KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
                 KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
@@ -657,7 +1091,7 @@ impl App {
                         self.activate(index);
                     }
                 }
-                KeyCode::Left | KeyCode::Backspace => self.command("back"),
+                KeyCode::Left => self.command("back"),
                 _ => {}
             },
             Focus::Reader if self.editing => {
@@ -704,6 +1138,7 @@ impl App {
                     KeyCode::Home => self.scroll = 0,
                     KeyCode::End => self.scroll = max,
                     KeyCode::Char('e') => self.edit(),
+                    KeyCode::Left => self.command("back"),
                     _ => {}
                 }
             }
@@ -748,6 +1183,7 @@ impl App {
                 .take(remaining)
                 .collect();
             self.prompt.insert_str(text);
+            self.prompt_changed();
         }
     }
 }
@@ -933,5 +1369,371 @@ mod tests {
         assert!(!fixture.app.quit);
         assert_eq!(fixture.app.prompt.lines().len(), 1);
         assert!(!fixture.app.prompt.lines()[0].contains('\x1b'));
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    fn control(app: &mut App, key: char) {
+        app.key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::CONTROL));
+    }
+
+    #[test]
+    fn slash_palette_filters_wraps_completes_and_executes_only_on_enter() {
+        let mut fixture = Fixture::new();
+        let app = &mut fixture.app;
+        app.focus = Focus::Prompt;
+        app.paste("/s");
+        assert_eq!(
+            app.completions()
+                .iter()
+                .map(|c| c.command.as_str())
+                .collect::<Vec<_>>(),
+            ["search", "search-all", "save"]
+        );
+        assert!(app.completions().iter().all(|c| !c.description.is_empty()));
+        press(app, KeyCode::Up);
+        assert_eq!(app.completion_selection(), 2);
+        press(app, KeyCode::Down);
+        assert_eq!(app.completion_selection(), 0);
+        press(app, KeyCode::Down);
+        press(app, KeyCode::Tab);
+        assert_eq!(app.prompt.lines(), ["/search-all "]);
+        assert!(app.completions().is_empty());
+        assert!(app.focus == Focus::Prompt);
+        assert!(!app.busy);
+        assert!(fixture.jobs.try_recv().is_err());
+
+        control(app, 'c');
+        app.paste("/he");
+        press(app, KeyCode::Tab);
+        assert_eq!(app.prompt.lines(), ["/help"]);
+        assert!(app.focus == Focus::Prompt);
+        press(app, KeyCode::Enter);
+        assert_eq!(app.body_title, "HELP");
+        assert!(app.focus == Focus::Reader);
+        assert_eq!(app.prompt.placeholder_text(), PROMPT_PLACEHOLDER);
+        app.command("home");
+        app.paste("/he");
+        press(app, KeyCode::Enter);
+        assert_eq!(app.body_title, "HELP");
+    }
+
+    #[test]
+    fn exact_slash_command_wins_prefix_and_arguments_are_completed() {
+        let mut fixture = Fixture::new();
+        let app = &mut fixture.app;
+        app.focus = Focus::Prompt;
+        app.paste("/project");
+        assert_eq!(app.completions()[0].command, "project");
+        press(app, KeyCode::Enter);
+        assert_eq!(app.prompt.lines(), ["/project "]);
+        assert!(app.focus == Focus::Prompt);
+        assert!(app.history.is_empty());
+        assert!(!app.busy);
+        app.paste("example");
+        press(app, KeyCode::Enter);
+        assert_eq!(app.title, "example");
+        assert!(app.focus == Focus::List);
+    }
+
+    #[test]
+    fn escape_dismisses_menu_and_tab_reopens_completion_without_changing_focus() {
+        let mut fixture = Fixture::new();
+        let app = &mut fixture.app;
+        app.focus = Focus::Prompt;
+        app.paste("/sea");
+        assert!(!app.completions().is_empty());
+        press(app, KeyCode::Esc);
+        assert_eq!(app.prompt.lines(), ["/sea"]);
+        assert!(app.completions().is_empty());
+        press(app, KeyCode::Tab);
+        assert!(app.focus == Focus::Prompt);
+        assert_eq!(app.prompt.lines(), ["/search "]);
+        assert!(app.completions().is_empty());
+        press(app, KeyCode::BackTab);
+        assert!(app.focus == Focus::Reader);
+    }
+
+    #[test]
+    fn repeated_tab_never_leaves_an_unmatched_command_draft() {
+        let mut fixture = Fixture::new();
+        let app = &mut fixture.app;
+        for input in ["/unknown", "search words"] {
+            app.focus = Focus::Prompt;
+            app.reset_prompt();
+            app.paste(input);
+            press(app, KeyCode::Tab);
+            let expected = input;
+            assert_eq!(app.prompt.lines(), [expected]);
+            press(app, KeyCode::Tab);
+            assert!(app.focus == Focus::Prompt);
+            assert_eq!(app.prompt.lines(), [expected]);
+            assert!(!app.busy);
+        }
+        app.reset_prompt();
+        press(app, KeyCode::Tab);
+        assert!(app.focus == Focus::List);
+    }
+
+    #[test]
+    fn open_arguments_offer_filter_and_open_exact_loaded_notes() {
+        let mut f = Fixture::new();
+        f.app.focus = Focus::Prompt;
+        f.app.paste("/open");
+        press(&mut f.app, KeyCode::Tab);
+        assert_eq!(f.app.prompt.lines(), ["/open "]);
+        assert!(!f.app.completions().is_empty());
+        assert!(!f.app.busy);
+        f.app.paste("core.md");
+        assert_eq!(f.app.completions().len(), 1);
+        assert_eq!(f.app.completions()[0].command, format!("open {ID}"));
+        press(&mut f.app, KeyCode::Tab);
+        assert_eq!(f.app.prompt.lines(), [format!("/open {ID}")]);
+        assert!(!f.app.busy);
+        press(&mut f.app, KeyCode::Enter);
+        f.finish();
+        assert_eq!(f.app.document.as_ref().unwrap().id, ID);
+        f.app.command("home");
+        f.app.paste("/open missing-no-such-note");
+        press(&mut f.app, KeyCode::Tab);
+        assert!(f.app.focus == Focus::Prompt);
+        assert!(f.app.completions().is_empty());
+        assert_eq!(f.app.prompt.lines(), ["/open missing-no-such-note"]);
+    }
+
+    #[test]
+    fn bare_search_requests_words_and_submits_the_completed_query() {
+        let mut f = Fixture::new();
+        f.app.command("search");
+        assert_eq!(f.app.prompt.lines(), ["/search "]);
+        assert!(!f.app.busy);
+        assert!(f.app.messages.back().unwrap().contains("/search memory"));
+        f.app.paste("Synthetic");
+        press(&mut f.app, KeyCode::Enter);
+        assert!(f.app.busy);
+        assert!(
+            matches!(f.jobs.try_recv().unwrap(), Job::Search(_, query, Some(_)) if query == "Synthetic")
+        );
+    }
+
+    #[test]
+    fn history_restores_draft_without_intercepting_arrows_for_slash_commands() {
+        let mut fixture = Fixture::new();
+        let app = &mut fixture.app;
+        app.focus = Focus::Prompt;
+        app.paste("/motion");
+        press(app, KeyCode::Enter);
+        app.paste("/home");
+        press(app, KeyCode::Enter);
+        app.paste("search my unfinished draft");
+        press(app, KeyCode::Up);
+        assert_eq!(app.prompt.lines(), ["/home"]);
+        assert!(app.completions().is_empty());
+        press(app, KeyCode::Up);
+        assert_eq!(app.prompt.lines(), ["/motion"]);
+        press(app, KeyCode::Down);
+        press(app, KeyCode::Down);
+        assert_eq!(app.prompt.lines(), ["search my unfinished draft"]);
+        assert_eq!(app.prompt.placeholder_text(), PROMPT_PLACEHOLDER);
+        control(app, 'c');
+        press(app, KeyCode::Up);
+        press(app, KeyCode::Down);
+        assert_eq!(app.prompt.lines(), [""]);
+        assert_eq!(app.prompt.placeholder_text(), PROMPT_PLACEHOLDER);
+    }
+
+    #[test]
+    fn prompt_shell_shortcuts_preserve_unicode_and_remain_single_line() {
+        let mut fixture = Fixture::new();
+        let app = &mut fixture.app;
+        app.focus = Focus::Prompt;
+        app.paste("search Привет/世界 tail");
+        control(app, 'a');
+        assert_eq!(app.prompt.cursor().1, 0);
+        control(app, 'e');
+        assert_eq!(app.prompt.cursor().1, 21);
+        control(app, 'w');
+        assert_eq!(app.prompt.lines(), ["search Привет/世界 "]);
+        control(app, 'w');
+        assert_eq!(app.prompt.lines(), ["search "]);
+        app.paste("one two");
+        control(app, 'b');
+        control(app, 'b');
+        control(app, 'b');
+        control(app, 'k');
+        assert_eq!(app.prompt.lines(), ["search one "]);
+        control(app, 'a');
+        control(app, 'f');
+        control(app, 'u');
+        assert_eq!(app.prompt.lines(), ["earch one "]);
+        control(app, 'j');
+        control(app, 'm');
+        assert_eq!(app.prompt.lines(), ["earch one "]);
+        assert!(!app.busy);
+    }
+
+    #[test]
+    fn ctrl_c_clears_prompt_before_exit_and_never_discards_dirty_editor() {
+        let mut fixture = Fixture::new();
+        fixture.open_editor();
+        fixture.app.paste("\nkeep this draft\n");
+        let draft = fixture.app.editor.as_ref().unwrap().source();
+        fixture.app.action(Action::Focus(Focus::Prompt));
+        fixture.app.paste("/qui");
+        control(&mut fixture.app, 'c');
+        assert!(!fixture.app.quit);
+        assert_eq!(fixture.app.prompt.lines(), [""]);
+        assert!(fixture.app.completions().is_empty());
+        assert!(fixture.app.dirty());
+        control(&mut fixture.app, 'c');
+        assert!(!fixture.app.quit);
+        assert_eq!(fixture.app.editor.as_ref().unwrap().source(), draft);
+        fixture.app.command("home");
+        assert!(fixture.app.dirty());
+        assert_ne!(fixture.app.body_title, "WELCOME TO AKASHA");
+    }
+
+    #[test]
+    fn unsafe_paste_stays_inert_and_input_limit_counts_unicode_characters() {
+        let mut fixture = Fixture::new();
+        let app = &mut fixture.app;
+        app.focus = Focus::Prompt;
+        app.paste("/quit\r\n/save\x1b[2J\t");
+        assert!(!app.quit);
+        assert!(!app.busy);
+        assert!(app.history.is_empty());
+        assert!(app.completions().is_empty());
+        assert_eq!(app.prompt.lines(), ["/quit  /save [2J "]);
+        control(app, 'c');
+        app.paste(&"界".repeat(4095));
+        press(app, KeyCode::Char('界'));
+        press(app, KeyCode::Char('界'));
+        app.paste("more");
+        assert_eq!(app.prompt.lines()[0].chars().count(), 4096);
+        assert!(!app.quit);
+        assert!(fixture.jobs.try_recv().is_err());
+    }
+    #[test]
+    fn backspace_focuses_prompt_but_deletes_in_text_fields() {
+        let mut f = Fixture::new();
+        press(&mut f.app, KeyCode::Enter);
+        press(&mut f.app, KeyCode::Backspace);
+        assert!(f.app.focus == Focus::Prompt);
+        f.app.paste("ab");
+        press(&mut f.app, KeyCode::Backspace);
+        assert_eq!(f.app.prompt.lines(), ["a"]);
+        f.open_editor();
+        f.app.paste("xy");
+        let before = f.app.editor.as_ref().unwrap().source();
+        press(&mut f.app, KeyCode::Backspace);
+        assert!(f.app.focus == Focus::Reader);
+        assert_eq!(
+            f.app.editor.as_ref().unwrap().source().len(),
+            before.len() - 1
+        );
+    }
+
+    fn draw_for_mouse(app: &mut App, width: u16, height: u16) {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| super::super::view::draw(f, app)).unwrap();
+    }
+    fn click(app: &mut App, rect: Rect) {
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x,
+            row: rect.y,
+            modifiers: KeyModifiers::NONE,
+        });
+    }
+
+    #[test]
+    fn mouse_and_back_follow_exact_note_hierarchy_and_protect_drafts() {
+        let mut f = Fixture::new();
+        draw_for_mouse(&mut f.app, 120, 38);
+        let hit = f
+            .app
+            .hits
+            .iter()
+            .find(|(_, a)| matches!(a, Action::Open(0)))
+            .unwrap()
+            .0;
+        click(&mut f.app, hit);
+        assert_eq!(f.app.title, "example / entity");
+        draw_for_mouse(&mut f.app, 120, 38);
+        let hit = f
+            .app
+            .hits
+            .iter()
+            .find(|(_, a)| matches!(a, Action::Open(0)))
+            .unwrap()
+            .0;
+        click(&mut f.app, hit);
+        f.finish();
+        assert_eq!(f.app.document.as_ref().unwrap().id, ID);
+        press(&mut f.app, KeyCode::Esc);
+        assert!(f.app.document.is_none());
+        assert_eq!(f.app.title, "example / entity");
+        press(&mut f.app, KeyCode::Esc);
+        assert_eq!(f.app.title, "example");
+        f.open_editor();
+        f.app.paste("\nprotected draft");
+        let before = f.app.editor.as_ref().unwrap().source();
+        draw_for_mouse(&mut f.app, 120, 38);
+        let hit = f
+            .app
+            .hits
+            .iter()
+            .find(|(_, a)| matches!(a, Action::Command("projects")))
+            .unwrap()
+            .0;
+        click(&mut f.app, hit);
+        press(&mut f.app, KeyCode::Esc);
+        assert_eq!(f.app.editor.as_ref().unwrap().source(), before);
+        assert!(f.app.dirty());
+    }
+
+    #[test]
+    fn visible_search_shortcut_preserves_commands_and_empty_enter_browses() {
+        let mut f = Fixture::new();
+        press(&mut f.app, KeyCode::Enter);
+        assert_eq!(f.app.title, "example / entity");
+        press(&mut f.app, KeyCode::F(3));
+        assert_eq!(f.app.prompt.lines(), ["/search "]);
+        f.app.paste("unfinished query");
+        press(&mut f.app, KeyCode::F(3));
+        assert_eq!(f.app.prompt.lines(), ["/search unfinished query"]);
+        control(&mut f.app, 'c');
+        press(&mut f.app, KeyCode::F(6));
+        assert!(matches!(f.app.scope, LibraryScope::Global));
+        press(&mut f.app, KeyCode::F(4));
+        assert_eq!(f.app.title, "PROJECTS + GLOBAL");
+    }
+
+    #[test]
+    fn mouse_hits_rebuild_on_resize_and_command_popup_owns_its_cells() {
+        let mut f = Fixture::new();
+        f.app.paste("/he");
+        for (w, h) in [(120, 38), (40, 12)] {
+            draw_for_mouse(&mut f.app, w, h);
+            assert!(
+                f.app
+                    .hits
+                    .iter()
+                    .all(|(r, _)| r.right() <= w && r.bottom() <= h)
+            );
+        }
+        let hit = f
+            .app
+            .hits
+            .iter()
+            .find(|(_, a)| matches!(a, Action::Completion(0)))
+            .unwrap()
+            .0;
+        click(&mut f.app, hit);
+        assert_eq!(f.app.body_title, "HELP");
+        assert!(!f.app.busy);
     }
 }

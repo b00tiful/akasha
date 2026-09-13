@@ -1,5 +1,6 @@
 mod app;
 mod editor;
+mod starlight;
 mod view;
 
 use std::io::{self, IsTerminal};
@@ -10,7 +11,10 @@ use std::time::{Duration, Instant};
 use akasha_core::ResolveRequest;
 use crossterm::{
     cursor::Show,
-    event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind},
+    event::{
+        self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+        EnableFocusChange, EnableMouseCapture, Event, KeyEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -25,6 +29,8 @@ impl Drop for TerminalGuard {
         let _ = execute!(
             io::stdout(),
             DisableBracketedPaste,
+            DisableFocusChange,
+            DisableMouseCapture,
             Show,
             LeaveAlternateScreen
         );
@@ -69,7 +75,13 @@ fn terminal_session(
 ) -> io::Result<()> {
     enable_raw_mode()?;
     let _guard = TerminalGuard;
-    execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
+    execute!(
+        io::stdout(),
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableFocusChange,
+        EnableMouseCapture
+    )?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     terminal.clear()?;
     let (jobs, responses) = app::worker();
@@ -84,6 +96,7 @@ fn terminal_session(
     let started = Instant::now();
     let mut redraw = true;
     let mut last_tick = Instant::now();
+    let mut focused = true;
     while !app.quit {
         match responses.try_recv() {
             Ok(result) => {
@@ -95,11 +108,11 @@ fn terminal_session(
                 return Err(io::Error::other("memory worker stopped unexpectedly"));
             }
         }
-        if !app.no_motion
-            && app.document.is_none()
-            && last_tick.elapsed() >= Duration::from_millis(125)
-        {
-            app.tick = (started.elapsed().as_millis() / 125) as u64;
+        if !app.no_motion && focused && last_tick.elapsed() >= Duration::from_millis(50) {
+            app.sigil_tick = (started.elapsed().as_millis() / 50) as u64;
+            if app.focus == app::Focus::Prompt || app.body_title == "WELCOME TO AKASHA" {
+                app.tick = app.sigil_tick;
+            }
             last_tick = Instant::now();
             redraw = true;
         }
@@ -107,11 +120,14 @@ fn terminal_session(
             terminal.draw(|frame| view::draw(frame, &mut app))?;
             redraw = false;
         }
-        if event::poll(Duration::from_millis(50))? {
+        if event::poll(Duration::from_millis(20))? {
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => app.key(key),
                 Event::Paste(text) => app.paste(&text),
+                Event::Mouse(mouse) => app.mouse(mouse),
                 Event::Resize(_, _) => {}
+                Event::FocusGained => focused = true,
+                Event::FocusLost => focused = false,
                 _ => {}
             }
             redraw = true;

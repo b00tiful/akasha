@@ -61,17 +61,37 @@ def check(binary, root, term, full=False):
         os.write(master, data)
         drain()
     def command(value):
-        send(b'\x1b')
+        rows, _, _, _ = struct.unpack('HHHH', fcntl.ioctl(slave, termios.TIOCGWINSZ, b'\0' * 8))
+        send(f'\x1b[<0;6;{rows - 3}M\x1b[<0;6;{rows - 3}m'.encode())
         send(value.encode() + b'\r')
     try:
         wait_for(b'Library loaded')
         assert b'\x1b[?1049h' in output
         assert b'\x1b[?2004h' in output
+        assert b'\x1b[?1004h' in output
+        assert b'\x1b[?1006h' in output
         if full:
             idle_before = len(output)
             drain(0.7)
             assert len(output) > idle_before, 'ambient frame must change while idle'
-            command('open Projects/example/entities/core.md')
+            # Focus reporting must stop idle repaint and resume without reopening the vault.
+            send(b'\x1b[O')
+            paused = len(output)
+            drain(0.4)
+            assert len(output) == paused, 'unfocused terminal must freeze animation'
+            send(b'\x1b[I')
+            resumed = len(output)
+            drain(0.5)
+            assert len(output) > resumed, 'focused terminal must resume animation'
+            send(b'/he\t')
+            assert process.poll() is None
+            send(b'\r')
+            wait_for(b'COMMANDS')
+            command('home')
+            # Click the first category, then its note, using SGR mouse reports.
+            send(b'\x1b[<0;7;6M\x1b[<0;7;6m')
+            send(b'\x1b[<0;7;6M\x1b[<0;7;6m')
+
             wait_for(b'Synthetic entity')
             command('edit')
             wait_for(b'SOURCE')
@@ -108,6 +128,8 @@ def check(binary, root, term, full=False):
         drain()
         assert process.returncode == 0
         assert b'\x1b[?1049l' in output and b'\x1b[?2004l' in output
+        assert b'\x1b[?1004l' in output
+        assert b'\x1b[?1006l' in output
         assert termios.tcgetattr(slave) == before, 'raw terminal attributes must be restored exactly'
         print(f'PASS TERM={term}: startup, input, clean exit, terminal restoration' +
               ('; animation, Unicode paste, dirty guard, checked save, search, resize' if full else '; ASCII, no-color, reduced motion'))
