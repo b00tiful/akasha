@@ -173,6 +173,8 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     );
     let state = if app.busy {
         "working"
+    } else if app.in_workflow() {
+        "form pending"
     } else if app.dirty() {
         "unsaved"
     } else {
@@ -322,6 +324,71 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     let mut x = area.x;
+    if app.in_workflow() {
+        if app.creation_input_active() {
+            button(
+                frame,
+                app,
+                area,
+                &mut x,
+                "Enter Next",
+                Action::Command("next"),
+            );
+            button(
+                frame,
+                app,
+                area,
+                &mut x,
+                "Shift-Tab Previous",
+                Action::Command("previous"),
+            );
+        } else {
+            button(
+                frame,
+                app,
+                area,
+                &mut x,
+                "Ctrl-S Apply",
+                Action::Command("save"),
+            );
+            if app.lifecycle_pane().is_some() {
+                button(
+                    frame,
+                    app,
+                    area,
+                    &mut x,
+                    "Ctrl-P Task",
+                    Action::Command("previous"),
+                );
+                button(
+                    frame,
+                    app,
+                    area,
+                    &mut x,
+                    "Ctrl-N Roadmap",
+                    Action::Command("next"),
+                );
+            } else {
+                button(
+                    frame,
+                    app,
+                    area,
+                    &mut x,
+                    "Ctrl-P Inputs",
+                    Action::Command("previous"),
+                );
+            }
+        }
+        button(
+            frame,
+            app,
+            area,
+            &mut x,
+            "Discard form",
+            Action::Command("discard"),
+        );
+        return;
+    }
     if app.editing {
         button(
             frame,
@@ -427,6 +494,8 @@ fn draw_completions(frame: &mut Frame, app: &mut App, main: Rect, log: Rect, pro
                     " {}  {}/{} ",
                     if app.prompt.lines()[0].starts_with("/open ") {
                         "Open notes (up to 100)"
+                    } else if app.prompt.lines()[0].starts_with("/create ") {
+                        "Configured record/entity types"
                     } else {
                         "Commands"
                     },
@@ -597,7 +666,9 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
         draw_dashboard(frame, app, area);
         return;
     }
-    let title = if app.editing {
+    let title = if let Some(title) = app.workflow_title() {
+        title
+    } else if app.editing {
         format!("SOURCE{}", if app.dirty() { " *" } else { "" })
     } else if app.document.is_some() {
         if app.editable() {
@@ -611,29 +682,36 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = panel(&title, app.focus == Focus::Reader, app);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    let workflow_path = app.workflow_path();
     let [path, body, status] = Layout::vertical([
-        Constraint::Length(if app.document.is_some() && inner.height >= 5 {
-            2
-        } else {
-            0
-        }),
+        Constraint::Length(
+            if (app.document.is_some() || workflow_path.is_some()) && inner.height >= 5 {
+                2
+            } else {
+                0
+            },
+        ),
         Constraint::Min(1),
         Constraint::Length(1),
     ])
     .areas(inner);
     if path.height > 0 {
         frame.render_widget(
-            Paragraph::new(safe_text(&app.body_title)).style(subdued(app)),
+            Paragraph::new(safe_text(
+                workflow_path.as_deref().unwrap_or(&app.body_title),
+            ))
+            .style(subdued(app)),
             path,
         );
     }
     let style = ink(app);
-    if app.editing && app.editor.is_some() {
+    if app.editing && app.active_editor().is_some() {
         let cursor_style = style.add_modifier(Modifier::REVERSED);
         let line_style = subdued(app);
         let focused = app.focus == Focus::Reader;
         let dirty = app.dirty();
-        if let Some(editor) = &mut app.editor {
+        let form_pending = app.in_workflow();
+        if let Some(editor) = app.active_editor_mut() {
             editor.area.remove_block();
             editor.area.set_style(style);
             editor.area.set_cursor_line_style(style);
@@ -655,7 +733,11 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
                     cursor.0 + 1,
                     cursor.1 + 1,
                     if dirty {
-                        "Unsaved changes"
+                        if form_pending {
+                            "Form pending"
+                        } else {
+                            "Unsaved changes"
+                        }
                     } else {
                         "Saved source"
                     }
@@ -665,7 +747,7 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
             );
         }
     } else {
-        let source = if let Some(editor) = &app.editor {
+        let source = if let Some(editor) = app.active_editor() {
             editor.source()
         } else {
             app.body.clone()

@@ -11,7 +11,8 @@ use serde::Serialize;
 use crate::evidence::collect_canonical_evidence;
 use crate::note_edit::{
     NoteEditError, NoteEditRecovery, NoteProjectionJournal, complete_note_mutation_journal,
-    recover_note_mutation_locked, write_note_projection_mutation_journal,
+    recover_note_mutation_locked, recover_pending_note_edit,
+    write_note_projection_mutation_journal,
 };
 use crate::note_template::{NoteTemplateError, NoteTemplateScope, resolve_note_template};
 use crate::project_validation::{
@@ -44,6 +45,20 @@ pub struct MutableNoteCreationResult {
     pub projection_changed: bool,
     pub state: PathBuf,
     pub recovery: NoteEditRecovery,
+}
+
+/// Read-only inputs needed to present one configured record/entity creation form.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MutableNoteCreationForm {
+    pub root: PathBuf,
+    pub project: String,
+    pub note_type: String,
+    pub class: NoteClass,
+    pub template: PathBuf,
+    pub template_scope: NoteTemplateScope,
+    pub fields: Vec<String>,
+    pub projection: PathBuf,
+    pub projection_source: String,
 }
 
 /// An input, resolution, validation, conflict, filesystem, or recovery failure.
@@ -177,6 +192,83 @@ impl From<AtomicCreateError> for MutableNoteCreationError {
     fn from(error: AtomicCreateError) -> Self {
         Self::Creation(error)
     }
+}
+
+/// Resolve one configured record/entity template and its exact maintained projection for review.
+///
+/// `project` and `type` placeholders are core-owned. Every other valid template placeholder is
+/// returned once, in first-appearance order, for an interface to collect without reimplementing
+/// template parsing or configuration rules.
+pub fn prepare_mutable_note_creation(
+    request: &ResolveRequest,
+    note_type: &str,
+) -> Result<MutableNoteCreationForm, MutableNoteCreationError> {
+    recover_pending_note_edit(request)?;
+    let report = validate_project(request)?;
+    let resolved = resolve_project(request)?;
+    let config = load_root_config(&resolved.root)?;
+    let configured = config.project.note_types.get(note_type).ok_or_else(|| {
+        MutableNoteCreationError::Input {
+            path: PathBuf::from(note_type),
+            message: format!("unknown configured note type {note_type:?}"),
+        }
+    })?;
+    if configured.class == NoteClass::Event {
+        return Err(MutableNoteCreationError::Input {
+            path: PathBuf::from(note_type),
+            message: format!(
+                "configured note type {note_type:?} is immutable; use create-event instead"
+            ),
+        });
+    }
+    let template = resolve_note_template(request, note_type)?;
+    let projection = match configured.class {
+        NoteClass::Record => report.project_dir.join(&config.project.roadmap),
+        NoteClass::Entity => report.project_dir.join(&config.project.index),
+        NoteClass::Event => unreachable!("immutable events were rejected above"),
+    };
+    let projection_bytes = read_regular_file(&projection, "read the maintained projection")?;
+    let projection_source = str::from_utf8(&projection_bytes)
+        .map_err(|error| MutableNoteCreationError::Validation {
+            path: projection.clone(),
+            message: format!("maintained projection is not valid UTF-8: {error}"),
+        })?
+        .to_owned();
+
+    Ok(MutableNoteCreationForm {
+        root: resolved.root,
+        project: resolved.project,
+        note_type: note_type.to_owned(),
+        class: configured.class,
+        fields: template_fields(&template.source),
+        template: template.path,
+        template_scope: template.scope,
+        projection,
+        projection_source,
+    })
+}
+
+fn template_fields(source: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut cursor = 0;
+    while let Some(open_offset) = source[cursor..].find("{{") {
+        let marker_start = cursor + open_offset + 2;
+        let Some(close_offset) = source[marker_start..].find("}}") else {
+            break;
+        };
+        let close = marker_start + close_offset;
+        let name = &source[marker_start..close];
+        if valid_placeholder_name(name)
+            && name != "project"
+            && name != "type"
+            && seen.insert(name.to_owned())
+        {
+            fields.push(name.to_owned());
+        }
+        cursor = close + 2;
+    }
+    fields
 }
 
 /// Create one configured record or entity and explicitly accept its maintained projection.

@@ -41,6 +41,7 @@ design/
 AGENTS.md
 VAULT.md
 implementation_plan.md
+RELEASE_WORK_PLAN.md
 
 # Public synthetic fixtures for the agent-wiring contract.
 !tests/fixtures/resolution/valid-root/Meta/AGENTS.md

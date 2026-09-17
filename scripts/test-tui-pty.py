@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Linux PTY acceptance for Akasha's terminal adapter; standard-library test tooling only."""
 import argparse
+import codecs
 import fcntl
 import os
 from pathlib import Path
@@ -13,8 +14,103 @@ import subprocess
 import tempfile
 import termios
 import time
+import unicodedata
 
 BASE = Path(__file__).resolve().parents[1]
+
+
+class Screen:
+    """Reconstruct the cursor-addressed cells emitted by the Crossterm backend.
+
+    This is a test observer for that backend, not a general terminal emulator.
+    Styles and terminal modes do not affect the text cells we assert against.
+    """
+
+    def __init__(self):
+        self.decoder = codecs.getincrementaldecoder('utf-8')('replace')
+        self.pending = ''
+        self.cells = {}
+        self.row = self.column = 0
+
+    def feed(self, data):
+        self.pending += self.decoder.decode(data)
+        while self.pending:
+            if self.pending.startswith('\x1b'):
+                match = re.match(r'\x1b\[([0-?]*)([ -/]*)([@-~])', self.pending)
+                if not match:
+                    if self.pending == '\x1b' or self.pending.startswith('\x1b['):
+                        break
+                    raise AssertionError(f'Unsupported terminal escape: {self.pending[:40]!r}')
+                params, _, operation = match.groups()
+                self.pending = self.pending[match.end():]
+                if params.startswith('?') or operation in 'mhlqn':
+                    continue
+                values = [int(value) if value else 0 for value in params.split(';')]
+                amount = values[0] or 1
+                if operation in 'Hf':
+                    self.row = amount - 1
+                    self.column = ((values[1] or 1) if len(values) > 1 else 1) - 1
+                elif operation == 'A':
+                    self.row = max(0, self.row - amount)
+                elif operation == 'B':
+                    self.row += amount
+                elif operation == 'C':
+                    self.column += amount
+                elif operation == 'D':
+                    self.column = max(0, self.column - amount)
+                elif operation == 'G':
+                    self.column = amount - 1
+                elif operation == 'J' and values[0] in (2, 3):
+                    self.cells.clear()
+                elif operation in 'JK':
+                    cursor = (self.row, self.column)
+                    for position in list(self.cells):
+                        if operation == 'K' and position[0] != self.row:
+                            continue
+                        if (values[0] == 2 or
+                                values[0] == 0 and position >= cursor or
+                                values[0] == 1 and position <= cursor):
+                            del self.cells[position]
+                else:
+                    raise AssertionError(f'Unsupported CSI: {params}{operation}')
+                continue
+            char, self.pending = self.pending[0], self.pending[1:]
+            if char == '\r':
+                self.column = 0
+            elif char == '\n':
+                self.row += 1
+            elif char == '\b':
+                self.column = max(0, self.column - 1)
+            elif unicodedata.combining(char):
+                position = (self.row, max(0, self.column - 1))
+                self.cells[position] = self.cells.get(position, '') + char
+            elif char >= ' ':
+                width = 2 if unicodedata.east_asian_width(char) in 'WF' else 1
+                self.cells[self.row, self.column] = char
+                if width == 2:
+                    self.cells[self.row, self.column + 1] = ''
+                self.column += width
+
+    def text(self):
+        rows = max((row for row, _ in self.cells), default=0) + 1
+        columns = max((column for _, column in self.cells), default=0) + 1
+        return '\n'.join(''.join(self.cells.get((row, column), ' ')
+                                 for column in range(columns)).rstrip()
+                         for row in range(rows))
+
+
+def check_screen_observer():
+    screen = Screen()
+    # Text kept from earlier frames must survive cursor-addressed partial changes.
+    stream = '\x1b[2J\x1b[1;1HCREATE task\x1b[1;8Hproblem\x1b[2;1H世界'.encode()
+    for byte in stream:
+        screen.feed(bytes([byte]))
+    assert screen.text() == 'CREATE problem\n世界'
+    screen.feed(b'\x1b[1;1HHELP\x1b[K')
+    assert screen.text() == 'HELP\n世界'
+    assert 'CREATE' not in screen.text(), 'old frames must not satisfy current-state checks'
+    screen.feed(b'\x1b[2J')
+    assert screen.text() == ''
 
 
 def check(binary, root, term, full=False):
@@ -32,6 +128,7 @@ def check(binary, root, term, full=False):
     process = subprocess.Popen(args, stdin=slave, stdout=slave, stderr=slave,
                                env=env, preexec_fn=child_setup)
     output = bytearray()
+    screen = Screen()
     def drain(seconds=0.15):
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
@@ -41,6 +138,7 @@ def check(binary, root, term, full=False):
                 except OSError:
                     break
                 output.extend(data)
+                screen.feed(data)
                 # A PTY supplies transport, not a terminal emulator. Answer the standard
                 # cursor-position query just as VTE/xterm do during Ratatui setup.
                 if b'\x1b[6n' in data:
@@ -49,14 +147,13 @@ def check(binary, root, term, full=False):
     def wait_for(needle, seconds=8):
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
-            raw = drain(0.05)
-            # Differential cell rendering may move the cursor instead of writing spaces.
-            visible = re.sub(rb'\x1b\[[0-?]*[ -/]*[@-~]', b'', raw)
+            drain(0.05)
+            visible = screen.text().encode()
             if b''.join(needle.split()) in b''.join(visible.split()):
                 return
             if process.poll() is not None:
                 break
-        raise AssertionError(f'{term}: missing {needle!r}: {bytes(output)[-1500:]!r}')
+        raise AssertionError(f'{term}: missing {needle!r}; current screen:\n{screen.text()}')
     def send(data):
         os.write(master, data)
         drain()
@@ -86,7 +183,9 @@ def check(binary, root, term, full=False):
             send(b'/he\t')
             assert process.poll() is None
             send(b'\r')
-            wait_for(b'COMMANDS')
+            # The form shortcuts lengthen HELP enough that COMMANDS is below this
+            # 32-row viewport. Observe the post-Enter panel title instead.
+            wait_for(b'HELP')
             command('home')
             # Click the first category, then its note, using SGR mouse reports.
             send(b'\x1b[<0;7;6M\x1b[<0;7;6m')
@@ -112,6 +211,58 @@ def check(binary, root, term, full=False):
             drain(0.3)
             command('search PTY acceptance')
             wait_for(b'matches')
+            command('create task')
+            wait_for(b'CREATE task')
+            for value in [
+                'pty-created.md',
+                'open',
+                '2026-09-17',
+                '2026-09-17',
+                'PTY created task',
+                'Tracks [[Projects/example/entities/core|the core]].',
+            ]:
+                command(value)
+            wait_for(b'REVIEW ROADMAP')
+            send(b'\x1b[1;5F')
+            projection = b'\n- [[Projects/example/records/tasks/pty-created|PTY created task]]\n'
+            send(b'\x1b[200~' + projection + b'\x1b[201~')
+            command('save')
+            created = root / 'Projects/example/records/tasks/pty-created.md'
+            deadline = time.monotonic() + 8
+            while not created.is_file() and time.monotonic() < deadline:
+                drain(0.05)
+            assert created.is_file(), 'creation form must publish the configured task'
+            # Successful creation reloads the library and opens the new editable task.
+            # The transient status line may be overwritten before a PTY observes it.
+            wait_for(b'READING')
+            task_before_discard = created.read_bytes()
+            roadmap = root / 'Projects/example/roadmap.md'
+            roadmap_before_discard = roadmap.read_bytes()
+            assert projection in roadmap_before_discard
+            command('lifecycle')
+            wait_for(b'TASK LIFECYCLE')
+            send(b'\x1b[1;5F')
+            send(b'\x1b[200~\nDiscarded task draft.\n\x1b[201~')
+            send(b'\x0e')  # Ctrl-N: maintained roadmap buffer.
+            send(b'\x1b[1;5F')
+            send(b'\x1b[200~\nDiscarded roadmap draft.\n\x1b[201~')
+            command('discard')
+            wait_for(b'READING')
+            assert created.read_bytes() == task_before_discard, 'discard must not change task bytes'
+            assert roadmap.read_bytes() == roadmap_before_discard, 'discard must not change roadmap bytes'
+            command('lifecycle')
+            wait_for(b'TASK LIFECYCLE')
+            send(b'\x1b[1;5F')
+            task_addition = b'\nPTY lifecycle task update.\n'
+            send(b'\x1b[200~' + task_addition + b'\x1b[201~')
+            send(b'\x0e')
+            send(b'\x1b[1;5F')
+            roadmap_addition = b'\nPTY lifecycle roadmap update.\n'
+            send(b'\x1b[200~' + roadmap_addition + b'\x1b[201~')
+            send(b'\x13')  # Ctrl-S applies both buffers through the core.
+            wait_for(b'READING')
+            assert created.read_bytes() == task_before_discard + task_addition
+            assert roadmap.read_bytes() == roadmap_before_discard + roadmap_addition
             # Resizing must not lose state or crash. Restore usable dimensions afterward.
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 5, 20, 0, 0))
             drain(0.2)
@@ -132,7 +283,7 @@ def check(binary, root, term, full=False):
         assert b'\x1b[?1006l' in output
         assert termios.tcgetattr(slave) == before, 'raw terminal attributes must be restored exactly'
         print(f'PASS TERM={term}: startup, input, clean exit, terminal restoration' +
-              ('; animation, Unicode paste, dirty guard, checked save, search, resize' if full else '; ASCII, no-color, reduced motion'))
+              ('; animation, Unicode paste, dirty guard, checked save, search, create/lifecycle forms, resize' if full else '; ASCII, no-color, reduced motion'))
     finally:
         if process.poll() is None:
             process.terminate()
@@ -145,10 +296,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, default=BASE / 'target/debug/akasha')
     args = parser.parse_args()
+    check_screen_observer()
     with tempfile.TemporaryDirectory(prefix='akasha-tui-pty-') as folder:
         temp = Path(folder)
         root = temp / 'root'
         shutil.copytree(BASE / 'tests/fixtures/resolution/valid-root', root)
+        for template in (BASE / 'tests/fixtures/tui').glob('*.md'):
+            shutil.copyfile(template, root / 'Projects/example/templates' / template.name)
         (temp / 'repository').mkdir()
         for term in ['xterm-256color', 'xterm', 'linux']:
             check(args.binary.resolve(), root, term, full=term == 'xterm-256color')

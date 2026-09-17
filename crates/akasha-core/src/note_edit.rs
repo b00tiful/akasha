@@ -65,6 +65,19 @@ pub struct RecordUpdateResult {
     pub recovery: NoteEditRecovery,
 }
 
+/// Exact sources needed to present a checked lifecycle form for the configured task role.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TaskLifecycleForm {
+    pub root: PathBuf,
+    pub project: String,
+    pub note_type: String,
+    pub id: String,
+    pub path: PathBuf,
+    pub source: String,
+    pub roadmap: PathBuf,
+    pub roadmap_source: String,
+}
+
 /// Result of one exact-source entity update with an explicitly accepted index.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EntityUpdateResult {
@@ -104,6 +117,68 @@ pub enum NoteEditError {
         original: Box<NoteEditError>,
         recovery: Box<NoteEditError>,
     },
+}
+
+/// Load one projected task and its maintained roadmap as exact, optimistic-concurrency inputs.
+pub fn prepare_task_lifecycle(
+    request: &ResolveRequest,
+    id: &str,
+) -> Result<TaskLifecycleForm, NoteEditError> {
+    recover_pending_note_edit(request)?;
+    let resolved = resolve_project(request)?;
+    let config = load_root_config(&resolved.root)?;
+    let projection = build_library_projection(request)?;
+    let book = projection
+        .projects
+        .iter()
+        .find(|shelf| shelf.project == resolved.project)
+        .into_iter()
+        .flat_map(|shelf| &shelf.categories)
+        .flat_map(|category| &category.books)
+        .find(|book| book.id == id)
+        .ok_or_else(|| NoteEditError::Validation {
+            path: PathBuf::from(id),
+            message:
+                "only a projected note from the selected project can enter a task lifecycle form"
+                    .to_owned(),
+        })?;
+    if book.class != NoteClass::Record || book.note_type != config.context.tasks {
+        return Err(NoteEditError::Validation {
+            path: PathBuf::from(id),
+            message: format!(
+                "task lifecycle requires the configured task type {:?}",
+                config.context.tasks
+            ),
+        });
+    }
+
+    let path = resolved.root.join(id);
+    let source = read_regular_file(&path, "read the selected canonical task")?;
+    let source = str::from_utf8(&source)
+        .map_err(|error| NoteEditError::Validation {
+            path: path.clone(),
+            message: format!("canonical task is not valid UTF-8: {error}"),
+        })?
+        .to_owned();
+    let roadmap = resolved.project_dir.join(&config.project.roadmap);
+    let roadmap_source = read_regular_file(&roadmap, "read the current roadmap projection")?;
+    let roadmap_source = str::from_utf8(&roadmap_source)
+        .map_err(|error| NoteEditError::Validation {
+            path: roadmap.clone(),
+            message: format!("current roadmap projection is not valid UTF-8: {error}"),
+        })?
+        .to_owned();
+
+    Ok(TaskLifecycleForm {
+        root: resolved.root,
+        project: resolved.project,
+        note_type: book.note_type.clone(),
+        id: id.to_owned(),
+        path,
+        source,
+        roadmap,
+        roadmap_source,
+    })
 }
 
 impl NoteEditError {

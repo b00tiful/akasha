@@ -1,13 +1,16 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use super::editor::{Editor, safe_text};
 use akasha_core::{
-    LibraryBook, LibraryDocument, LibraryProjection, LibraryScope, LibrarySearchResult, NoteClass,
-    ResolveRequest, assemble_context, build_library_projection, load_library_document,
-    recover_pending_note_edit, render_context_markdown, replace_library_document, search_library,
-    validate_project,
+    LibraryBook, LibraryDocument, LibraryProjection, LibraryScope, LibrarySearchResult,
+    MutableNoteCreationForm, MutableNoteCreationResult, NoteClass, RecordUpdateResult,
+    ResolveRequest, TaskLifecycleForm, assemble_context, build_library_projection,
+    create_mutable_note, load_library_document, prepare_mutable_note_creation,
+    prepare_task_lifecycle, recover_pending_note_edit, render_context_markdown,
+    replace_library_document, search_library, update_record, validate_project,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -81,6 +84,16 @@ const COMMANDS: &[Completion] = &[
         description: "Read bounded project orientation",
     },
     Completion {
+        command: "create",
+        argument: "TYPE",
+        description: "Create a configured record or entity",
+    },
+    Completion {
+        command: "lifecycle",
+        argument: "",
+        description: "Update the open task and roadmap together",
+    },
+    Completion {
         command: "validate",
         argument: "",
         description: "Check the selected project's memory",
@@ -132,14 +145,18 @@ const COMMANDS: &[Completion] = &[
     },
 ];
 
-fn prompt_area(text: String) -> TextArea<'static> {
+fn prompt_area_with_placeholder(text: String, placeholder: &str) -> TextArea<'static> {
     let mut prompt = TextArea::new(vec![text]);
-    prompt.set_placeholder_text(PROMPT_PLACEHOLDER);
+    prompt.set_placeholder_text(placeholder);
     prompt.move_cursor(CursorMove::End);
     prompt
 }
 
-pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save the current source\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes\ncontext         bounded project orientation\nvalidate        validate selected project\nrefresh         reload data (or press F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nWave one edits project records/entities. Events and global\nknowledge are readable. Creation and administration forms\nwill arrive in subsequent waves; existing CLI commands remain available.\n\nOpen from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
+fn prompt_area(text: String) -> TextArea<'static> {
+    prompt_area_with_placeholder(text, PROMPT_PLACEHOLDER)
+}
+
+pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       update the open task and roadmap together\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nvalidate        validate selected project\nrefresh         reload data (or press F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and task lifecycle forms show exact configured templates and\nmaintained projections. Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. Administration remains a later wave.\n\nOpen from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Focus {
@@ -167,6 +184,69 @@ struct Navigation {
     scope: LibraryScope,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CreationStage {
+    Inputs,
+    Projection,
+}
+
+struct CreationForm {
+    prepared: MutableNoteCreationForm,
+    path: String,
+    fields: Vec<(String, String)>,
+    input_index: usize,
+    projection: Editor,
+    stage: CreationStage,
+}
+
+impl CreationForm {
+    fn input_count(&self) -> usize {
+        self.fields.len() + 1
+    }
+
+    fn input_name(&self) -> &str {
+        if self.input_index == 0 {
+            "relative .md path"
+        } else {
+            &self.fields[self.input_index - 1].0
+        }
+    }
+
+    fn input_value(&self) -> &str {
+        if self.input_index == 0 {
+            &self.path
+        } else {
+            &self.fields[self.input_index - 1].1
+        }
+    }
+
+    fn set_input_value(&mut self, value: String) {
+        if self.input_index == 0 {
+            self.path = value;
+        } else {
+            self.fields[self.input_index - 1].1 = value;
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum LifecyclePane {
+    Task,
+    Roadmap,
+}
+
+struct LifecycleForm {
+    prepared: TaskLifecycleForm,
+    task: Editor,
+    roadmap: Editor,
+    pane: LifecyclePane,
+}
+
+enum Workflow {
+    Creation(Box<CreationForm>),
+    Lifecycle(Box<LifecycleForm>),
+}
+
 pub(super) enum Job {
     Load(ResolveRequest),
     Open(ResolveRequest, String),
@@ -174,6 +254,16 @@ pub(super) enum Job {
     Context(ResolveRequest),
     Validate(ResolveRequest),
     Save(ResolveRequest, String, String, String),
+    PrepareCreate(ResolveRequest, String),
+    Create(
+        ResolveRequest,
+        String,
+        PathBuf,
+        BTreeMap<String, String>,
+        String,
+    ),
+    PrepareTask(ResolveRequest, String),
+    UpdateTask(ResolveRequest, String, String, String, String),
 }
 pub(super) enum Response {
     Loaded(ResolveRequest, Box<LibraryProjection>),
@@ -181,6 +271,10 @@ pub(super) enum Response {
     Found(LibrarySearchResult),
     Text(String, String),
     Saved(String),
+    CreatePrepared(MutableNoteCreationForm),
+    Created(MutableNoteCreationResult),
+    TaskPrepared(TaskLifecycleForm),
+    TaskUpdated(RecordUpdateResult),
 }
 pub(super) type WorkResult = Result<Response, String>;
 
@@ -222,6 +316,28 @@ fn execute_job(job: Job) -> WorkResult {
         Job::Save(request, id, expected, replacement) => {
             replace_library_document(&request, &id, &expected, &replacement).map_err(|e| err(&e))?;
             Ok(Response::Saved(replacement))
+        }
+        Job::PrepareCreate(request, note_type) => {
+            prepare_mutable_note_creation(&request, &note_type)
+                .map(Response::CreatePrepared)
+                .map_err(|e| err(&e))
+        }
+        Job::Create(request, note_type, path, fields, projection) => create_mutable_note(
+            &request,
+            &note_type,
+            &path,
+            &fields,
+            &projection,
+        )
+        .map(Response::Created)
+        .map_err(|e| err(&e)),
+        Job::PrepareTask(request, id) => prepare_task_lifecycle(&request, &id)
+            .map(Response::TaskPrepared)
+            .map_err(|e| err(&e)),
+        Job::UpdateTask(request, id, expected, replacement, roadmap) => {
+            update_record(&request, &id, &expected, &replacement, &roadmap)
+                .map(Response::TaskUpdated)
+                .map_err(|e| err(&e))
         }
     }
 }
@@ -266,6 +382,8 @@ pub(super) struct App {
     completion_index: usize,
     completion_dismissed: bool,
     navigation: Vec<Navigation>,
+    workflow: Option<Workflow>,
+    pending_open: Option<String>,
     jobs: Sender<Job>,
 }
 
@@ -311,6 +429,8 @@ impl App {
             completion_index: 0,
             completion_dismissed: false,
             navigation: vec![],
+            workflow: None,
+            pending_open: None,
             jobs,
         }
     }
@@ -341,11 +461,87 @@ impl App {
         }
     }
     pub fn dirty(&self) -> bool {
-        self.editor.as_ref().is_some_and(Editor::dirty)
+        self.workflow.is_some() || self.editor.as_ref().is_some_and(Editor::dirty)
+    }
+    pub fn in_workflow(&self) -> bool {
+        self.workflow.is_some()
+    }
+    pub fn creation_input_active(&self) -> bool {
+        matches!(
+            self.workflow,
+            Some(Workflow::Creation(ref form)) if form.stage == CreationStage::Inputs
+        )
+    }
+    pub fn lifecycle_pane(&self) -> Option<LifecyclePane> {
+        match &self.workflow {
+            Some(Workflow::Lifecycle(form)) => Some(form.pane),
+            _ => None,
+        }
+    }
+    pub fn active_editor(&self) -> Option<&Editor> {
+        match &self.workflow {
+            Some(Workflow::Creation(form)) if form.stage == CreationStage::Projection => {
+                Some(&form.projection)
+            }
+            Some(Workflow::Lifecycle(form)) if form.pane == LifecyclePane::Task => Some(&form.task),
+            Some(Workflow::Lifecycle(form)) => Some(&form.roadmap),
+            _ => self.editor.as_ref(),
+        }
+    }
+    pub fn active_editor_mut(&mut self) -> Option<&mut Editor> {
+        match &mut self.workflow {
+            Some(Workflow::Creation(form)) if form.stage == CreationStage::Projection => {
+                Some(&mut form.projection)
+            }
+            Some(Workflow::Lifecycle(form)) => match form.pane {
+                LifecyclePane::Task => Some(&mut form.task),
+                LifecyclePane::Roadmap => Some(&mut form.roadmap),
+            },
+            _ => self.editor.as_mut(),
+        }
+    }
+    pub fn workflow_title(&self) -> Option<String> {
+        match &self.workflow {
+            Some(Workflow::Creation(form)) if form.stage == CreationStage::Inputs => Some(format!(
+                "CREATE {} · INPUT {}/{}",
+                form.prepared.note_type,
+                form.input_index + 1,
+                form.input_count()
+            )),
+            Some(Workflow::Creation(form)) => Some(format!(
+                "CREATE {} · REVIEW {}",
+                form.prepared.note_type,
+                match form.prepared.class {
+                    NoteClass::Record => "ROADMAP",
+                    NoteClass::Entity => "INDEX",
+                    NoteClass::Event => "PROJECTION",
+                }
+            )),
+            Some(Workflow::Lifecycle(form)) if form.pane == LifecyclePane::Task => {
+                Some("TASK LIFECYCLE · TASK SOURCE".into())
+            }
+            Some(Workflow::Lifecycle(_)) => Some("TASK LIFECYCLE · ROADMAP".into()),
+            None => None,
+        }
+    }
+    pub fn workflow_path(&self) -> Option<String> {
+        match &self.workflow {
+            Some(Workflow::Creation(form)) if form.stage == CreationStage::Projection => {
+                Some(form.prepared.projection.display().to_string())
+            }
+            Some(Workflow::Lifecycle(form)) if form.pane == LifecyclePane::Task => {
+                Some(form.prepared.id.clone())
+            }
+            Some(Workflow::Lifecycle(form)) => Some(form.prepared.roadmap.display().to_string()),
+            _ => None,
+        }
     }
     fn can_leave(&mut self) -> bool {
         if self.busy {
             self.message("An operation is running; please wait.");
+            false
+        } else if self.workflow.is_some() {
+            self.message("Unfinished form: apply it with Ctrl-S or use discard to cancel it.");
             false
         } else if self.dirty() {
             self.message("Unsaved changes: use save or discard before leaving this note.");
@@ -353,6 +549,158 @@ impl App {
         } else {
             true
         }
+    }
+
+    fn creation_body(form: &CreationForm) -> String {
+        let mut body = format!(
+            "# Create {}\n\nProject: `{}`\nTemplate: `{}`\nMaintained projection: `{}`\n\n## Inputs\n\n",
+            form.prepared.note_type,
+            form.prepared.project,
+            form.prepared.template.display(),
+            form.prepared.projection.display()
+        );
+        body.push_str(&format!(
+            "- {} relative .md path: {}\n",
+            if form.input_index == 0 { "›" } else { "✓" },
+            if form.path.is_empty() {
+                "…"
+            } else {
+                &form.path
+            }
+        ));
+        for (index, (name, value)) in form.fields.iter().enumerate() {
+            let position = index + 1;
+            body.push_str(&format!(
+                "- {} {name}: {}\n",
+                if position == form.input_index {
+                    "›"
+                } else if position < form.input_index {
+                    "✓"
+                } else {
+                    "·"
+                },
+                if value.is_empty() { "…" } else { value }
+            ));
+        }
+        body.push_str(
+            "\nEnter the highlighted value. Shift-Tab returns to the previous input.\nAfter the last value, review the complete maintained projection before Ctrl-S applies one checked transaction.\n",
+        );
+        body
+    }
+
+    fn show_creation_input(&mut self) {
+        let Some(Workflow::Creation(form)) = &self.workflow else {
+            return;
+        };
+        let value = form.input_value().to_owned();
+        let placeholder = format!(
+            "{} ({}/{})",
+            form.input_name(),
+            form.input_index + 1,
+            form.input_count()
+        );
+        let body = Self::creation_body(form);
+        let note_type = form.prepared.note_type.clone();
+        self.prompt = prompt_area_with_placeholder(value, &placeholder);
+        self.prompt_changed();
+        self.body_title = format!("CREATE {note_type}");
+        self.body = body;
+        self.scroll = 0;
+        self.editing = false;
+        self.focus = Focus::Prompt;
+    }
+
+    fn accept_creation_input(&mut self, input: String) {
+        let value = input.trim().to_owned();
+        if value.is_empty() {
+            self.message("This form value is required.");
+            return;
+        }
+        let mut projection_ready = false;
+        if let Some(Workflow::Creation(form)) = &mut self.workflow {
+            form.set_input_value(value);
+            if form.input_index + 1 < form.input_count() {
+                form.input_index += 1;
+            } else {
+                form.stage = CreationStage::Projection;
+                projection_ready = true;
+            }
+        }
+        if projection_ready {
+            self.reset_prompt();
+            self.editing = true;
+            self.focus = Focus::Reader;
+            self.message(
+                "Review the complete maintained projection. Ctrl-S applies the note and displayed projection atomically; Ctrl-P returns to inputs.",
+            );
+        } else {
+            self.show_creation_input();
+        }
+    }
+
+    fn previous_workflow_step(&mut self) {
+        match &mut self.workflow {
+            Some(Workflow::Creation(form)) if form.stage == CreationStage::Projection => {
+                form.stage = CreationStage::Inputs;
+                form.input_index = form.input_count().saturating_sub(1);
+                self.show_creation_input();
+            }
+            Some(Workflow::Creation(form)) if form.input_index > 0 => {
+                form.set_input_value(self.prompt.lines().join(" ").trim().to_owned());
+                form.input_index -= 1;
+                self.show_creation_input();
+            }
+            Some(Workflow::Lifecycle(form)) => {
+                form.pane = LifecyclePane::Task;
+                self.editing = true;
+                self.focus = Focus::Reader;
+            }
+            _ => self.message("Already at the first form input."),
+        }
+    }
+
+    fn next_workflow_step(&mut self) {
+        match &mut self.workflow {
+            Some(Workflow::Lifecycle(form)) => {
+                form.pane = LifecyclePane::Roadmap;
+                self.editing = true;
+                self.focus = Focus::Reader;
+            }
+            Some(Workflow::Creation(form)) if form.stage == CreationStage::Inputs => {
+                let input = self.prompt.lines().join(" ");
+                self.accept_creation_input(input);
+            }
+            Some(Workflow::Creation(_)) => {
+                self.message("Creation has one projection document; Ctrl-P returns to inputs.");
+            }
+            None => {}
+        }
+    }
+
+    fn cancel_workflow(&mut self) {
+        let Some(workflow) = self.workflow.take() else {
+            return;
+        };
+        self.editor = None;
+        self.editing = false;
+        self.reset_prompt();
+        match workflow {
+            Workflow::Creation(_) => {
+                self.close_reader();
+                self.focus = Focus::List;
+            }
+            Workflow::Lifecycle(form) => {
+                self.body_title = form.prepared.id.clone();
+                self.body = form.prepared.source.clone();
+                self.document = Some(LibraryDocument {
+                    id: form.prepared.id,
+                    source: form.prepared.source,
+                });
+                self.scroll = 0;
+                self.focus = Focus::Reader;
+            }
+        }
+        self.message("Form discarded; no files changed.");
     }
     fn remember(&mut self) {
         self.navigation.push(Navigation {
@@ -492,6 +840,15 @@ impl App {
         if self.busy {
             return;
         }
+        if self.workflow.is_some() {
+            if self.active_editor().is_some() {
+                self.editing = true;
+                self.focus = Focus::Reader;
+            } else {
+                self.focus = Focus::Prompt;
+            }
+            return;
+        }
         if !self.editable() {
             self.message("Open a record or entity in its project to edit. Events and global notes are read-only.");
             return;
@@ -511,6 +868,33 @@ impl App {
     fn save(&mut self) {
         if self.busy {
             self.message("An operation is running; please wait.");
+            return;
+        }
+        let workflow_job = match &self.workflow {
+            Some(Workflow::Creation(form)) if form.stage == CreationStage::Projection => {
+                Some(Job::Create(
+                    self.request.clone(),
+                    form.prepared.note_type.clone(),
+                    PathBuf::from(&form.path),
+                    form.fields.iter().cloned().collect(),
+                    form.projection.source(),
+                ))
+            }
+            Some(Workflow::Creation(_)) => {
+                self.message("Complete every form input before applying creation.");
+                return;
+            }
+            Some(Workflow::Lifecycle(form)) => Some(Job::UpdateTask(
+                self.request.clone(),
+                form.prepared.id.clone(),
+                form.prepared.source.clone(),
+                form.task.source(),
+                form.roadmap.source(),
+            )),
+            None => None,
+        };
+        if let Some(job) = workflow_job {
+            self.submit(job);
             return;
         }
         let (Some(document), Some(editor)) = (&self.document, &self.editor) else {
@@ -548,6 +932,9 @@ impl App {
                 self.navigation.clear();
                 self.focus = Focus::Prompt;
                 self.message("Library loaded.");
+                if let Some(id) = self.pending_open.take() {
+                    self.submit(Job::Open(self.request.clone(), id));
+                }
             }
             Ok(Response::Opened(document)) => {
                 self.body_title = document.id.clone();
@@ -608,6 +995,99 @@ impl App {
                     "Saved through the core. Refresh to update library metrics and lists.",
                 );
             }
+            Ok(Response::CreatePrepared(prepared)) => {
+                let projection = match Editor::new(&prepared.projection_source) {
+                    Ok(editor) => editor,
+                    Err(error) => {
+                        self.message(&format!("Operation failed: {error}"));
+                        return;
+                    }
+                };
+                let fields = prepared
+                    .fields
+                    .iter()
+                    .cloned()
+                    .map(|name| (name, String::new()))
+                    .collect();
+                self.document = None;
+                self.editor = None;
+                self.workflow = Some(Workflow::Creation(Box::new(CreationForm {
+                    prepared,
+                    path: String::new(),
+                    fields,
+                    input_index: 0,
+                    projection,
+                    stage: CreationStage::Inputs,
+                })));
+                self.show_creation_input();
+                self.message(
+                    "Creation form loaded from the configured template; values are not written until Ctrl-S.",
+                );
+            }
+            Ok(Response::Created(result)) => {
+                self.workflow = None;
+                self.editor = None;
+                self.editing = false;
+                self.pending_open = Some(result.id.clone());
+                self.message(&format!(
+                    "Created {} and {} the maintained projection through the checked core transaction.",
+                    result.id,
+                    if result.projection_changed {
+                        "updated"
+                    } else {
+                        "retained"
+                    }
+                ));
+                self.load();
+            }
+            Ok(Response::TaskPrepared(prepared)) => {
+                let task = match Editor::new(&prepared.source) {
+                    Ok(editor) => editor,
+                    Err(error) => {
+                        self.message(&format!("Operation failed: {error}"));
+                        return;
+                    }
+                };
+                let roadmap = match Editor::new(&prepared.roadmap_source) {
+                    Ok(editor) => editor,
+                    Err(error) => {
+                        self.message(&format!("Operation failed: {error}"));
+                        return;
+                    }
+                };
+                self.workflow = Some(Workflow::Lifecycle(Box::new(LifecycleForm {
+                    prepared,
+                    task,
+                    roadmap,
+                    pane: LifecyclePane::Task,
+                })));
+                self.editor = None;
+                self.editing = true;
+                self.focus = Focus::Reader;
+                self.message(
+                    "Task lifecycle form loaded. Edit exact task and roadmap sources; Ctrl-N/Ctrl-P switches documents and Ctrl-S applies both.",
+                );
+            }
+            Ok(Response::TaskUpdated(result)) => {
+                self.workflow = None;
+                self.editor = None;
+                self.editing = false;
+                self.pending_open = Some(result.id.clone());
+                self.message(&format!(
+                    "Task lifecycle applied: task {}, roadmap {}.",
+                    if result.changed {
+                        "updated"
+                    } else {
+                        "unchanged"
+                    },
+                    if result.roadmap_changed {
+                        "updated"
+                    } else {
+                        "unchanged"
+                    }
+                ));
+                self.load();
+            }
         }
     }
 
@@ -641,10 +1121,16 @@ impl App {
                     self.message("Wait for the operation to finish before discarding.");
                     return;
                 }
+                if self.workflow.is_some() {
+                    self.cancel_workflow();
+                    return;
+                }
                 self.editor = None;
                 self.editing = false;
                 self.message("Editor changes discarded; loaded source retained. Refresh to load external changes.");
             }
+            "previous" => self.previous_workflow_step(),
+            "next" => self.next_workflow_step(),
             _ if !self.can_leave() => {}
             "home" => {
                 self.document = None;
@@ -715,6 +1201,35 @@ impl App {
                     Some(self.scope.clone())
                 },
             )),
+            "create" if argument.is_empty() => {
+                self.prompt = prompt_area("/create ".into());
+                self.prompt_changed();
+                self.focus = Focus::Prompt;
+                self.message("Choose a configured record or entity type with arrows and Enter.");
+            }
+            "create" if argument.split_whitespace().count() != 1 => {
+                self.message("Usage: /create TYPE. The guided form collects path and fields.");
+            }
+            "create" => {
+                if !matches!(self.scope, LibraryScope::Project { .. }) {
+                    self.message("Select a project before creating a project-owned note.");
+                    return;
+                }
+                self.submit(Job::PrepareCreate(
+                    self.request.clone(),
+                    argument.to_owned(),
+                ));
+            }
+            "lifecycle" if !argument.is_empty() => {
+                self.message("Usage: /lifecycle while a task note is open.");
+            }
+            "lifecycle" => {
+                let Some(document) = &self.document else {
+                    self.message("Open a configured task note before starting its lifecycle form.");
+                    return;
+                };
+                self.submit(Job::PrepareTask(self.request.clone(), document.id.clone()));
+            }
             "context" => self.submit(Job::Context(self.request.clone())),
             "validate" => self.submit(Job::Validate(self.request.clone())),
             "refresh" => self.load(),
@@ -805,7 +1320,8 @@ impl App {
     }
 
     pub fn completions(&self) -> Vec<Suggestion> {
-        if self.focus != Focus::Prompt || self.completion_dismissed {
+        if self.focus != Focus::Prompt || self.completion_dismissed || self.creation_input_active()
+        {
             return vec![];
         }
         let Some(prefix) = self.prompt.lines()[0].strip_prefix('/') else {
@@ -828,6 +1344,40 @@ impl App {
                     command: format!("open {}", book.id),
                     argument: String::new(),
                     description: book.label.clone(),
+                })
+                .collect();
+        }
+        if let Some(query) = prefix.strip_prefix("create ") {
+            let query = query.trim().to_lowercase();
+            let Some(project) = self.request.project_override.as_ref() else {
+                return vec![];
+            };
+            return self
+                .projection
+                .as_ref()
+                .and_then(|projection| {
+                    projection
+                        .projects
+                        .iter()
+                        .find(|shelf| &shelf.project == project)
+                })
+                .into_iter()
+                .flat_map(|shelf| &shelf.categories)
+                .filter(|category| {
+                    category.class != NoteClass::Event
+                        && category.note_type.to_lowercase().contains(&query)
+                })
+                .map(|category| Suggestion {
+                    command: format!("create {}", category.note_type),
+                    argument: String::new(),
+                    description: format!(
+                        "configured {} template",
+                        match category.class {
+                            NoteClass::Record => "record",
+                            NoteClass::Entity => "entity",
+                            NoteClass::Event => "event",
+                        }
+                    ),
                 })
                 .collect();
         }
@@ -878,7 +1428,8 @@ impl App {
             }
         ));
         self.completion_index = 0;
-        self.completion_dismissed = completion.command != "open";
+        self.completion_dismissed =
+            !completion.command.starts_with("open") && !completion.command.starts_with("create");
         if completion.command == "open" && self.completions().is_empty() {
             self.message(
                 "No notes loaded. /open also accepts a list item number, for example /open 1.",
@@ -891,6 +1442,10 @@ impl App {
 
     fn run_prompt(&mut self) {
         let input = self.prompt.lines().join(" ");
+        if self.creation_input_active() {
+            self.accept_creation_input(input);
+            return;
+        }
         self.reset_prompt();
         if !input.trim().is_empty() {
             if self.history.last() != Some(&input) {
@@ -998,6 +1553,14 @@ impl App {
     pub fn key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
+            KeyCode::Char('n') if ctrl && self.workflow.is_some() => {
+                self.next_workflow_step();
+                return;
+            }
+            KeyCode::Char('p') if ctrl && self.workflow.is_some() => {
+                self.previous_workflow_step();
+                return;
+            }
             KeyCode::Char('c') if ctrl && !self.prompt.lines()[0].is_empty() => {
                 self.reset_prompt();
                 self.focus = Focus::Prompt;
@@ -1054,6 +1617,16 @@ impl App {
                 self.focus = Focus::Prompt;
                 return;
             }
+            KeyCode::Tab if self.creation_input_active() => {
+                self.message(
+                    "Press Enter for the next value; Shift-Tab returns to the previous input.",
+                );
+                return;
+            }
+            KeyCode::BackTab if self.creation_input_active() => {
+                self.previous_workflow_step();
+                return;
+            }
             KeyCode::Tab if self.focus == Focus::Prompt && !self.prompt.lines()[0].is_empty() => {
                 self.completion_dismissed = false;
                 self.complete(false);
@@ -1096,7 +1669,7 @@ impl App {
             },
             Focus::Reader if self.editing => {
                 if !self.busy
-                    && let Some(editor) = &mut self.editor
+                    && let Some(editor) = self.active_editor_mut()
                 {
                     match key.code {
                         KeyCode::End if ctrl => {
@@ -1164,7 +1737,7 @@ impl App {
                 self.message("Paste exceeds the 1 MiB input limit.");
                 return;
             }
-            if let Some(editor) = &mut self.editor {
+            if let Some(editor) = self.active_editor_mut() {
                 let text = text.replace("\r\n", "\n");
                 if text
                     .chars()
@@ -1206,6 +1779,9 @@ mod tests {
     };
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
     const ID: &str = "Projects/example/entities/core.md";
+    const TASK_ID: &str = "Projects/example/records/tasks/active.md";
+    const CREATED_TASK_ID: &str = "Projects/example/records/tasks/tui-created.md";
+    const TASK_TEMPLATE: &str = "---\nschema_version: 1\nproject: {{project}}\ntype: {{type}}\nstatus: {{status}}\ncreated: {{created}}\nupdated: {{updated}}\n---\n\n# {{title}}\n\n{{body}}\n";
     struct Fixture {
         temp: PathBuf,
         app: App,
@@ -1225,6 +1801,11 @@ mod tests {
                     .join("../../tests/fixtures/resolution/valid-root"),
                 &root,
             );
+            fs::write(
+                root.join("Projects/example/templates/task.md"),
+                TASK_TEMPLATE,
+            )
+            .unwrap();
             let request = ResolveRequest {
                 root_override: Some(root),
                 project_override: Some("example".into()),
@@ -1259,6 +1840,9 @@ mod tests {
         }
         fn path(&self) -> PathBuf {
             self.temp.join("root").join(ID)
+        }
+        fn root(&self) -> PathBuf {
+            self.temp.join("root")
         }
     }
     impl Drop for Fixture {
@@ -1369,6 +1953,187 @@ mod tests {
         assert!(!fixture.app.quit);
         assert_eq!(fixture.app.prompt.lines().len(), 1);
         assert!(!fixture.app.prompt.lines()[0].contains('\x1b'));
+    }
+
+    #[test]
+    fn configured_creation_form_collects_template_fields_and_applies_projection() {
+        let mut fixture = Fixture::new();
+        fixture.app.focus = Focus::Prompt;
+        fixture.app.paste("/create ");
+        let suggestions = fixture
+            .app
+            .completions()
+            .into_iter()
+            .map(|suggestion| suggestion.command)
+            .collect::<Vec<_>>();
+        assert!(suggestions.contains(&"create task".to_owned()));
+        assert!(suggestions.contains(&"create problem".to_owned()));
+        assert!(suggestions.contains(&"create entity".to_owned()));
+        assert!(!suggestions.iter().any(|value| value.contains("session")));
+        fixture.app.reset_prompt();
+        fixture.app.command("create task");
+        fixture.finish();
+        assert!(fixture.app.creation_input_active());
+        assert!(fixture.app.dirty());
+
+        for value in [
+            "tui-created.md",
+            "open",
+            "2026-09-17",
+            "2026-09-17",
+            "TUI created task",
+            "Tracks [[Projects/example/entities/core|the core]].",
+        ] {
+            fixture.app.paste(value);
+            press(&mut fixture.app, KeyCode::Enter);
+        }
+        assert!(fixture.app.active_editor().is_some());
+        assert!(fixture.app.editing);
+        let projection = fixture.app.active_editor_mut().unwrap();
+        projection.area.move_cursor(CursorMove::Bottom);
+        projection.area.move_cursor(CursorMove::End);
+        projection
+            .area
+            .insert_str("\n- [[Projects/example/records/tasks/tui-created|TUI created task]]\n");
+
+        fixture.app.command("save");
+        fixture.finish();
+        assert!(fixture.root().join(CREATED_TASK_ID).is_file());
+        fixture.finish();
+        fixture.finish();
+
+        assert!(!fixture.app.in_workflow());
+        assert_eq!(fixture.app.document.as_ref().unwrap().id, CREATED_TASK_ID);
+        assert!(
+            fs::read_to_string(fixture.root().join(CREATED_TASK_ID))
+                .unwrap()
+                .contains("# TUI created task")
+        );
+        assert!(
+            fs::read_to_string(fixture.root().join("Projects/example/roadmap.md"))
+                .unwrap()
+                .contains("TUI created task")
+        );
+        validate_project(&fixture.app.request).unwrap();
+    }
+
+    #[test]
+    fn unfinished_creation_is_guarded_and_discarded_without_writes() {
+        let mut fixture = Fixture::new();
+        let roadmap_before = fs::read(fixture.root().join("Projects/example/roadmap.md")).unwrap();
+        let state_before =
+            fs::read(fixture.root().join("Projects/example/.akasha-state.toml")).unwrap();
+
+        fixture.app.command("create task");
+        fixture.finish();
+        fixture.app.paste("never-created.md");
+        fixture.app.command("projects");
+        assert!(fixture.app.in_workflow());
+        assert!(
+            !fixture
+                .root()
+                .join("Projects/example/records/tasks/never-created.md")
+                .exists()
+        );
+
+        fixture.app.command("discard");
+        assert!(!fixture.app.in_workflow());
+        assert_eq!(
+            fs::read(fixture.root().join("Projects/example/roadmap.md")).unwrap(),
+            roadmap_before
+        );
+        assert_eq!(
+            fs::read(fixture.root().join("Projects/example/.akasha-state.toml")).unwrap(),
+            state_before
+        );
+    }
+
+    #[test]
+    fn task_lifecycle_form_updates_exact_task_and_roadmap_together() {
+        let mut fixture = Fixture::new();
+        fixture.app.open(TASK_ID);
+        fixture.finish();
+        fixture.app.command("lifecycle");
+        fixture.finish();
+
+        let Some(Workflow::Lifecycle(form)) = &mut fixture.app.workflow else {
+            panic!("task lifecycle form was not prepared");
+        };
+        let replacement = form
+            .prepared
+            .source
+            .replace("status: active", "status: done")
+            .replace("updated: 2026-07-13", "updated: 2026-09-17");
+        form.task = Editor::new(&replacement).unwrap();
+        form.roadmap = Editor::new(&format!(
+            "{}\nTask completed through the TUI lifecycle form.\n",
+            form.prepared.roadmap_source.trim_end()
+        ))
+        .unwrap();
+
+        fixture.app.command("save");
+        fixture.finish();
+        fixture.finish();
+        fixture.finish();
+
+        assert!(!fixture.app.in_workflow());
+        assert_eq!(fixture.app.document.as_ref().unwrap().id, TASK_ID);
+        assert!(
+            fs::read_to_string(fixture.root().join(TASK_ID))
+                .unwrap()
+                .contains("status: done")
+        );
+        assert!(
+            fs::read_to_string(fixture.root().join("Projects/example/roadmap.md"))
+                .unwrap()
+                .contains("Task completed through the TUI lifecycle form.")
+        );
+        validate_project(&fixture.app.request).unwrap();
+    }
+
+    #[test]
+    fn failed_task_lifecycle_apply_retains_both_drafts() {
+        let mut fixture = Fixture::new();
+        fixture.app.open(TASK_ID);
+        fixture.finish();
+        fixture.app.command("lifecycle");
+        fixture.finish();
+
+        let (task_draft, roadmap_draft) = {
+            let Some(Workflow::Lifecycle(form)) = &mut fixture.app.workflow else {
+                panic!("task lifecycle form was not prepared");
+            };
+            let task_draft = form
+                .prepared
+                .source
+                .replace("status: active", "status: done");
+            let roadmap_draft = format!("{}\nDraft roadmap.\n", form.prepared.roadmap_source);
+            form.task = Editor::new(&task_draft).unwrap();
+            form.roadmap = Editor::new(&roadmap_draft).unwrap();
+            (task_draft, roadmap_draft)
+        };
+        fs::write(
+            fixture.root().join(TASK_ID),
+            "external task bytes invalidate the prepared snapshot\n",
+        )
+        .unwrap();
+
+        fixture.app.command("save");
+        fixture.finish();
+
+        let Some(Workflow::Lifecycle(form)) = &fixture.app.workflow else {
+            panic!("failed apply discarded the lifecycle form");
+        };
+        assert_eq!(form.task.source(), task_draft);
+        assert_eq!(form.roadmap.source(), roadmap_draft);
+        assert!(
+            fixture
+                .app
+                .messages
+                .back()
+                .unwrap()
+                .starts_with("Operation failed")
+        );
     }
 
     fn press(app: &mut App, code: KeyCode) {

@@ -11,6 +11,7 @@ project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 demo_dir="$(mktemp -d /tmp/akasha-tui-demo.XXXXXX)"
 trap 'rm -rf -- "$demo_dir"' EXIT
 cp -R -- "$project_dir/tests/fixtures/resolution/valid-root" "$demo_dir/root"
+cp -- "$project_dir/tests/fixtures/tui/"*.md "$demo_dir/root/Projects/example/templates/"
 mkdir -- "$demo_dir/repository"
 demo_status=0
 cargo run --quiet --manifest-path "$project_dir/Cargo.toml" -p akasha-cli -- \

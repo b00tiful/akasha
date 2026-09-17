@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use akasha_core::{
     NOTE_EDIT_JOURNAL_FILE, NoteClass, NoteEditRecovery, NoteTemplateScope, ResolutionEnvironment,
-    ResolveRequest, create_mutable_note, recover_pending_note_edit, validate_project,
+    ResolveRequest, create_mutable_note, prepare_mutable_note_creation, recover_pending_note_edit,
+    validate_project,
 };
 use serde_json::json;
 
@@ -13,6 +14,37 @@ static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 const RECORD_RELATIVE_PATH: &str = "created.md";
 const RECORD_ID: &str = "Projects/example/records/tasks/created.md";
 const ROADMAP_ID: &str = "Projects/example/roadmap.md";
+
+#[test]
+fn prepares_configured_fields_and_exact_projection_without_writes() {
+    let fixture = Fixture::new("prepare");
+    let state_before = fixture.state();
+
+    let record = prepare_mutable_note_creation(&fixture.request, "task")
+        .expect("prepare configured record form");
+    assert_eq!(record.class, NoteClass::Record);
+    assert_eq!(record.template_scope, NoteTemplateScope::Project);
+    assert_eq!(
+        record.fields,
+        ["status", "created", "updated", "title", "body"]
+    );
+    assert_eq!(record.projection, fixture.roadmap_path());
+    assert_eq!(record.projection_source, fixture.roadmap_before());
+
+    let entity = prepare_mutable_note_creation(&fixture.request, "entity")
+        .expect("prepare configured entity form");
+    assert_eq!(entity.class, NoteClass::Entity);
+    assert_eq!(entity.template_scope, NoteTemplateScope::Root);
+    assert_eq!(
+        entity.fields,
+        ["entity", "kind", "status", "reviewed", "title", "body"]
+    );
+    assert_eq!(entity.projection, fixture.index_path());
+    assert_eq!(entity.projection_source, fixture.index());
+
+    assert_eq!(fixture.state(), state_before);
+    assert!(!fixture.record_path().exists());
+}
 
 #[test]
 fn creates_record_with_exact_template_projection_and_valid_state() {

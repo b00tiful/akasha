@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use akasha_core::{
     NOTE_EDIT_JOURNAL_FILE, NoteEditRecovery, ResolutionEnvironment, ResolveRequest,
-    recover_pending_note_edit, update_record, validate_project,
+    prepare_task_lifecycle, recover_pending_note_edit, update_record, validate_project,
 };
 use serde_json::json;
 
@@ -13,6 +13,29 @@ const RECORD_ID: &str = "Projects/example/records/tasks/active.md";
 const ENTITY_ID: &str = "Projects/example/entities/core.md";
 const EVENT_ID: &str = "Projects/example/events/sessions/2026-07-13.md";
 const ROADMAP_ID: &str = "Projects/example/roadmap.md";
+
+#[test]
+fn prepares_exact_configured_task_and_roadmap_without_writes() {
+    let fixture = Fixture::new("prepare");
+    let state_before = fixture.state();
+
+    let form = prepare_task_lifecycle(&fixture.request, RECORD_ID)
+        .expect("prepare configured task lifecycle form");
+
+    assert_eq!(form.note_type, "task");
+    assert_eq!(form.id, RECORD_ID);
+    assert_eq!(form.source, fixture.record());
+    assert_eq!(form.roadmap, fixture.roadmap_path());
+    assert_eq!(form.roadmap_source, fixture.roadmap());
+    assert_eq!(fixture.state(), state_before);
+
+    let error = prepare_task_lifecycle(
+        &fixture.request,
+        "Projects/example/records/problems/open.md",
+    )
+    .expect_err("a configured problem is not the task role");
+    assert_eq!(error.exit_code(), 4);
+}
 
 #[test]
 fn updates_record_and_explicit_roadmap_with_valid_state() {
