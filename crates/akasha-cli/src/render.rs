@@ -260,7 +260,7 @@ fn session_hook_operation_name(operation: SessionHookWiringOperation) -> &'stati
     }
 }
 
-fn session_hook_action_name(action: SessionHookWiringAction) -> &'static str {
+pub(crate) const fn session_hook_action_name(action: SessionHookWiringAction) -> &'static str {
     match action {
         SessionHookWiringAction::Create => "create",
         SessionHookWiringAction::AddHooks => "add-hooks",
@@ -544,7 +544,7 @@ const fn recovery_name(recovery: NoteEditRecovery) -> &'static str {
     }
 }
 
-const fn agent_wiring_action_name(action: AgentWiringAction) -> &'static str {
+pub(crate) const fn agent_wiring_action_name(action: AgentWiringAction) -> &'static str {
     match action {
         AgentWiringAction::Create => "create",
         AgentWiringAction::Append => "append",

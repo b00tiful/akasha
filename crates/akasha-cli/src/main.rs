@@ -659,6 +659,16 @@ fn report_session_hook_wiring(error: akasha_core::SessionHookWiringError) -> u8 
 }
 
 fn resolve_agent_home(client: AgentClient, explicit: Option<PathBuf>) -> Result<PathBuf, u8> {
+    discover_agent_home(client, explicit).map_err(|error| {
+        eprintln!("akasha: {error}");
+        3
+    })
+}
+
+pub(crate) fn discover_agent_home(
+    client: AgentClient,
+    explicit: Option<PathBuf>,
+) -> Result<PathBuf, String> {
     if let Some(home) = explicit {
         return Ok(home);
     }
@@ -666,25 +676,22 @@ fn resolve_agent_home(client: AgentClient, explicit: Option<PathBuf>) -> Result<
         && let Some(home) = env::var_os("CODEX_HOME")
     {
         if home.is_empty() {
-            eprintln!("akasha: CODEX_HOME is set but empty");
-            return Err(3);
+            return Err("CODEX_HOME is set but empty".into());
         }
         return Ok(PathBuf::from(home));
     }
     let Some(home) = env::var_os("HOME") else {
-        eprintln!(
-            "akasha: no agent home was provided and HOME{} is not set",
+        return Err(format!(
+            "no agent home was provided and HOME{} is not set",
             if client == AgentClient::Codex {
                 " or CODEX_HOME"
             } else {
                 ""
             }
-        );
-        return Err(3);
+        ));
     };
     if home.is_empty() {
-        eprintln!("akasha: HOME is set but empty");
-        return Err(3);
+        return Err("HOME is set but empty".into());
     }
     Ok(PathBuf::from(home).join(match client {
         AgentClient::Codex => ".codex",

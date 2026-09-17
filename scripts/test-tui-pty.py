@@ -113,7 +113,7 @@ def check_screen_observer():
     assert screen.text() == ''
 
 
-def check(binary, root, term, full=False):
+def check(binary, root, agent_home, term, full=False):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 110, 0, 0))
     before = termios.tcgetattr(slave)
@@ -263,6 +263,11 @@ def check(binary, root, term, full=False):
             wait_for(b'READING')
             assert created.read_bytes() == task_before_discard + task_addition
             assert roadmap.read_bytes() == roadmap_before_discard + roadmap_addition
+            assert not list(agent_home.iterdir())
+            command(f'integrations codex {agent_home}')
+            wait_for(b'INTEGRATIONS')
+            wait_for(b'No files were changed')
+            assert not list(agent_home.iterdir()), 'read-only integration inspection must not write client-home files'
             # Resizing must not lose state or crash. Restore usable dimensions afterward.
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 5, 20, 0, 0))
             drain(0.2)
@@ -283,7 +288,7 @@ def check(binary, root, term, full=False):
         assert b'\x1b[?1006l' in output
         assert termios.tcgetattr(slave) == before, 'raw terminal attributes must be restored exactly'
         print(f'PASS TERM={term}: startup, input, clean exit, terminal restoration' +
-              ('; animation, Unicode paste, dirty guard, checked save, search, create/lifecycle forms, resize' if full else '; ASCII, no-color, reduced motion'))
+              ('; animation, Unicode paste, dirty guard, checked save, search, create/lifecycle forms, read-only integrations, resize' if full else '; ASCII, no-color, reduced motion'))
     finally:
         if process.poll() is None:
             process.terminate()
@@ -304,8 +309,10 @@ def main():
         for template in (BASE / 'tests/fixtures/tui').glob('*.md'):
             shutil.copyfile(template, root / 'Projects/example/templates' / template.name)
         (temp / 'repository').mkdir()
+        agent_home = temp / 'codex-home'
+        agent_home.mkdir()
         for term in ['xterm-256color', 'xterm', 'linux']:
-            check(args.binary.resolve(), root, term, full=term == 'xterm-256color')
+            check(args.binary.resolve(), root, agent_home, term, full=term == 'xterm-256color')
         subprocess.run([str(args.binary.resolve()), '--root', str(root), '--project', 'example', 'validate'], check=True, stdout=subprocess.DEVNULL)
 
 if __name__ == '__main__':

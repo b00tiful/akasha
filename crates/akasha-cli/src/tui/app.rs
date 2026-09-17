@@ -4,13 +4,16 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use super::editor::{Editor, safe_text};
+use crate::discover_agent_home;
+use crate::render::{agent_wiring_action_name, session_hook_action_name};
 use akasha_core::{
-    LibraryBook, LibraryDocument, LibraryProjection, LibraryScope, LibrarySearchResult,
-    MutableNoteCreationForm, MutableNoteCreationResult, NoteClass, RecordUpdateResult,
-    ResolveRequest, TaskLifecycleForm, assemble_context, build_library_projection,
-    create_mutable_note, load_library_document, prepare_mutable_note_creation,
-    prepare_task_lifecycle, recover_pending_note_edit, render_context_markdown,
-    replace_library_document, search_library, update_record, validate_project,
+    AgentClient, AgentWiringPlan, LibraryBook, LibraryDocument, LibraryProjection, LibraryScope,
+    LibrarySearchResult, MutableNoteCreationForm, MutableNoteCreationResult, NoteClass,
+    RecordUpdateResult, ResolveRequest, SessionHookWiringPlan, TaskLifecycleForm, assemble_context,
+    build_library_projection, create_mutable_note, load_library_document, prepare_agent_wiring,
+    prepare_mutable_note_creation, prepare_session_hook_wiring, prepare_task_lifecycle,
+    recover_pending_note_edit, render_context_markdown, replace_library_document, search_library,
+    update_record, validate_project,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -99,6 +102,11 @@ const COMMANDS: &[Completion] = &[
         description: "Check the selected project's memory",
     },
     Completion {
+        command: "integrations",
+        argument: "CLIENT [HOME]",
+        description: "Inspect read-only Codex or Claude wiring plans",
+    },
+    Completion {
         command: "edit",
         argument: "",
         description: "Edit the current note's Markdown source",
@@ -156,7 +164,7 @@ fn prompt_area(text: String) -> TextArea<'static> {
     prompt_area_with_placeholder(text, PROMPT_PLACEHOLDER)
 }
 
-pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       update the open task and roadmap together\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nvalidate        validate selected project\nrefresh         reload data (or press F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and task lifecycle forms show exact configured templates and\nmaintained projections. Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. Administration remains a later wave.\n\nOpen from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
+pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       update the open task and roadmap together\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nrefresh         reload data (or press F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and task lifecycle forms show exact configured templates and\nmaintained projections. Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. Integration inspection never writes;\napply/remove remain explicit named CLI operations.\n\nOpen from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Focus {
@@ -264,6 +272,7 @@ pub(super) enum Job {
     ),
     PrepareTask(ResolveRequest, String),
     UpdateTask(ResolveRequest, String, String, String, String),
+    InspectIntegrations(ResolveRequest, AgentClient, PathBuf),
 }
 pub(super) enum Response {
     Loaded(ResolveRequest, Box<LibraryProjection>),
@@ -339,7 +348,72 @@ fn execute_job(job: Job) -> WorkResult {
                 .map(Response::TaskUpdated)
                 .map_err(|e| err(&e))
         }
+        Job::InspectIntegrations(mut request, client, home) => {
+            request.project_override = None;
+            let instructions = prepare_agent_wiring(&request, client, &home);
+            let hook = prepare_session_hook_wiring(&request, client, &home);
+            Ok(Response::Text(
+                format!("INTEGRATIONS · {}", client.as_str().to_uppercase()),
+                render_integration_inspection(client, &home, instructions, hook),
+            ))
+        }
     }
+}
+
+fn render_integration_inspection(
+    client: AgentClient,
+    home: &std::path::Path,
+    instructions: Result<AgentWiringPlan, akasha_core::AgentWiringError>,
+    hook: Result<SessionHookWiringPlan, akasha_core::SessionHookWiringError>,
+) -> String {
+    let mut body = format!(
+        "READ-ONLY INSPECTION\nNo files were changed. Apply and removal remain explicit named CLI operations.\n\nClient: {}\nHome: {}\n\nINSTRUCTION POINTER\n",
+        client.as_str(),
+        home.display()
+    );
+    match instructions {
+        Ok(plan) => body.push_str(&format!(
+            "Status: prepared\nTarget: {}\nAction: {}\nCurrent SHA-256: {}\nResult SHA-256: {}\nPlan ID: {}\n",
+            plan.target.display(),
+            agent_wiring_action_name(plan.action),
+            plan.current_sha256.as_deref().unwrap_or("absent"),
+            plan.result_sha256.as_deref().unwrap_or("absent"),
+            plan.plan_id
+        )),
+        Err(error) => body.push_str(&format!("Status: unavailable\nReason: {error}\n")),
+    }
+    body.push_str("\nSESSIONSTART HOOK\n");
+    match hook {
+        Ok(plan) => body.push_str(&format!(
+            "Status: prepared\nTarget: {}\nAction: {}\nCurrent SHA-256: {}\nResult SHA-256: {}\nPlan ID: {}\n",
+            plan.target.display(),
+            session_hook_action_name(plan.action),
+            plan.current_sha256.as_deref().unwrap_or("absent"),
+            plan.result_sha256.as_deref().unwrap_or("absent"),
+            plan.plan_id
+        )),
+        Err(error) => body.push_str(&format!("Status: unavailable\nReason: {error}\n")),
+    }
+    body
+}
+
+fn integration_arguments(argument: &str) -> Result<(AgentClient, PathBuf), String> {
+    let (client, explicit_home) = argument
+        .split_once(char::is_whitespace)
+        .map_or((argument, ""), |(client, home)| (client, home.trim()));
+    let client = match client {
+        "codex" => AgentClient::Codex,
+        "claude" => AgentClient::Claude,
+        _ => {
+            return Err(
+                "Usage: /integrations <codex|claude> [HOME]. Inspection is read-only.".into(),
+            );
+        }
+    };
+    let explicit_home = (!explicit_home.is_empty()).then(|| PathBuf::from(explicit_home));
+    discover_agent_home(client, explicit_home)
+        .map(|home| (client, home))
+        .map_err(|error| format!("{error}; pass an explicit HOME path."))
 }
 
 #[derive(Clone, Copy)]
@@ -1232,6 +1306,12 @@ impl App {
             }
             "context" => self.submit(Job::Context(self.request.clone())),
             "validate" => self.submit(Job::Validate(self.request.clone())),
+            "integrations" => match integration_arguments(argument) {
+                Ok((client, home)) => {
+                    self.submit(Job::InspectIntegrations(self.request.clone(), client, home))
+                }
+                Err(error) => self.message(&error),
+            },
             "refresh" => self.load(),
             "help" => {
                 self.body_title = "HELP".into();
@@ -1953,6 +2033,62 @@ mod tests {
         assert!(!fixture.app.quit);
         assert_eq!(fixture.app.prompt.lines().len(), 1);
         assert!(!fixture.app.prompt.lines()[0].contains('\x1b'));
+    }
+
+    #[test]
+    fn integration_inspection_reports_both_exact_plans_without_writes() {
+        let mut fixture = Fixture::new();
+        let home = fixture.temp.join("client home");
+        fs::create_dir_all(&home).unwrap();
+        let instructions = b"human instructions\n";
+        let hooks = b"{}\n";
+        fs::write(home.join("AGENTS.md"), instructions).unwrap();
+        fs::write(home.join("hooks.json"), hooks).unwrap();
+
+        fixture
+            .app
+            .command(&format!("integrations codex {}", home.display()));
+        fixture.finish();
+
+        assert_eq!(fixture.app.body_title, "INTEGRATIONS · CODEX");
+        assert!(fixture.app.body.contains("READ-ONLY INSPECTION"));
+        assert!(fixture.app.body.contains("INSTRUCTION POINTER"));
+        assert!(fixture.app.body.contains("Action: append"));
+        assert!(fixture.app.body.contains("SESSIONSTART HOOK"));
+        assert!(fixture.app.body.contains("Action: add-hooks"));
+        assert_eq!(fs::read(home.join("AGENTS.md")).unwrap(), instructions);
+        assert_eq!(fs::read(home.join("hooks.json")).unwrap(), hooks);
+        assert_eq!(fs::read_dir(&home).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn integration_inspection_keeps_partial_conflicts_visible_and_validates_client() {
+        let mut fixture = Fixture::new();
+        let home = fixture.temp.join("codex-home");
+        fs::create_dir_all(&home).unwrap();
+        fs::write(home.join("AGENTS.override.md"), "shadowing instructions\n").unwrap();
+
+        fixture
+            .app
+            .command(&format!("integrations codex {}", home.display()));
+        fixture.finish();
+
+        assert!(fixture.app.body.contains("Status: unavailable"));
+        assert!(fixture.app.body.contains("AGENTS.override.md"));
+        assert!(fixture.app.body.contains("SESSIONSTART HOOK"));
+        assert!(fixture.app.body.contains("Status: prepared"));
+        assert!(!home.join("hooks.json").exists());
+
+        fixture.app.command("integrations vscode");
+        assert!(!fixture.app.busy);
+        assert!(
+            fixture
+                .app
+                .messages
+                .back()
+                .unwrap()
+                .contains("codex|claude")
+        );
     }
 
     #[test]
