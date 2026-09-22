@@ -37,6 +37,13 @@ impl AtomicCreateError {
 impl fmt::Display for AtomicCreateError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Conflict { path, source } if source.kind() == io::ErrorKind::WouldBlock => {
+                write!(
+                    formatter,
+                    "Akasha project is busy at {}; another writer holds the lock, retry after it finishes",
+                    path.display()
+                )
+            }
             Self::Conflict { path, .. } => {
                 write!(
                     formatter,
@@ -400,7 +407,15 @@ fn create_staging_file(destination: &Path) -> Result<(File, StagingFile), Atomic
         staging_name.push(format!(".akasha-{}-{id}.tmp", std::process::id()));
         let path = parent.join(staging_name);
 
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+
+        match options.open(&path) {
             Ok(file) => return Ok((file, StagingFile { path })),
             Err(source) if source.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(source) => {
@@ -437,6 +452,9 @@ impl Drop for StagingFile {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
     #[test]
     fn staging_failure_never_publishes_partial_content() {
         let root = std::env::temp_dir().join(format!(
@@ -460,5 +478,78 @@ mod tests {
         assert!(!destination.exists());
         assert_eq!(fs::read_dir(&root).expect("read test directory").count(), 0);
         fs::remove_dir(&root).expect("remove test directory");
+    }
+
+    #[test]
+    fn lock_contention_reports_busy_and_retry() {
+        let root = std::env::temp_dir().join(format!(
+            "akasha-lock-contention-{}-{}",
+            std::process::id(),
+            NEXT_STAGING_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).expect("create test directory");
+        let first = ProjectWriteLock::acquire(&root).expect("acquire first project lock");
+
+        let error = match ProjectWriteLock::acquire(&root) {
+            Ok(_) => panic!("second writer must be refused"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(message.contains("project is busy"));
+        assert!(message.contains("retry"));
+        assert!(!message.contains("refusing to overwrite"));
+
+        drop(first);
+        fs::remove_file(root.join(PROJECT_WRITE_LOCK_FILE)).expect("remove lock file");
+        fs::remove_dir(&root).expect("remove test directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staging_is_private_before_content_and_replacement_preserves_mode() {
+        let root = std::env::temp_dir().join(format!(
+            "akasha-private-staging-{}-{}",
+            std::process::id(),
+            NEXT_STAGING_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).expect("create test directory");
+        let created = root.join("created.md");
+
+        create_file_atomically_with(&created, |file| {
+            assert_eq!(file.metadata()?.permissions().mode() & 0o777, 0o600);
+            file.write_all(b"private")
+        })
+        .expect("publish privately staged file");
+        assert_eq!(
+            fs::metadata(&created)
+                .expect("inspect created file")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+
+        let replaced = root.join("replaced.md");
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o640)
+            .open(&replaced)
+            .and_then(|mut file| file.write_all(b"before"))
+            .expect("seed replacement target");
+        replace_file_if_unchanged(&replaced, b"before", b"after")
+            .expect("replace file with original mode");
+        assert_eq!(
+            fs::metadata(&replaced)
+                .expect("inspect replaced file")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o640
+        );
+
+        fs::remove_file(created).expect("remove created file");
+        fs::remove_file(replaced).expect("remove replaced file");
+        fs::remove_dir(root).expect("remove test directory");
     }
 }

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
+use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -359,26 +360,17 @@ fn run(cli: Cli) -> Result<(), u8> {
                     eprintln!("akasha: {error}");
                     error.exit_code()
                 })?;
-            render::render_search(&result, output).map_err(|error| {
-                eprintln!("akasha: failed to render command output: {error}");
-                6
-            })?;
+            finish_output(render::render_search(&result, output))?;
         }
         Command::Init { slug } => {
             let request = InitRequest::from_process(root, slug).map_err(report_resolution)?;
             let result = initialize_project(&request).map_err(report_init)?;
-            render_init(&result, output).map_err(|error| {
-                eprintln!("akasha: failed to render command output: {error}");
-                6
-            })?;
+            finish_output(render_init(&result, output))?;
         }
         Command::Link { slug, repo } => {
             let request = LinkRequest::from_process(root, slug, repo).map_err(report_resolution)?;
             let result = link_project(&request).map_err(report_link)?;
-            render_link(&result, output).map_err(|error| {
-                eprintln!("akasha: failed to render command output: {error}");
-                6
-            })?;
+            finish_output(render_link(&result, output))?;
         }
         Command::CreateEvent {
             note_type,
@@ -389,20 +381,14 @@ fn run(cli: Cli) -> Result<(), u8> {
             let fields = parse_template_fields(field)?;
             let result = create_event(&request, &note_type, &path, &fields)
                 .map_err(report_event_creation)?;
-            render_event_creation(&result, output).map_err(|error| {
-                eprintln!("akasha: failed to render command output: {error}");
-                6
-            })?;
+            finish_output(render_event_creation(&result, output))?;
         }
         Command::CaptureHandoff { path, field } => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
             let fields = parse_template_fields(field)?;
             let result =
                 capture_handoff(&request, &path, &fields).map_err(report_event_creation)?;
-            render_event_creation(&result, output).map_err(|error| {
-                eprintln!("akasha: failed to render command output: {error}");
-                6
-            })?;
+            finish_output(render_event_creation(&result, output))?;
         }
         Command::CreateNote {
             note_type,
@@ -416,10 +402,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             let result =
                 create_mutable_note(&request, &note_type, &path, &fields, &projection_source)
                     .map_err(report_mutable_note_creation)?;
-            render_mutable_note_creation(&result, output).map_err(|error| {
-                eprintln!("akasha: failed to render command output: {error}");
-                6
-            })?;
+            finish_output(render_mutable_note_creation(&result, output))?;
         }
         Command::UpdateRecord {
             id,
@@ -439,10 +422,7 @@ fn run(cli: Cli) -> Result<(), u8> {
                 &roadmap_source,
             )
             .map_err(report_note_edit)?;
-            render::render_record_update(&result, output).map_err(|error| {
-                eprintln!("akasha: failed to render command output: {error}");
-                6
-            })?;
+            finish_output(render::render_record_update(&result, output))?;
         }
         Command::UpdateEntity {
             id,
@@ -462,10 +442,7 @@ fn run(cli: Cli) -> Result<(), u8> {
                 &index_source,
             )
             .map_err(report_note_edit)?;
-            render::render_entity_update(&result, output).map_err(|error| {
-                eprintln!("akasha: failed to render command output: {error}");
-                6
-            })?;
+            finish_output(render::render_entity_update(&result, output))?;
         }
         Command::PrepareAgentWiring {
             client,
@@ -481,10 +458,7 @@ fn run(cli: Cli) -> Result<(), u8> {
                 prepare_agent_wiring(&request, client, &home)
             }
             .map_err(report_agent_wiring)?;
-            render_agent_wiring_plan(&plan, output).map_err(|error| {
-                eprintln!("akasha: failed to render command output: {error}");
-                6
-            })?;
+            finish_output(render_agent_wiring_plan(&plan, output))?;
         }
         Command::ApplyAgentWiring {
             client,
@@ -496,10 +470,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             let request = ResolveRequest::from_process(root, None).map_err(report_resolution)?;
             let result = apply_agent_wiring(&request, client, &home, &plan_id)
                 .map_err(report_agent_wiring)?;
-            render_agent_wiring_result(&result, output).map_err(|error| {
-                eprintln!("akasha: failed to render command output: {error}");
-                6
-            })?;
+            finish_output(render_agent_wiring_result(&result, output))?;
         }
         Command::RemoveAgentWiring {
             client,
@@ -511,10 +482,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             let request = ResolveRequest::from_process(root, None).map_err(report_resolution)?;
             let result = remove_agent_wiring(&request, client, &home, &plan_id)
                 .map_err(report_agent_wiring)?;
-            render_agent_wiring_result(&result, output).map_err(|error| {
-                eprintln!("akasha: failed to render command output: {error}");
-                6
-            })?;
+            finish_output(render_agent_wiring_result(&result, output))?;
         }
         Command::PrepareSessionHook {
             client,
@@ -530,10 +498,7 @@ fn run(cli: Cli) -> Result<(), u8> {
                 prepare_session_hook_wiring(&request, client, &home)
             }
             .map_err(report_session_hook_wiring)?;
-            render_session_hook_wiring_plan(&plan, output).map_err(|error| {
-                eprintln!("akasha: failed to render command output: {error}");
-                6
-            })?;
+            finish_output(render_session_hook_wiring_plan(&plan, output))?;
         }
         Command::ApplySessionHook {
             client,
@@ -545,10 +510,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             let request = ResolveRequest::from_process(root, None).map_err(report_resolution)?;
             let result = apply_session_hook_wiring(&request, client, &home, &plan_id)
                 .map_err(report_session_hook_wiring)?;
-            render_session_hook_wiring_result(&result, output).map_err(|error| {
-                eprintln!("akasha: failed to render command output: {error}");
-                6
-            })?;
+            finish_output(render_session_hook_wiring_result(&result, output))?;
         }
         Command::RemoveSessionHook {
             client,
@@ -560,34 +522,22 @@ fn run(cli: Cli) -> Result<(), u8> {
             let request = ResolveRequest::from_process(root, None).map_err(report_resolution)?;
             let result = remove_session_hook_wiring(&request, client, &home, &plan_id)
                 .map_err(report_session_hook_wiring)?;
-            render_session_hook_wiring_result(&result, output).map_err(|error| {
-                eprintln!("akasha: failed to render command output: {error}");
-                6
-            })?;
+            finish_output(render_session_hook_wiring_result(&result, output))?;
         }
         Command::Resolve => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
             let resolved = resolve_project(&request).map_err(report_resolution)?;
-            render_resolution(&resolved, output).map_err(|error| {
-                eprintln!("akasha: failed to render command output: {error}");
-                6
-            })?;
+            finish_output(render_resolution(&resolved, output))?;
         }
         Command::Validate => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
             let report = validate_project(&request).map_err(report_validation)?;
-            render_validation(&report, output).map_err(|error| {
-                eprintln!("akasha: failed to render command output: {error}");
-                6
-            })?;
+            finish_output(render_validation(&report, output))?;
         }
         Command::Context => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
             let context = assemble_context(&request).map_err(report_context)?;
-            render_context(&context, output).map_err(|error| {
-                eprintln!("akasha: failed to render command output: {error}");
-                6
-            })?;
+            finish_output(render_context(&context, output))?;
         }
         Command::Breadcrumb { optional } => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
@@ -597,10 +547,7 @@ fn run(cli: Cli) -> Result<(), u8> {
                 Some(assemble_session_breadcrumb(&request).map_err(report_context)?)
             };
             if let Some(breadcrumb) = breadcrumb {
-                render_breadcrumb(&breadcrumb, output).map_err(|error| {
-                    eprintln!("akasha: failed to render command output: {error}");
-                    6
-                })?;
+                finish_output(render_breadcrumb(&breadcrumb, output))?;
             }
         }
     }
@@ -611,6 +558,17 @@ fn run(cli: Cli) -> Result<(), u8> {
 fn report_resolution(error: akasha_core::ResolveError) -> u8 {
     eprintln!("akasha: {error}");
     error.exit_code()
+}
+
+fn finish_output(result: io::Result<()>) -> Result<(), u8> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => {
+            eprintln!("akasha: failed to render command output: {error}");
+            Err(6)
+        }
+    }
 }
 
 fn report_validation(error: akasha_core::ProjectValidationError) -> u8 {

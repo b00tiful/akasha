@@ -65,6 +65,7 @@ fn context_json_contains_the_equivalent_selected_entries() {
     assert_eq!(value["entries"][0]["section"], "open-task");
     assert_eq!(value["entries"][5]["section"], "recent-event");
     assert_eq!(value["truncated"], false);
+    assert_eq!(value["omissions"].as_array().map(Vec::len), Some(0));
     assert!(value["rendered_chars"].as_u64().expect("character count") <= 16_000);
 }
 

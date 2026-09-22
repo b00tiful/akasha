@@ -25,9 +25,10 @@ pub use agent_wiring::{
     prepare_agent_wiring, prepare_agent_wiring_removal, remove_agent_wiring,
 };
 pub use context::{
-    ContextBundle, ContextEntry, ContextError, ContextSection, DEFAULT_CONTEXT_MAX_CHARS,
-    SessionBreadcrumb, assemble_context, assemble_session_breadcrumb,
-    assemble_session_breadcrumb_if_linked, render_context_markdown, render_session_breadcrumb,
+    ContextBundle, ContextEntry, ContextError, ContextOmission, ContextOmissionReason,
+    ContextSection, DEFAULT_CONTEXT_MAX_CHARS, SessionBreadcrumb, assemble_context,
+    assemble_session_breadcrumb, assemble_session_breadcrumb_if_linked, render_context_markdown,
+    render_session_breadcrumb,
 };
 pub use event::{EventCreationError, EventCreationResult, capture_handoff, create_event};
 pub use init::{InitError, InitRecovery, InitRequest, InitResult, initialize_project};

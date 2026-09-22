@@ -143,6 +143,33 @@ fn terminal_plain_output_is_styled_unless_color_is_disabled() {
     assert_uncolored(&json.stdout);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn closed_stdout_exits_cleanly_without_panic_output() {
+    let binary = env!("CARGO_BIN_EXE_akasha");
+    let root = fixtures().join("valid-root");
+    let output = Command::new("bash")
+        .args([
+            "-c",
+            r#"{ sleep 0.05; "$1" --root "$2" --project example validate; } | false
+statuses=("${PIPESTATUS[@]}")
+test "${statuses[0]}" -eq 0"#,
+            "akasha-closed-stdout",
+            binary,
+            root.to_str().expect("fixture path is UTF-8"),
+        ])
+        .output()
+        .expect("run akasha with a closed stdout pipe");
+
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        output.stderr.is_empty(),
+        "closed stdout emitted diagnostics: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn tui_requires_interactive_streams_and_search_is_bounded_plain_or_json() {
     let binary = env!("CARGO_BIN_EXE_akasha");

@@ -1,6 +1,6 @@
 use std::env;
-use std::fmt::Display;
-use std::io::{self, IsTerminal};
+use std::fmt::{Display, Write as _};
+use std::io::{self, IsTerminal, Write as _};
 
 use akasha_core::{
     AgentWiringAction, AgentWiringOperation, AgentWiringPlan, AgentWiringRecovery,
@@ -33,11 +33,13 @@ impl OutputMode {
 pub(crate) fn render_search(
     result: &akasha_core::LibrarySearchResult,
     output: OutputMode,
-) -> Result<(), serde_json::Error> {
+) -> io::Result<()> {
+    let mut rendered = String::new();
     if output.json {
-        println!("{}", serde_json::to_string_pretty(result)?);
+        rendered = json_line(serde_json::to_string_pretty(result))?;
     } else {
-        println!(
+        writeln!(
+            rendered,
             "{} matches; showing {}{}",
             result.total_matches,
             result.hits.len(),
@@ -46,42 +48,67 @@ pub(crate) fn render_search(
             } else {
                 ""
             }
-        );
+        )
+        .expect("writing to a string cannot fail");
         for hit in &result.hits {
             let id: String = hit
                 .id
                 .chars()
                 .map(|c| if c.is_control() { ' ' } else { c })
                 .collect();
-            println!(
+            writeln!(
+                rendered,
                 "{}{}\n  {}",
                 id,
                 hit.line.map(|line| format!(":{line}")).unwrap_or_default(),
                 hit.snippet
-            );
+            )
+            .expect("writing to a string cannot fail");
         }
     }
-    Ok(())
+    write_stdout(&rendered)
 }
 
-pub(crate) fn render_init(
-    result: &InitResult,
-    output: OutputMode,
-) -> Result<(), serde_json::Error> {
+pub(crate) fn render_init(result: &InitResult, output: OutputMode) -> io::Result<()> {
+    let mut rendered = String::new();
     if output.json {
-        println!("{}", serde_json::to_string_pretty(result)?);
+        rendered = json_line(serde_json::to_string_pretty(result))?;
     } else {
-        print_status("initialized", &result.project, output);
-        print_field("repository", result.repository_dir.display(), output);
-        print_field("project directory", result.project_dir.display(), output);
-        print_field("project state", result.state.display(), output);
-        print_field("templates copied", result.template_files, output);
-        print_field("registry", result.registry.display(), output);
-        print_field("pointer", result.pointer.display(), output);
-        print_field("recovery", init_recovery_name(result.recovery), output);
+        print_status(&mut rendered, "initialized", &result.project, output);
+        print_field(
+            &mut rendered,
+            "repository",
+            result.repository_dir.display(),
+            output,
+        );
+        print_field(
+            &mut rendered,
+            "project directory",
+            result.project_dir.display(),
+            output,
+        );
+        print_field(
+            &mut rendered,
+            "project state",
+            result.state.display(),
+            output,
+        );
+        print_field(
+            &mut rendered,
+            "templates copied",
+            result.template_files,
+            output,
+        );
+        print_field(&mut rendered, "registry", result.registry.display(), output);
+        print_field(&mut rendered, "pointer", result.pointer.display(), output);
+        print_field(
+            &mut rendered,
+            "recovery",
+            init_recovery_name(result.recovery),
+            output,
+        );
     }
-
-    Ok(())
+    write_stdout(&rendered)
 }
 
 fn init_recovery_name(recovery: InitRecovery) -> &'static str {
@@ -93,75 +120,109 @@ fn init_recovery_name(recovery: InitRecovery) -> &'static str {
     }
 }
 
-pub(crate) fn render_link(
-    result: &LinkResult,
-    output: OutputMode,
-) -> Result<(), serde_json::Error> {
+pub(crate) fn render_link(result: &LinkResult, output: OutputMode) -> io::Result<()> {
+    let mut rendered = String::new();
     if output.json {
-        println!("{}", serde_json::to_string_pretty(result)?);
+        rendered = json_line(serde_json::to_string_pretty(result))?;
     } else {
-        print_status("linked", &result.project, output);
-        print_field("repository", result.repository_dir.display(), output);
-        print_field("pointer", result.pointer.display(), output);
-        print_field("project directory", result.project_dir.display(), output);
+        print_status(&mut rendered, "linked", &result.project, output);
+        print_field(
+            &mut rendered,
+            "repository",
+            result.repository_dir.display(),
+            output,
+        );
+        print_field(&mut rendered, "pointer", result.pointer.display(), output);
+        print_field(
+            &mut rendered,
+            "project directory",
+            result.project_dir.display(),
+            output,
+        );
     }
-
-    Ok(())
+    write_stdout(&rendered)
 }
 
 pub(crate) fn render_agent_wiring_plan(
     plan: &AgentWiringPlan,
     output: OutputMode,
-) -> Result<(), serde_json::Error> {
+) -> io::Result<()> {
+    let mut rendered = String::new();
     if output.json {
-        println!("{}", serde_json::to_string_pretty(plan)?);
+        rendered = json_line(serde_json::to_string_pretty(plan))?;
     } else {
-        print_status("prepared agent wiring", plan.client.as_str(), output);
-        print_field("data root", plan.root.display(), output);
-        print_field("instruction source", plan.source.display(), output);
-        print_field("source sha256", &plan.source_sha256, output);
-        print_field("target", plan.target.display(), output);
+        print_status(
+            &mut rendered,
+            "prepared agent wiring",
+            plan.client.as_str(),
+            output,
+        );
+        print_field(&mut rendered, "data root", plan.root.display(), output);
         print_field(
+            &mut rendered,
+            "instruction source",
+            plan.source.display(),
+            output,
+        );
+        print_field(&mut rendered, "source sha256", &plan.source_sha256, output);
+        print_field(&mut rendered, "target", plan.target.display(), output);
+        print_field(
+            &mut rendered,
             "operation",
             agent_wiring_operation_name(plan.operation),
             output,
         );
-        print_field("action", agent_wiring_action_name(plan.action), output);
         print_field(
+            &mut rendered,
+            "action",
+            agent_wiring_action_name(plan.action),
+            output,
+        );
+        print_field(
+            &mut rendered,
             "current sha256",
             plan.current_sha256.as_deref().unwrap_or("absent"),
             output,
         );
         print_field(
+            &mut rendered,
             "result sha256",
             plan.result_sha256.as_deref().unwrap_or("absent"),
             output,
         );
-        print_field("plan id", &plan.plan_id, output);
+        print_field(&mut rendered, "plan id", &plan.plan_id, output);
         print_field(
+            &mut rendered,
             "patch range",
             format_args!("{}..{}", plan.patch.start, plan.patch.end),
             output,
         );
-        print_field("replacement bytes", plan.patch.replacement.len(), output);
+        print_field(
+            &mut rendered,
+            "replacement bytes",
+            plan.patch.replacement.len(),
+            output,
+        );
         if plan.patch.replacement.is_empty() {
-            print_field("replacement", "none", output);
+            print_field(&mut rendered, "replacement", "none", output);
         } else {
-            print_field("replacement", "", output);
-            print!("{}", plan.patch.replacement);
+            print_field(&mut rendered, "replacement", "", output);
+            rendered.push_str(&plan.patch.replacement);
         }
     }
-    Ok(())
+    write_stdout(&rendered)
 }
 
 pub(crate) fn render_agent_wiring_result(
     result: &AgentWiringResult,
     output: OutputMode,
-) -> Result<(), serde_json::Error> {
+) -> io::Result<()> {
+    let mut rendered = String::new();
     if output.json {
-        println!("{}", serde_json::to_string_pretty(result)?);
+        rendered = json_line(serde_json::to_string_pretty(result))?;
     } else {
         print_status(
+            &mut rendered,
             match result.operation {
                 AgentWiringOperation::Apply => "applied agent wiring",
                 AgentWiringOperation::Remove => "removed agent wiring",
@@ -169,70 +230,98 @@ pub(crate) fn render_agent_wiring_result(
             result.client.as_str(),
             output,
         );
-        print_field("target", result.target.display(), output);
-        print_field("action", agent_wiring_action_name(result.action), output);
-        print_field("changed", result.changed, output);
-        print_field("plan id", &result.plan_id, output);
+        print_field(&mut rendered, "target", result.target.display(), output);
         print_field(
+            &mut rendered,
+            "action",
+            agent_wiring_action_name(result.action),
+            output,
+        );
+        print_field(&mut rendered, "changed", result.changed, output);
+        print_field(&mut rendered, "plan id", &result.plan_id, output);
+        print_field(
+            &mut rendered,
             "recovery",
             agent_wiring_recovery_name(result.recovery),
             output,
         );
     }
-    Ok(())
+    write_stdout(&rendered)
 }
 
 pub(crate) fn render_session_hook_wiring_plan(
     plan: &SessionHookWiringPlan,
     output: OutputMode,
-) -> Result<(), serde_json::Error> {
+) -> io::Result<()> {
+    let mut rendered = String::new();
     if output.json {
-        println!("{}", serde_json::to_string_pretty(plan)?);
+        rendered = json_line(serde_json::to_string_pretty(plan))?;
     } else {
-        print_status("prepared session hook", plan.client.as_str(), output);
-        print_field("data root", plan.root.display(), output);
-        print_field("target", plan.target.display(), output);
+        print_status(
+            &mut rendered,
+            "prepared session hook",
+            plan.client.as_str(),
+            output,
+        );
+        print_field(&mut rendered, "data root", plan.root.display(), output);
+        print_field(&mut rendered, "target", plan.target.display(), output);
         print_field(
+            &mut rendered,
             "operation",
             session_hook_operation_name(plan.operation),
             output,
         );
-        print_field("action", session_hook_action_name(plan.action), output);
         print_field(
+            &mut rendered,
+            "action",
+            session_hook_action_name(plan.action),
+            output,
+        );
+        print_field(
+            &mut rendered,
             "current sha256",
             plan.current_sha256.as_deref().unwrap_or("absent"),
             output,
         );
         print_field(
+            &mut rendered,
             "result sha256",
             plan.result_sha256.as_deref().unwrap_or("absent"),
             output,
         );
-        print_field("plan id", &plan.plan_id, output);
+        print_field(&mut rendered, "plan id", &plan.plan_id, output);
         print_field(
+            &mut rendered,
             "patch range",
             format_args!("{}..{}", plan.patch.start, plan.patch.end),
             output,
         );
-        print_field("replacement bytes", plan.patch.replacement.len(), output);
+        print_field(
+            &mut rendered,
+            "replacement bytes",
+            plan.patch.replacement.len(),
+            output,
+        );
         if plan.patch.replacement.is_empty() {
-            print_field("replacement", "none", output);
+            print_field(&mut rendered, "replacement", "none", output);
         } else {
-            print_field("replacement", "", output);
-            print!("{}", plan.patch.replacement);
+            print_field(&mut rendered, "replacement", "", output);
+            rendered.push_str(&plan.patch.replacement);
         }
     }
-    Ok(())
+    write_stdout(&rendered)
 }
 
 pub(crate) fn render_session_hook_wiring_result(
     result: &SessionHookWiringResult,
     output: OutputMode,
-) -> Result<(), serde_json::Error> {
+) -> io::Result<()> {
+    let mut rendered = String::new();
     if output.json {
-        println!("{}", serde_json::to_string_pretty(result)?);
+        rendered = json_line(serde_json::to_string_pretty(result))?;
     } else {
         print_status(
+            &mut rendered,
             match result.operation {
                 SessionHookWiringOperation::Apply => "applied session hook",
                 SessionHookWiringOperation::Remove => "removed session hook",
@@ -240,17 +329,23 @@ pub(crate) fn render_session_hook_wiring_result(
             result.client.as_str(),
             output,
         );
-        print_field("target", result.target.display(), output);
-        print_field("action", session_hook_action_name(result.action), output);
-        print_field("changed", result.changed, output);
-        print_field("plan id", &result.plan_id, output);
+        print_field(&mut rendered, "target", result.target.display(), output);
         print_field(
+            &mut rendered,
+            "action",
+            session_hook_action_name(result.action),
+            output,
+        );
+        print_field(&mut rendered, "changed", result.changed, output);
+        print_field(&mut rendered, "plan id", &result.plan_id, output);
+        print_field(
+            &mut rendered,
             "recovery",
             session_hook_recovery_name(result.recovery),
             output,
         );
     }
-    Ok(())
+    write_stdout(&rendered)
 }
 
 fn session_hook_operation_name(operation: SessionHookWiringOperation) -> &'static str {
@@ -285,46 +380,71 @@ fn session_hook_recovery_name(recovery: SessionHookWiringRecovery) -> &'static s
 pub(crate) fn render_event_creation(
     result: &EventCreationResult,
     output: OutputMode,
-) -> Result<(), serde_json::Error> {
+) -> io::Result<()> {
+    let mut rendered = String::new();
     if output.json {
-        println!("{}", serde_json::to_string_pretty(result)?);
+        rendered = json_line(serde_json::to_string_pretty(result))?;
     } else {
-        print_status("created event", &result.id, output);
-        print_field("project", &result.project, output);
-        print_field("type", &result.note_type, output);
-        print_field("path", result.path.display(), output);
-        print_field("template", result.template.display(), output);
+        print_status(&mut rendered, "created event", &result.id, output);
+        print_field(&mut rendered, "project", &result.project, output);
+        print_field(&mut rendered, "type", &result.note_type, output);
+        print_field(&mut rendered, "path", result.path.display(), output);
+        print_field(&mut rendered, "template", result.template.display(), output);
         print_field(
+            &mut rendered,
             "template scope",
             template_scope_name(result.template_scope),
             output,
         );
-        print_field("project state", result.state.display(), output);
-        print_field("recovery", recovery_name(result.recovery), output);
+        print_field(
+            &mut rendered,
+            "project state",
+            result.state.display(),
+            output,
+        );
+        print_field(
+            &mut rendered,
+            "recovery",
+            recovery_name(result.recovery),
+            output,
+        );
     }
-    Ok(())
+    write_stdout(&rendered)
 }
 
 pub(crate) fn render_mutable_note_creation(
     result: &MutableNoteCreationResult,
     output: OutputMode,
-) -> Result<(), serde_json::Error> {
+) -> io::Result<()> {
+    let mut rendered = String::new();
     if output.json {
-        println!("{}", serde_json::to_string_pretty(result)?);
+        rendered = json_line(serde_json::to_string_pretty(result))?;
     } else {
-        print_status("created note", &result.id, output);
-        print_field("project", &result.project, output);
-        print_field("type", &result.note_type, output);
-        print_field("class", note_class_name(result.class), output);
-        print_field("path", result.path.display(), output);
-        print_field("template", result.template.display(), output);
+        print_status(&mut rendered, "created note", &result.id, output);
+        print_field(&mut rendered, "project", &result.project, output);
+        print_field(&mut rendered, "type", &result.note_type, output);
         print_field(
+            &mut rendered,
+            "class",
+            note_class_name(result.class),
+            output,
+        );
+        print_field(&mut rendered, "path", result.path.display(), output);
+        print_field(&mut rendered, "template", result.template.display(), output);
+        print_field(
+            &mut rendered,
             "template scope",
             template_scope_name(result.template_scope),
             output,
         );
-        print_field("projection", result.projection.display(), output);
         print_field(
+            &mut rendered,
+            "projection",
+            result.projection.display(),
+            output,
+        );
+        print_field(
+            &mut rendered,
             "projection changed",
             if result.projection_changed {
                 "yes"
@@ -333,124 +453,212 @@ pub(crate) fn render_mutable_note_creation(
             },
             output,
         );
-        print_field("project state", result.state.display(), output);
-        print_field("recovery", recovery_name(result.recovery), output);
+        print_field(
+            &mut rendered,
+            "project state",
+            result.state.display(),
+            output,
+        );
+        print_field(
+            &mut rendered,
+            "recovery",
+            recovery_name(result.recovery),
+            output,
+        );
     }
-    Ok(())
+    write_stdout(&rendered)
 }
 
 pub(crate) fn render_record_update(
     result: &RecordUpdateResult,
     output: OutputMode,
-) -> Result<(), serde_json::Error> {
+) -> io::Result<()> {
+    let mut rendered = String::new();
     if output.json {
-        println!("{}", serde_json::to_string_pretty(result)?);
+        rendered = json_line(serde_json::to_string_pretty(result))?;
     } else {
-        print_status("updated record", &result.id, output);
-        print_field("project", &result.project, output);
-        print_field("type", &result.note_type, output);
-        print_field("path", result.path.display(), output);
+        print_status(&mut rendered, "updated record", &result.id, output);
+        print_field(&mut rendered, "project", &result.project, output);
+        print_field(&mut rendered, "type", &result.note_type, output);
+        print_field(&mut rendered, "path", result.path.display(), output);
         print_field(
+            &mut rendered,
             "record changed",
             if result.changed { "yes" } else { "no" },
             output,
         );
-        print_field("roadmap", result.roadmap.display(), output);
+        print_field(&mut rendered, "roadmap", result.roadmap.display(), output);
         print_field(
+            &mut rendered,
             "roadmap changed",
             if result.roadmap_changed { "yes" } else { "no" },
             output,
         );
-        print_field("project state", result.state.display(), output);
-        print_field("recovery", recovery_name(result.recovery), output);
+        print_field(
+            &mut rendered,
+            "project state",
+            result.state.display(),
+            output,
+        );
+        print_field(
+            &mut rendered,
+            "recovery",
+            recovery_name(result.recovery),
+            output,
+        );
     }
-    Ok(())
+    write_stdout(&rendered)
 }
 
 pub(crate) fn render_entity_update(
     result: &EntityUpdateResult,
     output: OutputMode,
-) -> Result<(), serde_json::Error> {
+) -> io::Result<()> {
+    let mut rendered = String::new();
     if output.json {
-        println!("{}", serde_json::to_string_pretty(result)?);
+        rendered = json_line(serde_json::to_string_pretty(result))?;
     } else {
-        print_status("updated entity", &result.id, output);
-        print_field("project", &result.project, output);
-        print_field("type", &result.note_type, output);
-        print_field("path", result.path.display(), output);
+        print_status(&mut rendered, "updated entity", &result.id, output);
+        print_field(&mut rendered, "project", &result.project, output);
+        print_field(&mut rendered, "type", &result.note_type, output);
+        print_field(&mut rendered, "path", result.path.display(), output);
         print_field(
+            &mut rendered,
             "entity changed",
             if result.changed { "yes" } else { "no" },
             output,
         );
-        print_field("index", result.index.display(), output);
+        print_field(&mut rendered, "index", result.index.display(), output);
         print_field(
+            &mut rendered,
             "index changed",
             if result.index_changed { "yes" } else { "no" },
             output,
         );
-        print_field("project state", result.state.display(), output);
-        print_field("recovery", recovery_name(result.recovery), output);
+        print_field(
+            &mut rendered,
+            "project state",
+            result.state.display(),
+            output,
+        );
+        print_field(
+            &mut rendered,
+            "recovery",
+            recovery_name(result.recovery),
+            output,
+        );
     }
-    Ok(())
+    write_stdout(&rendered)
 }
 
-pub(crate) fn render_resolution(
-    resolved: &ResolvedProject,
-    output: OutputMode,
-) -> Result<(), serde_json::Error> {
+pub(crate) fn render_resolution(resolved: &ResolvedProject, output: OutputMode) -> io::Result<()> {
+    let mut rendered = String::new();
     if output.json {
-        println!("{}", serde_json::to_string_pretty(resolved)?);
+        rendered = json_line(serde_json::to_string_pretty(resolved))?;
     } else {
-        print_field("root", resolved.root.display(), output);
+        print_field(&mut rendered, "root", resolved.root.display(), output);
         print_field(
+            &mut rendered,
             "root source",
             root_source_name(resolved.root_source),
             output,
         );
-        print_field("project", &resolved.project, output);
+        print_field(&mut rendered, "project", &resolved.project, output);
         print_field(
+            &mut rendered,
             "project source",
             project_source_name(resolved.project_source),
             output,
         );
         match &resolved.pointer {
-            Some(pointer) => print_field("pointer", pointer.display(), output),
-            None => print_field("pointer", "none (project selected explicitly)", output),
+            Some(pointer) => print_field(&mut rendered, "pointer", pointer.display(), output),
+            None => print_field(
+                &mut rendered,
+                "pointer",
+                "none (project selected explicitly)",
+                output,
+            ),
         }
-        print_field("registry", resolved.registry.display(), output);
-        print_field("repository", resolved.repository_dir.display(), output);
-        print_field("project directory", resolved.project_dir.display(), output);
+        print_field(
+            &mut rendered,
+            "registry",
+            resolved.registry.display(),
+            output,
+        );
+        print_field(
+            &mut rendered,
+            "repository",
+            resolved.repository_dir.display(),
+            output,
+        );
+        print_field(
+            &mut rendered,
+            "project directory",
+            resolved.project_dir.display(),
+            output,
+        );
     }
-
-    Ok(())
+    write_stdout(&rendered)
 }
 
 pub(crate) fn render_validation(
     report: &ProjectValidationReport,
     output: OutputMode,
-) -> Result<(), serde_json::Error> {
+) -> io::Result<()> {
+    let mut rendered = String::new();
     if output.json {
-        println!("{}", serde_json::to_string_pretty(report)?);
+        rendered = json_line(serde_json::to_string_pretty(report))?;
     } else {
-        print_status("valid", &report.project, output);
-        print_field("registry", report.registry.display(), output);
-        print_field("repository", report.repository_dir.display(), output);
-        print_field("project directory", report.project_dir.display(), output);
-        print_field("registry projects", report.registry_projects, output);
-        print_field("canonical notes", report.canonical_notes, output);
-        print_field("immutable events", report.immutable_events, output);
-        print_field("project state", report.state.display(), output);
+        print_status(&mut rendered, "valid", &report.project, output);
+        print_field(&mut rendered, "registry", report.registry.display(), output);
+        print_field(
+            &mut rendered,
+            "repository",
+            report.repository_dir.display(),
+            output,
+        );
+        print_field(
+            &mut rendered,
+            "project directory",
+            report.project_dir.display(),
+            output,
+        );
+        print_field(
+            &mut rendered,
+            "registry projects",
+            report.registry_projects,
+            output,
+        );
+        print_field(
+            &mut rendered,
+            "canonical notes",
+            report.canonical_notes,
+            output,
+        );
+        print_field(
+            &mut rendered,
+            "immutable events",
+            report.immutable_events,
+            output,
+        );
+        print_field(
+            &mut rendered,
+            "project state",
+            report.state.display(),
+            output,
+        );
         for (name, projection) in &report.projections {
             print_field(
+                &mut rendered,
                 "projection",
                 format_args!("{name} — {} sources", projection.sources),
                 output,
             );
         }
-        print_field("wikilinks", report.wikilinks, output);
+        print_field(&mut rendered, "wikilinks", report.wikilinks, output);
         for (name, note_type) in &report.note_types {
             print_field(
+                &mut rendered,
                 "note type",
                 format_args!(
                     "{name} ({}) — {}",
@@ -461,48 +669,54 @@ pub(crate) fn render_validation(
             );
         }
     }
-
-    Ok(())
+    write_stdout(&rendered)
 }
 
-pub(crate) fn render_context(
-    context: &ContextBundle,
-    output: OutputMode,
-) -> Result<(), serde_json::Error> {
+pub(crate) fn render_context(context: &ContextBundle, output: OutputMode) -> io::Result<()> {
     if output.json {
-        println!("{}", serde_json::to_string_pretty(context)?);
+        write_stdout(&json_line(serde_json::to_string_pretty(context))?)
     } else {
-        print!("{}", render_context_markdown(context));
+        write_stdout(&render_context_markdown(context))
     }
-    Ok(())
 }
 
 pub(crate) fn render_breadcrumb(
     breadcrumb: &SessionBreadcrumb,
     output: OutputMode,
-) -> Result<(), serde_json::Error> {
+) -> io::Result<()> {
     if output.json {
-        println!("{}", serde_json::to_string_pretty(breadcrumb)?);
+        write_stdout(&json_line(serde_json::to_string_pretty(breadcrumb))?)
     } else {
-        print!("{}", render_session_breadcrumb(breadcrumb));
-    }
-    Ok(())
-}
-
-fn print_status(label: &str, value: impl Display, output: OutputMode) {
-    if output.color {
-        println!("\x1b[1;32m{label}\x1b[0m: {value}");
-    } else {
-        println!("{label}: {value}");
+        write_stdout(&render_session_breadcrumb(breadcrumb))
     }
 }
 
-fn print_field(label: &str, value: impl Display, output: OutputMode) {
+fn print_status(rendered: &mut String, label: &str, value: impl Display, output: OutputMode) {
     if output.color {
-        println!("\x1b[1;36m{label}\x1b[0m: {value}");
+        writeln!(rendered, "\x1b[1;32m{label}\x1b[0m: {value}")
+            .expect("writing to a string cannot fail");
     } else {
-        println!("{label}: {value}");
+        writeln!(rendered, "{label}: {value}").expect("writing to a string cannot fail");
     }
+}
+
+fn print_field(rendered: &mut String, label: &str, value: impl Display, output: OutputMode) {
+    if output.color {
+        writeln!(rendered, "\x1b[1;36m{label}\x1b[0m: {value}")
+            .expect("writing to a string cannot fail");
+    } else {
+        writeln!(rendered, "{label}: {value}").expect("writing to a string cannot fail");
+    }
+}
+
+fn json_line(serialized: Result<String, serde_json::Error>) -> io::Result<String> {
+    let mut rendered = serialized.map_err(io::Error::other)?;
+    rendered.push('\n');
+    Ok(rendered)
+}
+
+fn write_stdout(rendered: &str) -> io::Result<()> {
+    io::stdout().lock().write_all(rendered.as_bytes())
 }
 
 const fn root_source_name(source: akasha_core::RootSource) -> &'static str {
