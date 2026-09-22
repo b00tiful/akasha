@@ -324,7 +324,7 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             send(b'\x1b[1;5F')
             paste = f'\nKeyboard {term}: Привет 世界 e\u0301\n'.encode()
             # Keep the opening marker together for the supported baseline; the
-            # opt-in probe isolates Crossterm's immediate lone-Escape behavior.
+            # opt-in probe exercises the parser's bounded Escape ambiguity window.
             if split_paste_start:
                 send(b'\x1b')
                 send(b'[200~')
@@ -354,6 +354,11 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             wait_for(b'matches')
             command('open Projects/example/entities/core.md')
             wait_for(b'READING')
+            # A lone Escape still leaves a clean reader within a bounded delay.
+            escape_started = time.monotonic()
+            send(b'\x1b')
+            wait_for(f'SEARCH · Keyboard {term}'.encode(), seconds=0.8)
+            assert time.monotonic() - escape_started < 1.0, 'Escape must not wait indefinitely'
             # Ctrl-C clears a pending command without exiting or executing it.
             send(b'\x7funexecuted command\x03')
             assert process.poll() is None
@@ -389,7 +394,7 @@ def main():
     parser.add_argument('--binary', type=Path, default=BASE / 'target/debug/akasha')
     parser.add_argument('--profile', choices=['all', 'existing', 'keyboard'], default='all')
     parser.add_argument('--split-paste-start', action='store_true',
-                        help='probe known lone-Escape paste-start failure (requires --profile keyboard)')
+                        help='regress a split paste opening Escape (requires --profile keyboard)')
     args = parser.parse_args()
     if args.split_paste_start and args.profile != 'keyboard':
         parser.error('--split-paste-start requires --profile keyboard')

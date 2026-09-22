@@ -1,0 +1,261 @@
+--- a/src/event/source/unix/mio.rs
++++ b/src/event/source/unix/mio.rs
+@@ -1,4 +1,8 @@
+-use std::{collections::VecDeque, io, time::Duration};
++use std::{
++    collections::VecDeque,
++    io,
++    time::{Duration, Instant},
++};
+ 
+ use mio::{unix::SourceFd, Events, Interest, Poll, Token};
+ use signal_hook_mio::v1_0::Signals;
+@@ -20,6 +24,9 @@
+ // reading on macOS/Linux -> we don't need bigger buffer and 1k of bytes
+ // is enough.
+ const TTY_BUFFER_SIZE: usize = 1_024;
++
++// Akasha patch: a read boundary does not distinguish Escape from a split sequence.
++const ESCAPE_TIMEOUT: Duration = Duration::from_millis(250);
+ 
+ pub(crate) struct UnixInternalEventSource {
+     poll: Poll,
+@@ -66,6 +73,7 @@
+ 
+ impl EventSource for UnixInternalEventSource {
+     fn try_read(&mut self, timeout: Option<Duration>) -> io::Result<Option<InternalEvent>> {
++        self.parser.expire_escape(Instant::now());
+         if let Some(event) = self.parser.next() {
+             return Ok(Some(event));
+         }
+@@ -73,7 +81,8 @@
+         let timeout = PollTimeout::new(timeout);
+ 
+         loop {
+-            if let Err(e) = self.poll.poll(&mut self.events, timeout.leftover()) {
++            let wait = self.parser.poll_timeout(timeout.leftover(), Instant::now());
++            if let Err(e) = self.poll.poll(&mut self.events, wait) {
+                 // Mio will throw an interrupted error in case of cursor position retrieval. We need to retry until it succeeds.
+                 // Previous versions of Mio (< 0.7) would automatically retry the poll call if it was interrupted (if EINTR was returned).
+                 // https://docs.rs/mio/0.7.0/mio/struct.Poll.html#notes
+@@ -85,8 +94,8 @@
+             };
+ 
+             if self.events.is_empty() {
+-                // No readiness events = timeout
+-                return Ok(None);
++                self.parser.expire_escape(Instant::now());
++                return Ok(self.parser.next());
+             }
+ 
+             for token in self.events.iter().map(|x| x.token()) {
+@@ -116,6 +125,11 @@
+ 
+                             if let Some(event) = self.parser.next() {
+                                 return Ok(Some(event));
++                            }
++                            // The TTY may be blocking. Return to readiness polling while
++                            // Escape is ambiguous, rather than blocking on another read.
++                            if self.parser.escape_started.is_some() {
++                                break;
+                             }
+                         }
+                     }
+@@ -168,6 +182,7 @@
+ struct Parser {
+     buffer: Vec<u8>,
+     internal_events: VecDeque<InternalEvent>,
++    escape_started: Option<Instant>,
+ }
+ 
+ impl Default for Parser {
+@@ -190,18 +205,57 @@
+             // method implementation, all events are consumed before the next TTY_BUFFER
+             // is processed -> events pushed.
+             internal_events: VecDeque::with_capacity(128),
++            escape_started: None,
+         }
+     }
+ }
+ 
+ impl Parser {
+-    fn advance(&mut self, buffer: &[u8], more: bool) {
+-        for (idx, byte) in buffer.iter().enumerate() {
+-            let more = idx + 1 < buffer.len() || more;
+-
++    fn poll_timeout(&self, caller: Option<Duration>, now: Instant) -> Option<Duration> {
++        match self.escape_started {
++            Some(started) => {
++                let remaining = ESCAPE_TIMEOUT.saturating_sub(now.duration_since(started));
++                Some(caller.map_or(remaining, |limit| limit.min(remaining)))
++            }
++            None => caller,
++        }
++    }
++
++    fn expire_escape(&mut self, now: Instant) {
++        if self
++            .escape_started
++            .is_some_and(|started| now.duration_since(started) >= ESCAPE_TIMEOUT)
++        {
++            self.emit_escape();
++        }
++    }
++
++    fn emit_escape(&mut self) {
++        debug_assert_eq!(self.buffer, b"\x1b");
++        self.internal_events
++            .push_back(parse_event(&self.buffer, false).unwrap().unwrap());
++        self.buffer.clear();
++        self.escape_started = None;
++    }
++
++    fn advance(&mut self, buffer: &[u8], _more: bool) {
++        self.advance_at(buffer, Instant::now());
++    }
++
++    fn advance_at(&mut self, buffer: &[u8], now: Instant) {
++        self.expire_escape(now);
++        for byte in buffer {
++            // Preserve both presses, rather than consuming the second Escape as a suffix.
++            if self.escape_started.is_some() && *byte == b'\x1b' {
++                self.emit_escape();
++            }
+             self.buffer.push(*byte);
+-
+-            match parse_event(&self.buffer, more) {
++            if self.buffer == b"\x1b" {
++                self.escape_started = Some(now);
++                continue;
++            }
++            self.escape_started = None;
++            match parse_event(&self.buffer, true) {
+                 Ok(Some(ie)) => {
+                     self.internal_events.push_back(ie);
+                     self.buffer.clear();
+@@ -227,3 +281,125 @@
+         self.internal_events.pop_front()
+     }
+ }
++
++#[cfg(test)]
++mod akasha_escape_tests {
++    use super::*;
++    use crate::event::{KeyCode, KeyModifiers};
++
++    fn key(code: KeyCode) -> InternalEvent {
++        InternalEvent::Event(Event::Key(code.into()))
++    }
++
++    #[test]
++    fn fragmented_paste_is_one_exact_event() {
++        let now = Instant::now();
++        let mut parser = Parser::default();
++        let bytes = "\x1b[200~Привет 世界 e\u{301}\n\x1b[201~".as_bytes();
++        for (index, byte) in bytes.iter().enumerate() {
++            parser.advance_at(&[*byte], now + Duration::from_millis(index as u64 * 2));
++            if index + 1 < bytes.len() {
++                assert_eq!(parser.next(), None);
++            }
++        }
++        assert_eq!(
++            parser.next(),
++            Some(InternalEvent::Event(Event::Paste(
++                "Привет 世界 e\u{301}\n".into()
++            )))
++        );
++        assert_eq!(parser.next(), None);
++    }
++
++    #[test]
++    fn escape_deadline_survives_short_polls_and_expires_once() {
++        let now = Instant::now();
++        let mut parser = Parser::default();
++        parser.advance_at(b"\x1b", now);
++        assert_eq!(parser.poll_timeout(None, now), Some(ESCAPE_TIMEOUT));
++        assert_eq!(
++            parser.poll_timeout(Some(Duration::ZERO), now),
++            Some(Duration::ZERO)
++        );
++        assert_eq!(
++            parser.poll_timeout(Some(Duration::from_millis(20)), now),
++            Some(Duration::from_millis(20))
++        );
++        parser.expire_escape(now + Duration::from_millis(249));
++        assert_eq!(parser.next(), None);
++        parser.expire_escape(now + ESCAPE_TIMEOUT);
++        assert_eq!(parser.next(), Some(key(KeyCode::Esc)));
++        parser.expire_escape(now + ESCAPE_TIMEOUT * 2);
++        assert_eq!(parser.next(), None);
++        assert_eq!(parser.poll_timeout(None, now + ESCAPE_TIMEOUT), None);
++    }
++
++    #[test]
++    fn late_suffix_is_not_reinterpreted_as_a_paste() {
++        let now = Instant::now();
++        let mut parser = Parser::default();
++        parser.advance_at(b"\x1b", now);
++        parser.advance_at(b"[", now + ESCAPE_TIMEOUT);
++        assert_eq!(parser.next(), Some(key(KeyCode::Esc)));
++        assert_eq!(parser.next(), Some(key(KeyCode::Char('['))));
++        assert_eq!(parser.next(), None);
++    }
++
++    #[test]
++    fn repeated_escape_and_ordinary_keys_keep_order() {
++        let now = Instant::now();
++        let mut parser = Parser::default();
++        parser.advance_at(b"a\x1b\x1b", now);
++        assert_eq!(parser.next(), Some(key(KeyCode::Char('a'))));
++        assert_eq!(parser.next(), Some(key(KeyCode::Esc)));
++        assert_eq!(parser.next(), None);
++        parser.expire_escape(now + ESCAPE_TIMEOUT);
++        assert_eq!(parser.next(), Some(key(KeyCode::Esc)));
++    }
++
++    #[test]
++    fn split_arrow_and_alt_keys_cancel_the_escape_deadline() {
++        let now = Instant::now();
++        let mut parser = Parser::default();
++        parser.advance_at(b"\x1b", now);
++        parser.advance_at(b"[A", now + Duration::from_millis(150));
++        assert_eq!(parser.next(), Some(key(KeyCode::Up)));
++        parser.advance_at(b"\x1b", now);
++        parser.advance_at(b"x", now + Duration::from_millis(150));
++        assert_eq!(
++            parser.next(),
++            Some(InternalEvent::Event(Event::Key(
++                crate::event::KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT)
++            )))
++        );
++        parser.expire_escape(now + ESCAPE_TIMEOUT);
++        assert_eq!(parser.next(), None);
++    }
++
++    #[cfg(not(feature = "libc"))]
++    #[test]
++    fn blocking_input_respects_short_poll_and_escape_deadline() {
++        use std::io::Write;
++        use std::os::unix::net::UnixStream;
++        let (input, mut output) = UnixStream::pair().unwrap();
++        let mut source =
++            UnixInternalEventSource::from_file_descriptor(FileDesc::Owned(input.into())).unwrap();
++        // Fail promptly if a sandbox forbids local socket writes.
++        output.write_all(b"\x1b").unwrap();
++        // Release even a regressed blocking second read, so this test fails rather than hangs.
++        let guard = std::thread::spawn(move || {
++            std::thread::sleep(Duration::from_millis(800));
++            let _ = output.write_all(b"x");
++        });
++        let started = Instant::now();
++        assert_eq!(
++            source.try_read(Some(Duration::from_millis(40))).unwrap(),
++            None
++        );
++        assert!(started.elapsed() < Duration::from_millis(200));
++        assert_eq!(source.try_read(None).unwrap(), Some(key(KeyCode::Esc)));
++        assert!(started.elapsed() >= ESCAPE_TIMEOUT);
++        assert!(started.elapsed() < Duration::from_millis(700));
++        guard.join().unwrap();
++    }
++}
