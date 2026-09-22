@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 const LOCAL_NAVIGATION_VERSION: u8 = 1;
 const LOCAL_NAVIGATION_MAX_BYTES: u64 = 64 * 1024;
 const LOCAL_NAVIGATION_MAX_PAGE_ANCHORS: usize = 128;
+#[cfg(feature = "runtime-probe")]
+const RUNTIME_PROBE_REPORT_MAX_BYTES: usize = 64 * 1024;
 static NEXT_STATE_STAGE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Serialize)]
@@ -373,17 +375,72 @@ fn save_local_navigation(
     save_local_navigation_file(&local_navigation_path(&app)?, &state)
 }
 
+#[cfg(all(feature = "desktop", feature = "runtime-probe"))]
+#[tauri::command]
+fn write_runtime_probe_report(report: String) -> Result<(), DesktopError> {
+    let path = std::env::var_os("AKASHA_RUNTIME_REPORT")
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            state_validation_error("runtime probe report path is unavailable".to_owned())
+        })?;
+    write_runtime_probe_report_file(&path, &report)
+}
+
+#[cfg(feature = "runtime-probe")]
+pub fn write_runtime_probe_report_file(path: &Path, report: &str) -> Result<(), DesktopError> {
+    if report.len() > RUNTIME_PROBE_REPORT_MAX_BYTES {
+        return Err(state_validation_error(format!(
+            "runtime probe report exceeds {RUNTIME_PROBE_REPORT_MAX_BYTES} bytes"
+        )));
+    }
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
+        .open(path)
+        .map_err(|error| state_io_error("create runtime probe report", path, error))?;
+    file.write_all(report.as_bytes())
+        .map_err(|error| state_io_error("write runtime probe report", path, error))?;
+    file.sync_all()
+        .map_err(|error| state_io_error("sync runtime probe report", path, error))?;
+    Ok(())
+}
+
 #[cfg(feature = "desktop")]
 pub fn run() {
-    tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![
-            load_library,
-            load_document,
-            search_project,
-            save_document,
-            load_local_navigation,
-            save_local_navigation
-        ])
+    let builder = tauri::Builder::default();
+    #[cfg(feature = "runtime-probe")]
+    let builder = builder.setup(|app| {
+        use tauri::Manager;
+
+        if std::env::var_os("AKASHA_RUNTIME_FULLSCREEN").is_some_and(|value| value == "1") {
+            app.get_webview_window("main")
+                .expect("runtime probe main window")
+                .set_fullscreen(true)?;
+        }
+        Ok(())
+    });
+    #[cfg(feature = "runtime-probe")]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        load_library,
+        load_document,
+        search_project,
+        save_document,
+        load_local_navigation,
+        save_local_navigation,
+        write_runtime_probe_report
+    ]);
+    #[cfg(not(feature = "runtime-probe"))]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        load_library,
+        load_document,
+        search_project,
+        save_document,
+        load_local_navigation,
+        save_local_navigation
+    ]);
+    builder
         .run(tauri::generate_context!())
         .expect("run Akasha desktop application");
 }

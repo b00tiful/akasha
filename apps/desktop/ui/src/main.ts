@@ -27,6 +27,8 @@ import {
 } from "./projection";
 import { mountLibraryScene, type SceneHandle } from "./scene";
 import type { SpatialDirection } from "./scene-model";
+import { runtimeProbeEnabled } from "./runtime-metrics";
+import { scheduleRuntimeProbe } from "./runtime-probe";
 import type { CommandError, DesktopLibrary, LibraryBook, LibrarySearchResult } from "./types";
 
 const form = required<HTMLFormElement>("library-form");
@@ -92,7 +94,7 @@ let activeShelfId: string | null = null;
 let activeVolume: LibraryVolume | null = null;
 let activeResolution: { root: string; project: string } | null = null;
 let localScene: LocalSceneHandle | null = null;
-let localMode = new URLSearchParams(location.search).get("view") === "local";
+let localMode = runtimeProbeEnabled || new URLSearchParams(location.search).get("view") === "local";
 const localNavigation = new Map<string, LocalNavigation>();
 const pendingLocalNotes = new Map<string, LibraryBook>();
 let documentRequest = 0;
@@ -273,6 +275,7 @@ async function openLibrary(
       navigationWarning ? `${success} / ${navigationWarning}` : success,
       navigationWarning ? "warning" : "success",
     );
+    scheduleRuntimeProbe();
   } catch (error) {
     library = null;
     activeResolution = null;

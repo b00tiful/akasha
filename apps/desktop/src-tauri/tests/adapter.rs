@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+#[cfg(feature = "runtime-probe")]
+use akasha_desktop::write_runtime_probe_report_file;
 use akasha_desktop::{
     LocalNavigationState, library_document, library_projection, load_local_navigation_file,
     save_library_document, save_local_navigation_file, search_project_library,
@@ -212,6 +214,44 @@ fn local_navigation_state_rejects_invalid_or_untrusted_files() {
         assert_eq!(error.code, 4);
         assert!(error.message.contains("not private"));
     }
+}
+
+#[cfg(feature = "runtime-probe")]
+#[test]
+fn runtime_probe_report_is_private_bounded_and_create_once() {
+    let temp = TempDir::new("runtime-probe");
+    let path = temp.path().join("report.json");
+
+    write_runtime_probe_report_file(&path, r#"{"passed":true}"#)
+        .expect("write runtime probe report");
+    assert_eq!(
+        fs::read_to_string(&path).expect("read runtime probe report"),
+        r#"{"passed":true}"#
+    );
+    #[cfg(unix)]
+    assert_eq!(
+        fs::metadata(&path)
+            .expect("runtime report metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+
+    let existing = write_runtime_probe_report_file(&path, r#"{"passed":false}"#)
+        .expect_err("runtime report must not overwrite an existing file");
+    assert_eq!(existing.code, 3);
+    assert_eq!(
+        fs::read_to_string(&path).expect("read unchanged runtime report"),
+        r#"{"passed":true}"#
+    );
+
+    let oversized_path = temp.path().join("oversized.json");
+    let oversized = "x".repeat(64 * 1024 + 1);
+    let error = write_runtime_probe_report_file(&oversized_path, &oversized)
+        .expect_err("oversized runtime report must fail before writing");
+    assert_eq!(error.code, 4);
+    assert!(!oversized_path.exists());
 }
 
 fn copy_tree(source: &Path, destination: &Path) {

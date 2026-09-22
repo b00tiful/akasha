@@ -8,6 +8,7 @@ build = "build.rs"
 [features]
 default = []
 desktop = ["dep:tauri"]
+runtime-probe = ["desktop"]
 
 [dependencies]
 akasha-core = { path = "../../../crates/akasha-core" }

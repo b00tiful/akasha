@@ -1,4 +1,5 @@
 import { LOCAL_TRAVEL_MS, hashSky, skyRandom, type SkyPoint } from "./local-akasha-layout";
+import { runtimeMetrics } from "./runtime-metrics";
 
 export type LocalSkyEvent = "comet" | "rift" | "eclipse";
 export interface LocalSkyHandle {
@@ -30,6 +31,19 @@ export function mountLocalSky(canvas: HTMLCanvasElement, seed: string, reduced: 
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext("2d");
   if (!ctx) return { destroy() {}, setReducedMotion() {}, setPaused() {}, travel() {}, settle() {} };
+  runtimeMetrics.mount("local", {
+    width: W,
+    height: H,
+    renderScale: 1,
+    drawCalls: 1,
+    triangles: 0,
+    lines: 0,
+    points: 0,
+    geometries: 0,
+    textures: 3,
+    renderTargets: 0,
+    estimatedRenderTargetBytes: 0,
+  });
   ctx.imageSmoothingEnabled = false;
   const random = skyRandom(seed);
   const stars = Array.from({ length: 460 }, () => ({ x: random() * W, y: random() * H,
@@ -210,8 +224,16 @@ export function mountLocalSky(canvas: HTMLCanvasElement, seed: string, reduced: 
   }
   function tick(now: number): void {
     if (destroyed || reduced || paused || document.hidden) { frame = 0; return; }
-    if (!last) last = now;
-    if (now - last >= 1000 / 30) { time += Math.min(.1, (now - last) / 1000); last = now; draw(); }
+    const frameDuration = 1000 / 30;
+    if (!last) last = now - frameDuration;
+    const elapsed = now - last;
+    if (elapsed >= frameDuration) {
+      const started = runtimeMetrics.enabled ? performance.now() : 0;
+      time += Math.min(.1, elapsed / 1000);
+      last = now - elapsed % frameDuration;
+      draw();
+      if (runtimeMetrics.enabled) runtimeMetrics.frame("local", now, performance.now() - started);
+    }
     frame = requestAnimationFrame(tick);
   }
   function sync(): void {
@@ -221,7 +243,13 @@ export function mountLocalSky(canvas: HTMLCanvasElement, seed: string, reduced: 
   document.addEventListener("visibilitychange", sync);
   draw(); sync();
   return {
-    destroy() { destroyed = true; cancelAnimationFrame(frame); document.removeEventListener("visibilitychange", sync); },
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      cancelAnimationFrame(frame);
+      document.removeEventListener("visibilitychange", sync);
+      runtimeMetrics.destroy("local");
+    },
     setReducedMotion(value) { reduced = value; if (value) voyage = null; draw(); sync(); },
     setPaused(value) { paused = value; if (value) voyage = null; sync(); },
     travel(from, to, reverse) { if (!reduced) voyage = { from, to, reverse, start: time }; },

@@ -29,6 +29,7 @@ import {
   type ShelfMotion,
   type SpatialDirection,
 } from "./scene-model";
+import { runtimeMetrics } from "./runtime-metrics";
 import type { LibraryProjection } from "./types";
 
 const COLORS = {
@@ -365,6 +366,12 @@ interface PixelPipeline {
   dispose(): void;
 }
 
+interface GpuFrameTimer {
+  begin(): void;
+  end(): void;
+  dispose(): void;
+}
+
 export async function mountLibraryScene(
   host: HTMLElement,
   projection: LibraryProjection,
@@ -424,6 +431,12 @@ export async function mountLibraryScene(
     renderHeight,
     renderScale,
   );
+  const gpuTimer = runtimeMetrics.enabled
+    ? createGpuFrameTimer(renderer.getContext(), (milliseconds) => {
+        runtimeMetrics.gpu("global", milliseconds);
+      })
+    : null;
+  if (runtimeMetrics.enabled) renderer.info.autoReset = false;
   renderer.domElement.dataset.visualMode = debugMode;
   renderer.domElement.dataset.renderScale = String(renderScale);
   renderer.domElement.dataset.cornerShadows = activationShadowDiagnostic;
@@ -522,11 +535,18 @@ export async function mountLibraryScene(
     }
   }
 
-  const render = (): void => {
+  const render = (profile: boolean): void => {
+    if (profile) {
+      renderer.info.reset();
+      gpuTimer?.begin();
+    }
     pixelPipeline.render(world, camera, overlay, overlayCamera);
+    if (profile) gpuTimer?.end();
   };
 
-  const update = (seconds: number): void => {
+  const update = (seconds: number, frameTime: number | null = null): void => {
+    const profile = runtimeMetrics.enabled && frameTime !== null;
+    const started = profile ? performance.now() : 0;
     if (!motionReduced) {
       elapsed += seconds;
       updateFreeMotion(actors, seconds);
@@ -555,7 +575,17 @@ export async function mountLibraryScene(
       motionReduced,
       random,
     );
-    render();
+    render(profile);
+    if (profile) {
+      runtimeMetrics.frame("global", frameTime!, performance.now() - started, {
+        drawCalls: renderer.info.render.calls,
+        triangles: renderer.info.render.triangles,
+        lines: renderer.info.render.lines,
+        points: renderer.info.render.points,
+        geometries: renderer.info.memory.geometries,
+        textures: renderer.info.memory.textures,
+      });
+    }
   };
 
   const animate = (time: number): void => {
@@ -565,7 +595,7 @@ export async function mountLibraryScene(
     }
     const seconds = Math.min(Math.max((time - previousTime) / 1000, 0), 0.05);
     previousTime = time;
-    update(seconds);
+    update(seconds, time);
     animationFrame = requestAnimationFrame(animate);
   };
 
@@ -819,6 +849,19 @@ export async function mountLibraryScene(
   renderer.domElement.addEventListener("pointerup", finishPointer);
   renderer.domElement.addEventListener("pointercancel", pointerCancel);
   document.addEventListener("visibilitychange", visibilityChanged);
+  runtimeMetrics.mount("global", {
+    width: renderWidth,
+    height: renderHeight,
+    renderScale,
+    drawCalls: 0,
+    triangles: 0,
+    lines: 0,
+    points: 0,
+    geometries: renderer.info.memory.geometries,
+    textures: renderer.info.memory.textures,
+    renderTargets: debugMode === "raw" ? 0 : 1,
+    estimatedRenderTargetBytes: debugMode === "raw" ? 0 : renderWidth * renderHeight * 8,
+  });
   update(0);
   startAnimation();
 
@@ -863,9 +906,64 @@ export async function mountLibraryScene(
       renderer.domElement.removeEventListener("pointercancel", pointerCancel);
       disposeScene(world);
       disposeScene(overlay);
+      gpuTimer?.dispose();
       pixelPipeline.dispose();
       renderer.dispose();
       renderer.domElement.remove();
+      runtimeMetrics.destroy("global");
+    },
+  };
+}
+
+function createGpuFrameTimer(
+  context: WebGLRenderingContext | WebGL2RenderingContext,
+  record: (milliseconds: number) => void,
+): GpuFrameTimer | null {
+  if (!("createQuery" in context)) return null;
+  const gl = context as WebGL2RenderingContext;
+  const extension = gl.getExtension("EXT_disjoint_timer_query_webgl2") as {
+    TIME_ELAPSED_EXT: number;
+    GPU_DISJOINT_EXT: number;
+  } | null;
+  if (!extension) return null;
+
+  const pending: WebGLQuery[] = [];
+  let active: WebGLQuery | null = null;
+  const poll = (): void => {
+    while (pending.length > 0) {
+      const query = pending[0]!;
+      if (!gl.getQueryParameter(query, gl.QUERY_RESULT_AVAILABLE)) break;
+      pending.shift();
+      const disjoint = gl.getParameter(extension.GPU_DISJOINT_EXT) as boolean;
+      const nanoseconds = gl.getQueryParameter(query, gl.QUERY_RESULT) as number;
+      gl.deleteQuery(query);
+      if (!disjoint) record(nanoseconds / 1_000_000);
+    }
+  };
+
+  return {
+    begin(): void {
+      poll();
+      if (active || pending.length >= 8) return;
+      const query = gl.createQuery();
+      if (!query) return;
+      gl.beginQuery(extension.TIME_ELAPSED_EXT, query);
+      active = query;
+    },
+    end(): void {
+      if (!active) return;
+      gl.endQuery(extension.TIME_ELAPSED_EXT);
+      pending.push(active);
+      active = null;
+    },
+    dispose(): void {
+      if (active) {
+        gl.endQuery(extension.TIME_ELAPSED_EXT);
+        gl.deleteQuery(active);
+        active = null;
+      }
+      for (const query of pending) gl.deleteQuery(query);
+      pending.length = 0;
     },
   };
 }
