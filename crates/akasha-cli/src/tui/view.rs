@@ -337,6 +337,25 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     let mut x = area.x;
+    if app.reviewing_integration() {
+        button(
+            frame,
+            app,
+            area,
+            &mut x,
+            "Prompt: /confirm PLAN_ID",
+            Action::Focus(Focus::Prompt),
+        );
+        button(
+            frame,
+            app,
+            area,
+            &mut x,
+            "Discard review",
+            Action::Command("discard"),
+        );
+        return;
+    }
     if app.in_workflow() {
         if app.creation_input_active() {
             button(

@@ -5,6 +5,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use super::editor::{Editor, safe_text};
+use super::integration::{Operation as IntegrationOperation, Review as IntegrationReview};
 use super::state::{NavigationLocation, NavigationState};
 use crate::discover_agent_home;
 use crate::render::{agent_wiring_action_name, session_hook_action_name};
@@ -38,6 +39,16 @@ pub(super) struct Suggestion {
 }
 
 const COMMANDS: &[Completion] = &[
+    Completion {
+        command: "integration",
+        argument: "apply|remove instructions|hook codex|claude [HOME]",
+        description: "Review one client integration change before confirmation",
+    },
+    Completion {
+        command: "confirm",
+        argument: "PLAN_ID",
+        description: "Authorize the exact displayed integration plan",
+    },
     Completion {
         command: "home",
         argument: "",
@@ -166,7 +177,7 @@ fn prompt_area(text: String) -> TextArea<'static> {
     prompt_area_with_placeholder(text, PROMPT_PLACEHOLDER)
 }
 
-pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       update the open task and roadmap together\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nrefresh         reload data (or press F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and task lifecycle forms show exact configured templates and\nmaintained projections. Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. Integration inspection never writes;\napply/remove remain explicit named CLI operations.\n\nOpen from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
+pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       update the open task and roadmap together\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\nconfirm PLAN_ID authorize the displayed integration plan\nrefresh         reload data (or press F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and task lifecycle forms show exact configured templates and\nmaintained projections. Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. Integration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nOpen from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Focus {
@@ -296,6 +307,8 @@ pub(super) enum Job {
     PrepareTask(ResolveRequest, String),
     UpdateTask(ResolveRequest, String, String, String, String),
     InspectIntegrations(ResolveRequest, AgentClient, PathBuf),
+    PrepareIntegration(IntegrationOperation),
+    CommitIntegration(IntegrationOperation, String),
 }
 pub(super) enum Response {
     Loaded(ResolveRequest, Box<LibraryProjection>),
@@ -308,6 +321,8 @@ pub(super) enum Response {
     Created(MutableNoteCreationResult),
     TaskPrepared(TaskLifecycleForm),
     TaskUpdated(RecordUpdateResult),
+    IntegrationPrepared(Box<IntegrationReview>),
+    IntegrationCommitted(Result<String, String>),
 }
 pub(super) type WorkResult = Result<Response, String>;
 
@@ -327,6 +342,10 @@ pub(super) fn worker() -> (Sender<Job>, Receiver<WorkResult>) {
 fn execute_job(job: Job) -> WorkResult {
     let err = |error: &dyn std::fmt::Display| error.to_string();
     match job {
+        Job::PrepareIntegration(operation) => operation.prepare()
+            .map(|review| Response::IntegrationPrepared(Box::new(review))),
+        Job::CommitIntegration(operation, plan_id) =>
+            Ok(Response::IntegrationCommitted(operation.commit(&plan_id))),
         Job::Load(mut request) => {
             recover_pending_note_edit(&request).map_err(|e| err(&e))?;
             let projection = build_library_projection(&request).map_err(|e| err(&e))?;
@@ -415,7 +434,7 @@ fn render_integration_inspection(
     hook: Result<SessionHookWiringPlan, akasha_core::SessionHookWiringError>,
 ) -> String {
     let mut body = format!(
-        "READ-ONLY INSPECTION\nNo files were changed. Apply and removal remain explicit named CLI operations.\n\nClient: {}\nHome: {}\n\nINSTRUCTION POINTER\n",
+        "READ-ONLY INSPECTION\nNo files were changed. Use /integration to review one apply/remove operation.\n\nClient: {}\nHome: {}\n\nINSTRUCTION POINTER\n",
         client.as_str(),
         home.display()
     );
@@ -510,6 +529,7 @@ pub(super) struct App {
     restored_navigation: Option<NavigationState>,
     pinned_project: Option<String>,
     workflow: Option<Workflow>,
+    integration_review: Option<IntegrationReview>,
     pending_open: Option<String>,
     jobs: Sender<Job>,
 }
@@ -563,6 +583,7 @@ impl App {
             restored_navigation: None,
             pinned_project,
             workflow: None,
+            integration_review: None,
             pending_open: None,
             jobs,
         }
@@ -708,10 +729,15 @@ impl App {
         }
     }
     pub fn dirty(&self) -> bool {
-        self.workflow.is_some() || self.editor.as_ref().is_some_and(Editor::dirty)
+        self.integration_review.is_some()
+            || self.workflow.is_some()
+            || self.editor.as_ref().is_some_and(Editor::dirty)
     }
     pub fn in_workflow(&self) -> bool {
         self.workflow.is_some()
+    }
+    pub fn reviewing_integration(&self) -> bool {
+        self.integration_review.is_some()
     }
     pub fn creation_input_active(&self) -> bool {
         matches!(
@@ -786,6 +812,11 @@ impl App {
     fn can_leave(&mut self) -> bool {
         if self.busy {
             self.message("An operation is running; please wait.");
+            false
+        } else if self.integration_review.is_some() {
+            self.message(
+                "Integration review pending: /confirm PLAN_ID or /discard before leaving.",
+            );
             false
         } else if self.workflow.is_some() {
             self.message("Unfinished form: apply it with Ctrl-S or use discard to cancel it.");
@@ -1258,6 +1289,12 @@ impl App {
         self.focus = Focus::Reader;
     }
     fn save(&mut self) {
+        if self.integration_review.is_some() {
+            self.message(
+                "Review the integration patch, then use /confirm with its complete plan ID.",
+            );
+            return;
+        }
         if self.busy {
             self.message("An operation is running; please wait.");
             return;
@@ -1315,6 +1352,28 @@ impl App {
             self.busy = false;
         }
         match response {
+            Ok(Response::IntegrationPrepared(review)) => {
+                self.body_title = "INTEGRATION REVIEW".into();
+                self.body = review.body.clone();
+                self.integration_review = Some(*review);
+                self.document = None;
+                self.editor = None;
+                self.editing = false;
+                self.scroll = 0;
+                self.focus = Focus::Reader;
+            }
+            Ok(Response::IntegrationCommitted(result)) => {
+                self.integration_review = None;
+                self.body_title = "INTEGRATION RESULT".into();
+                self.body = match result {
+                    Ok(result) => result,
+                    Err(error) => format!(
+                        "Operation failed: {error}\n\nPrepare a fresh /integration review before retrying."
+                    ),
+                };
+                self.scroll = 0;
+                self.focus = Focus::Reader;
+            }
             Err(error) => self.message(&format!("Operation failed: {error}")),
             Ok(Response::Loaded(request, projection)) => {
                 self.external_change_pending = false;
@@ -1537,6 +1596,22 @@ impl App {
         let argument = argument.trim();
         match command {
             "" => {}
+            "confirm" => {
+                if self.busy {
+                    self.message("An operation is running; please wait.");
+                } else if let Some(review) = &self.integration_review {
+                    if argument == review.plan_id {
+                        self.submit(Job::CommitIntegration(
+                            review.operation.clone(),
+                            review.plan_id.clone(),
+                        ));
+                    } else {
+                        self.message("Confirmation must match the complete displayed plan ID.");
+                    }
+                } else {
+                    self.message("No integration plan is awaiting confirmation.");
+                }
+            }
             "save" => self.save(),
             "quit" | "exit" | "q" => {
                 if self.can_leave() {
@@ -1557,6 +1632,11 @@ impl App {
             "discard" => {
                 if self.busy {
                     self.message("Wait for the operation to finish before discarding.");
+                    return;
+                }
+                if self.integration_review.take().is_some() {
+                    self.close_reader();
+                    self.message("Integration review discarded; no files changed.");
                     return;
                 }
                 if self.workflow.is_some() {
@@ -1677,6 +1757,34 @@ impl App {
                 }
                 Err(error) => self.message(&error),
             },
+            "integration" => {
+                let (operation, rest) = argument
+                    .split_once(char::is_whitespace)
+                    .unwrap_or((argument, ""));
+                let (target, client_home) = rest
+                    .trim_start()
+                    .split_once(char::is_whitespace)
+                    .unwrap_or((rest.trim_start(), ""));
+                let client_home = client_home.trim();
+                if !matches!(operation, "apply" | "remove")
+                    || !matches!(target, "instructions" | "hook")
+                {
+                    self.message("Usage: /integration <apply|remove> <instructions|hook> <codex|claude> [HOME]");
+                    return;
+                }
+                match integration_arguments(client_home) {
+                    Ok((client, home)) => {
+                        self.submit(Job::PrepareIntegration(IntegrationOperation {
+                            request: self.request.clone(),
+                            client,
+                            home,
+                            remove: operation == "remove",
+                            instructions: target == "instructions",
+                        }))
+                    }
+                    Err(error) => self.message(&error),
+                }
+            }
             "refresh" => self.load(),
             "help" => {
                 self.body_title = "HELP".into();
@@ -2675,6 +2783,169 @@ mod tests {
         assert_eq!(fs::read(home.join("AGENTS.md")).unwrap(), instructions);
         assert_eq!(fs::read(home.join("hooks.json")).unwrap(), hooks);
         assert_eq!(fs::read_dir(&home).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn integration_confirmation_applies_and_removes_each_client_target_independently() {
+        for client in ["codex", "claude"] {
+            for kind in ["instructions", "hook"] {
+                let mut fixture = Fixture::new();
+                let home = fixture.temp.join("client home");
+                fs::create_dir(&home).unwrap();
+                let instruction_file = if client == "codex" {
+                    "AGENTS.md"
+                } else {
+                    "CLAUDE.md"
+                };
+                let hook_file = if client == "codex" {
+                    "hooks.json"
+                } else {
+                    "settings.json"
+                };
+                let instructions = b"Human instructions\r\n";
+                let settings = b"{\"humanSetting\": true}\n";
+                fs::write(home.join(instruction_file), instructions).unwrap();
+                fs::write(home.join(hook_file), settings).unwrap();
+                for (operation, changed) in [("apply", true), ("apply", false), ("remove", true)] {
+                    fixture.app.command(&format!(
+                        "integration {operation} {kind} {client} {}",
+                        home.display()
+                    ));
+                    fixture.finish();
+                    let review = fixture.app.integration_review.as_ref().unwrap();
+                    let plan_id = review.plan_id.clone();
+                    assert!(review.body.contains("Replacement (JSON-escaped UTF-8)"));
+                    assert!(
+                        review
+                            .body
+                            .contains(&format!("Operation: {operation} {kind}"))
+                    );
+                    assert!(fixture.app.navigation_state().is_none());
+                    let before = (
+                        fs::read(home.join(instruction_file)).unwrap(),
+                        fs::read(home.join(hook_file)).unwrap(),
+                    );
+                    fixture.app.command("confirm wrong-id");
+                    fixture.app.command("save");
+                    fixture.app.command("quit");
+                    fixture.app.command("refresh");
+                    assert!(!fixture.app.quit);
+                    assert!(!fixture.app.busy);
+                    assert!(fixture.jobs.try_recv().is_err());
+                    assert_eq!(fs::read(home.join(instruction_file)).unwrap(), before.0);
+                    assert_eq!(fs::read(home.join(hook_file)).unwrap(), before.1);
+                    fixture.app.command(&format!("confirm {plan_id}"));
+                    fixture.app.command(&format!("confirm {plan_id}"));
+                    fixture.app.command("discard");
+                    fixture.finish();
+                    assert!(fixture.jobs.try_recv().is_err());
+                    assert!(fixture.app.integration_review.is_none());
+                    assert!(
+                        fixture.app.body.contains(&format!("Changed: {changed}")),
+                        "{}",
+                        fixture.app.body
+                    );
+                    if kind == "instructions" {
+                        assert_eq!(fs::read(home.join(hook_file)).unwrap(), settings);
+                    } else {
+                        assert_eq!(fs::read(home.join(instruction_file)).unwrap(), instructions);
+                    }
+                }
+                assert_eq!(fs::read(home.join(instruction_file)).unwrap(), instructions);
+                assert_eq!(fs::read(home.join(hook_file)).unwrap(), settings);
+            }
+        }
+    }
+
+    #[test]
+    fn integration_discard_and_stale_confirmation_never_replace_changed_bytes() {
+        for kind in ["instructions", "hook"] {
+            let mut fixture = Fixture::new();
+            let home = fixture.temp.join("client home");
+            fs::create_dir(&home).unwrap();
+            let prepare = format!("integration apply {kind} codex {}", home.display());
+            fixture.app.command(&prepare);
+            fixture.finish();
+            let cancelled_id = fixture
+                .app
+                .integration_review
+                .as_ref()
+                .unwrap()
+                .plan_id
+                .clone();
+            fixture.app.command("discard");
+            fixture.app.command(&format!("confirm {cancelled_id}"));
+            assert!(fixture.jobs.try_recv().is_err());
+            assert_eq!(fs::read_dir(&home).unwrap().count(), 0);
+            fixture.app.command(&prepare);
+            fixture.finish();
+            let plan_id = fixture
+                .app
+                .integration_review
+                .as_ref()
+                .unwrap()
+                .plan_id
+                .clone();
+            let target = home.join(if kind == "instructions" {
+                "AGENTS.md"
+            } else {
+                "hooks.json"
+            });
+            let changed = if kind == "instructions" {
+                "External instructions\n"
+            } else {
+                "{\"external\": true}\n"
+            };
+            fs::write(&target, changed).unwrap();
+            fixture.app.command(&format!("confirm {plan_id}"));
+            fixture.finish();
+            assert!(fixture.app.body.contains("Operation failed:"));
+            assert!(fixture.app.body.contains("fresh /integration review"));
+            assert!(fixture.app.integration_review.is_none());
+            assert_eq!(fs::read_to_string(&target).unwrap(), changed);
+            fixture.app.command(&format!("confirm {plan_id}"));
+            assert!(fixture.jobs.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn integration_review_survives_external_refresh_and_refuses_source_drift() {
+        let mut fixture = Fixture::new();
+        let home = fixture.temp.join("client home");
+        fs::create_dir(&home).unwrap();
+        fixture.open_editor();
+        fixture
+            .app
+            .editor
+            .as_mut()
+            .unwrap()
+            .area
+            .insert_str("draft");
+        let prepare = format!("integration apply instructions codex {}", home.display());
+        fixture.app.command(&prepare);
+        assert!(fixture.jobs.try_recv().is_err());
+        fixture.app.command("discard");
+        fixture.app.command(&prepare);
+        fixture.finish();
+        let body = fixture.app.body.clone();
+        let plan_id = fixture
+            .app
+            .integration_review
+            .as_ref()
+            .unwrap()
+            .plan_id
+            .clone();
+        fixture
+            .app
+            .receive(Ok(Response::Checked(Err("external invalid note".into()))));
+        assert_eq!(fixture.app.body, body);
+        assert!(fixture.app.external_change_pending);
+        let plan = prepare_agent_wiring(&fixture.app.request, AgentClient::Codex, &home).unwrap();
+        fs::write(plan.source, "Changed canonical instructions\n").unwrap();
+        fixture.app.command(&format!("confirm {plan_id}"));
+        fixture.finish();
+        assert!(fixture.app.body.contains("Operation failed:"));
+        assert!(!home.join("AGENTS.md").exists());
     }
 
     #[test]

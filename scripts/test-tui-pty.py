@@ -3,6 +3,7 @@
 import argparse
 import codecs
 import fcntl
+import json
 import os
 from pathlib import Path
 import pty
@@ -271,6 +272,25 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False):
             wait_for(b'INTEGRATIONS')
             wait_for(b'No files were changed')
             assert not list(agent_home.iterdir()), 'read-only integration inspection must not write client-home files'
+            command(f'integration apply hook codex {agent_home}')
+            wait_for(b'INTEGRATION REVIEW')
+            command('discard')
+            assert not list(agent_home.iterdir()), 'cancelled review must not write client-home files'
+            for operation in ['apply', 'remove']:
+                plan_args = [str(binary), '--root', str(root), '--json',
+                             'prepare-session-hook', 'codex', '--home', str(agent_home)]
+                if operation == 'remove':
+                    plan_args.append('--remove')
+                plan = json.loads(subprocess.check_output(plan_args))
+                command(f'integration {operation} hook codex {agent_home}')
+                wait_for(b'INTEGRATION REVIEW')
+                command('confirm incorrect')
+                wait_for(b'Confirmation must match')
+                assert (agent_home / 'hooks.json').exists() == (operation == 'remove')
+                command(f'confirm {plan["plan_id"]}')
+                wait_for(b'INTEGRATION RESULT')
+                wait_for(b'Changed: true')
+                assert (agent_home / 'hooks.json').exists() == (operation == 'apply')
             # Resizing must not lose state or crash. Restore usable dimensions afterward.
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 5, 20, 0, 0))
             drain(0.2)
@@ -293,7 +313,7 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False):
         assert b'\x1b[?1006l' in output
         assert termios.tcgetattr(slave) == before, 'raw terminal attributes must be restored exactly'
         print(f'PASS TERM={term}: startup, input, clean exit, terminal restoration' +
-              ('; animation, Unicode paste, dirty guard, checked save, search, create/lifecycle forms, read-only integrations, resize' if full else '; ASCII, no-color, reduced motion'))
+              ('; animation, Unicode paste, dirty guard, checked save, search, create/lifecycle forms, integration inspection/cancel/confirm/apply/remove, resize' if full else '; ASCII, no-color, reduced motion'))
     finally:
         if process.poll() is None:
             process.terminate()
