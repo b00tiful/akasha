@@ -114,19 +114,24 @@ def check_screen_observer():
     assert screen.text() == ''
 
 
-def check(binary, root, agent_home, term, full=False, expect_restore=False):
+def check(binary, root, agent_home, term, full=False, expect_restore=False,
+          keyboard=False, size=(32, 110), env_no_color=False, split_paste_start=False):
     master, slave = pty.openpty()
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 110, 0, 0))
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', *size, 0, 0))
     before = termios.tcgetattr(slave)
     def child_setup():
         os.setsid()
         fcntl.ioctl(0, termios.TIOCSCTTY, 0)
     env = dict(os.environ, TERM=term)
     env.pop('NO_COLOR', None)
+    if env_no_color:
+        env['NO_COLOR'] = ''  # Presence, including an empty value, disables color.
     env['XDG_STATE_HOME'] = str(root.parent / 'state')
     args = [str(binary), '--root', str(root), '--project', 'example', 'tui']
     if not full:
-        args += ['--ascii', '--no-motion', '--no-color']
+        args += ['--ascii', '--no-motion']
+        if not env_no_color:
+            args += ['--no-color']
     process = subprocess.Popen(args, stdin=slave, stdout=slave, stderr=slave,
                                env=env, preexec_fn=child_setup)
     output = bytearray()
@@ -159,9 +164,14 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False):
     def send(data):
         os.write(master, data)
         drain()
-    def command(value):
-        rows, _, _, _ = struct.unpack('HHHH', fcntl.ioctl(slave, termios.TIOCGWINSZ, b'\0' * 8))
-        send(f'\x1b[<0;6;{rows - 3}M\x1b[<0;6;{rows - 3}m'.encode())
+    def command(value, from_editor=False):
+        if keyboard:
+            # Reader -> list -> prompt; Backspace focuses prompt outside editing.
+            # No mouse/focus reports or function keys are needed on this path.
+            send(b'\x1b[Z\x1b[Z' if from_editor else b'\x7f')
+        else:
+            rows, _, _, _ = struct.unpack('HHHH', fcntl.ioctl(slave, termios.TIOCGWINSZ, b'\0' * 8))
+            send(f'\x1b[<0;6;{rows - 3}M\x1b[<0;6;{rows - 3}m'.encode())
         send(value.encode() + b'\r')
     try:
         wait_for(b'Library loaded')
@@ -299,6 +309,56 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False):
             assert process.poll() is None
             command('open Projects/example/records/tasks/pty-created.md')
             wait_for(b'Projects/example/records/tasks/pty-created.md')
+        elif keyboard:
+            # Include the five-second automatic check: unchanged data must stay quiet
+            # even when the terminal never supplies focus-reporting events.
+            length = len(output)
+            drain(5.3)
+            assert len(output) == length, 'unchanged background checks must not repaint'
+            command('open Projects/example/entities/core.md')
+            wait_for(b'READING')
+            command('edit')
+            wait_for(b'SOURCE')
+            note = root / 'Projects/example/entities/core.md'
+            original = note.read_bytes()
+            send(b'\x1b[1;5F')
+            paste = f'\nKeyboard {term}: Привет 世界 e\u0301\n'.encode()
+            # Keep the opening marker together for the supported baseline; the
+            # opt-in probe isolates Crossterm's immediate lone-Escape behavior.
+            if split_paste_start:
+                send(b'\x1b')
+                send(b'[200~')
+            else:
+                send(b'\x1b[200~')
+            # Deliberately split UTF-8 and the closing marker across writes.
+            for byte in paste + b'\x1b[201~':
+                os.write(master, bytes([byte]))
+                drain(0.002)
+            drain()
+            for rows, columns in [(5, 20), (12, 40), size]:
+                fcntl.ioctl(slave, termios.TIOCSWINSZ,
+                            struct.pack('HHHH', rows, columns, 0, 0))
+                drain(0.2)
+            send(b'\x11')  # Ctrl-Q must retain the draft after every resize.
+            wait_for(b'Unsaved changes')
+            assert process.poll() is None
+            assert note.read_bytes() == original
+            send(b'\x13')
+            wait_for(b'Saved through the core')
+            assert note.read_bytes() == original + paste, 'fragmented paste/resize must preserve exact bytes'
+            send(b'\x1b[200~Discard this draft\x1b[201~')
+            command('discard', from_editor=True)
+            wait_for(b'READING')
+            assert note.read_bytes() == original + paste, 'keyboard discard must not write'
+            command(f'search Keyboard {term}')
+            wait_for(b'matches')
+            command('open Projects/example/entities/core.md')
+            wait_for(b'READING')
+            # Ctrl-C clears a pending command without exiting or executing it.
+            send(b'\x7funexecuted command\x03')
+            assert process.poll() is None
+            assert 'unexecuted command' not in screen.text()
+            assert b'\x1b[38;' not in output and b'\x1b[48;' not in output
         else:
             length = len(output)
             drain(0.4)
@@ -312,8 +372,10 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False):
         assert b'\x1b[?1004l' in output
         assert b'\x1b[?1006l' in output
         assert termios.tcgetattr(slave) == before, 'raw terminal attributes must be restored exactly'
-        print(f'PASS TERM={term}: startup, input, clean exit, terminal restoration' +
-              ('; animation, Unicode paste, dirty guard, checked save, search, create/lifecycle forms, integration inspection/cancel/confirm/apply/remove, resize' if full else '; ASCII, no-color, reduced motion'))
+        print(f'PASS TERM={term} {size[1]}x{size[0]}: startup, input, clean exit, terminal restoration' +
+              ('; animation, Unicode paste, dirty guard, checked save, search, create/lifecycle forms, integration inspection/cancel/confirm/apply/remove, resize' if full else
+               '; keyboard-only, fragmented Unicode paste, dirty resize, save/discard, search, quiet refresh, Ctrl-C' if keyboard else
+               '; ASCII, no-color, reduced motion'))
     finally:
         if process.poll() is None:
             process.terminate()
@@ -325,7 +387,12 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, default=BASE / 'target/debug/akasha')
+    parser.add_argument('--profile', choices=['all', 'existing', 'keyboard'], default='all')
+    parser.add_argument('--split-paste-start', action='store_true',
+                        help='probe known lone-Escape paste-start failure (requires --profile keyboard)')
     args = parser.parse_args()
+    if args.split_paste_start and args.profile != 'keyboard':
+        parser.error('--split-paste-start requires --profile keyboard')
     check_screen_observer()
     with tempfile.TemporaryDirectory(prefix='akasha-tui-pty-') as folder:
         temp = Path(folder)
@@ -337,11 +404,20 @@ def main():
         agent_home = temp / 'codex-home'
         agent_home.mkdir()
         expect_restore = False
-        for term in ['xterm-256color', 'xterm', 'linux']:
+        for term in ([] if args.profile == 'keyboard' else ['xterm-256color', 'xterm', 'linux']):
             full = term == 'xterm-256color'
             check(args.binary.resolve(), root, agent_home, term, full=full,
                   expect_restore=expect_restore)
             expect_restore = True
+        if args.profile != 'existing':
+            for term, size, env_no_color in [
+                ('xterm-256color', (24, 80), True),
+                ('screen-256color', (12, 40), False),
+                ('tmux-256color', (24, 80), False),
+            ]:
+                check(args.binary.resolve(), root, agent_home, term, keyboard=True,
+                      size=size, env_no_color=env_no_color,
+                      split_paste_start=args.split_paste_start)
         state = temp / 'state/akasha/tui-navigation-v1.json'
         assert state.is_file(), 'clean exit must publish navigation state'
         assert state.stat().st_mode & 0o777 == 0o600, 'navigation state must be private'
