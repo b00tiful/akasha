@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Native GTK3/VTE acceptance; run with /usr/bin/python3 on a local display.
 
-Uses installed PyGObject/VTE only as development tooling. Commands use VTE's
-child-input API; paste uses its real bracketed-paste implementation. This does
-not claim physical keyboard, clipboard, other emulator, or SSH acceptance.
+Uses installed PyGObject/VTE only as development tooling. Commands use either
+child input or widget-local synthetic GTK key events; paste uses VTE's real
+bracketed-paste implementation. This does not claim physical keyboard, input
+method, system clipboard, other emulator, or SSH acceptance.
 """
 import argparse
 import json
@@ -30,7 +31,7 @@ def child(binary, root, report, flags):
     return 0 if result.returncode == 0 and restored else 1
 
 
-def check(binary, profile, columns, rows, flags, Gtk, Vte, GLib):
+def check(binary, profile, columns, rows, flags, Gtk, Vte, GLib, Gdk, input_mode):
     with tempfile.TemporaryDirectory(prefix='akasha-tui-vte-') as folder:
         temp = Path(folder)
         root = temp / 'root'
@@ -54,6 +55,7 @@ def check(binary, profile, columns, rows, flags, Gtk, Vte, GLib):
         terminal.set_size(columns, rows)
         window.add(terminal)
         window.show_all()
+        window.set_focus(terminal)
         pid = None
         exited = []
         spawn_errors = []
@@ -104,9 +106,44 @@ def check(binary, profile, columns, rows, flags, Gtk, Vte, GLib):
             terminal.feed_child(data)
             pump()
 
+        def key(name, modifiers=0):
+            keyval = Gdk.keyval_from_name(name)
+            assert keyval != Gdk.KEY_VoidSymbol, f'unknown key: {name}'
+            keymap = Gdk.Keymap.get_for_display(terminal.get_display())
+            found, entries = keymap.get_entries_for_keyval(keyval)
+            assert found, f'key unavailable in display keymap: {name}'
+            for kind in (Gdk.EventType.KEY_PRESS, Gdk.EventType.KEY_RELEASE):
+                event = Gdk.Event.new(kind)
+                event.window = terminal.get_window()
+                event.send_event = True
+                event.time = Gdk.CURRENT_TIME
+                event.state = Gdk.ModifierType(modifiers)
+                event.keyval = keyval
+                event.hardware_keycode = entries[0].keycode
+                event.group = entries[0].group
+                event.set_device(terminal.get_display().get_default_seat().get_keyboard())
+                Gtk.main_do_event(event)
+            pump(0.02)
+
+        def shortcut(data, name, modifiers=0):
+            if input_mode == 'keys':
+                key(name, modifiers)
+                pump()
+            else:
+                send(data)
+
         def command(value, editor=False):
-            send(b'\x1b[Z\x1b[Z' if editor else b'\x7f')
-            send(value.encode() + b'\r')
+            if editor:
+                for _ in range(2):
+                    shortcut(b'\x1b[Z', 'ISO_Left_Tab', Gdk.ModifierType.SHIFT_MASK)
+            else:
+                shortcut(b'\x7f', 'BackSpace')
+            if input_mode == 'keys':
+                for character in value:
+                    key(Gdk.keyval_name(Gdk.unicode_to_keyval(ord(character))))
+                shortcut(b'\r', 'Return')
+            else:
+                send(value.encode() + b'\r')
 
         def resize(cols, lines):
             padding = terminal.get_style_context().get_padding(Gtk.StateFlags.NORMAL)
@@ -127,7 +164,7 @@ def check(binary, profile, columns, rows, flags, Gtk, Vte, GLib):
             wait_for('READING')
             command('edit')
             wait_for('SOURCE')
-            send(b'\x1b[1;5F')
+            shortcut(b'\x1b[1;5F', 'End', Gdk.ModifierType.CONTROL_MASK)
             # VTE supplies the opening/closing markers based on the application's mode.
             paste = f'\n\nNative VTE {profile}: Привет 世界 e\u0301\nsecond line\n'
             terminal.paste_text(paste)
@@ -135,10 +172,10 @@ def check(binary, profile, columns, rows, flags, Gtk, Vte, GLib):
             wait_for('SOURCE *')
             for size in [(20, 5), (40, 12), (columns, rows)]:
                 resize(*size)
-            send(b'\x11')
+            shortcut(b'\x11', 'q', Gdk.ModifierType.CONTROL_MASK)
             wait_for('Unsaved changes')
             assert not exited and note.read_bytes() == original
-            send(b'\x13')
+            shortcut(b'\x13', 's', Gdk.ModifierType.CONTROL_MASK)
             wait_for('Saved through the core')
             expected = original + paste.replace('\n', '\r\n' if profile == 'no-color' else '\n').encode()
             assert note.read_bytes() == expected, 'VTE paste must preserve UTF-8 and document newlines'
@@ -151,7 +188,7 @@ def check(binary, profile, columns, rows, flags, Gtk, Vte, GLib):
             wait_for('matches')
             command('open Projects/example/entities/core.md')
             wait_for('READING')
-            send(b'\x1b')
+            shortcut(b'\x1b', 'Escape')
             wait_for('SEARCH', seconds=1)
             command('quit')
             deadline = time.monotonic() + 8
@@ -164,7 +201,7 @@ def check(binary, profile, columns, rows, flags, Gtk, Vte, GLib):
             assert state.stat().st_mode & 0o777 == 0o600
             subprocess.run([str(binary), '--root', str(root), '--project', 'example', 'validate'],
                            check=True, stdout=subprocess.DEVNULL)
-            print(f'PASS VTE {profile} {columns}x{rows}: native screen, multiline Unicode paste, '
+            print(f'PASS VTE {input_mode} {profile} {columns}x{rows}: native screen, multiline Unicode paste, '
                   'dirty resize, checked save, discard, search, Escape, exit, exact termios, private state',
                   flush=True)
         finally:
@@ -191,11 +228,13 @@ def main():
         return child(*sys.argv[2:5], sys.argv[5:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, default=BASE / 'target/debug/akasha')
+    parser.add_argument('--input', choices=('all', 'child', 'keys'), default='all',
+                        help='command transport (default: both child bytes and GTK key events)')
     args = parser.parse_args()
     import gi
     gi.require_version('Gtk', '3.0')
     gi.require_version('Vte', '2.91')
-    from gi.repository import Gtk, Vte, GLib
+    from gi.repository import Gtk, Vte, GLib, Gdk
     if not Gtk.init_check()[0]:
         parser.error('a working local GTK display is required; no native check ran')
     binary = args.binary.resolve(strict=True)
@@ -206,7 +245,8 @@ def main():
         ('compact-ascii', 40, 12, ['--ascii', '--no-motion', '--no-color']),
         ('no-color', 80, 24, ['--no-motion']),
     ]:
-        check(binary, profile, columns, rows, flags, Gtk, Vte, GLib)
+        for input_mode in ('child', 'keys') if args.input == 'all' else (args.input,):
+            check(binary, profile, columns, rows, flags, Gtk, Vte, GLib, Gdk, input_mode)
     return 0
 
 
