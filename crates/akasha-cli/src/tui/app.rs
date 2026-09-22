@@ -5,6 +5,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use super::editor::{Editor, safe_text};
+use super::state::{NavigationLocation, NavigationState};
 use crate::discover_agent_home;
 use crate::render::{agent_wiring_action_name, session_hook_action_name};
 use akasha_core::{
@@ -191,6 +192,15 @@ struct Navigation {
     rows: Vec<Row>,
     selection: Option<usize>,
     scope: LibraryScope,
+    list_context: ListContext,
+}
+
+#[derive(Clone)]
+enum ListContext {
+    Projects,
+    Categories,
+    Notes { note_type: String },
+    Search,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -496,6 +506,9 @@ pub(super) struct App {
     completion_index: usize,
     completion_dismissed: bool,
     navigation: Vec<Navigation>,
+    list_context: ListContext,
+    restored_navigation: Option<NavigationState>,
+    pinned_project: Option<String>,
     workflow: Option<Workflow>,
     pending_open: Option<String>,
     jobs: Sender<Job>,
@@ -509,6 +522,7 @@ impl App {
         ascii: bool,
         color: bool,
     ) -> Self {
+        let pinned_project = request.project_override.clone();
         let scope = LibraryScope::Project {
             project: request.project_override.clone().unwrap_or_default(),
         };
@@ -545,6 +559,9 @@ impl App {
             completion_index: 0,
             completion_dismissed: false,
             navigation: vec![],
+            list_context: ListContext::Categories,
+            restored_navigation: None,
+            pinned_project,
             workflow: None,
             pending_open: None,
             jobs,
@@ -553,6 +570,68 @@ impl App {
 
     pub fn load(&mut self) {
         self.submit(Job::Load(self.request.clone()));
+    }
+    pub fn restore_navigation(&mut self, state: NavigationState) {
+        self.restored_navigation = Some(state);
+    }
+    pub fn navigation_state(&self) -> Option<NavigationState> {
+        if self.dirty() || self.busy {
+            return None;
+        }
+        let projection = self.projection.as_ref()?;
+        let selected = self
+            .list
+            .selected()
+            .and_then(|index| self.rows.get(index))
+            .map(|row| &row.target);
+        let location = if let Some(document) = &self.document {
+            let book = self
+                .books()
+                .into_iter()
+                .find(|book| book.id == document.id)?;
+            NavigationLocation::Note {
+                scope: book.scope.clone(),
+                note_type: book.note_type.clone(),
+                id: book.id.clone(),
+            }
+        } else {
+            match &self.list_context {
+                ListContext::Projects => NavigationLocation::Projects {
+                    selected_scope: selected.and_then(|target| match target {
+                        Target::Scope(scope) => Some(scope.clone()),
+                        _ => None,
+                    }),
+                },
+                ListContext::Categories => NavigationLocation::Categories {
+                    scope: self.scope.clone(),
+                    selected_note_type: selected.and_then(|target| match target {
+                        Target::Category(_, note_type) => Some(note_type.clone()),
+                        _ => None,
+                    }),
+                },
+                ListContext::Notes { note_type } => NavigationLocation::Notes {
+                    scope: self.scope.clone(),
+                    note_type: note_type.clone(),
+                    selected_note: selected.and_then(|target| match target {
+                        Target::Note(id) => Some(id.clone()),
+                        _ => None,
+                    }),
+                },
+                ListContext::Search => {
+                    let id = selected.and_then(|target| match target {
+                        Target::Note(id) => Some(id),
+                        _ => None,
+                    })?;
+                    let book = self.books().into_iter().find(|book| &book.id == id)?;
+                    NavigationLocation::Notes {
+                        scope: book.scope.clone(),
+                        note_type: book.note_type.clone(),
+                        selected_note: Some(book.id.clone()),
+                    }
+                }
+            }
+        };
+        Some(NavigationState::new(&projection.root, location))
     }
     pub fn check_external_changes(&mut self) -> bool {
         if self.busy || self.checking || self.external_change_pending {
@@ -876,15 +955,17 @@ impl App {
             rows: self.rows.clone(),
             selection: self.list.selected(),
             scope: self.scope.clone(),
+            list_context: self.list_context.clone(),
         });
         if self.navigation.len() > 32 {
             self.navigation.remove(0);
         }
     }
-    fn set_rows(&mut self, title: String, rows: Vec<Row>) {
+    fn set_rows(&mut self, title: String, rows: Vec<Row>, list_context: ListContext) {
         self.close_reader();
         self.title = title;
         self.rows = rows;
+        self.list_context = list_context;
         self.list
             .select(if self.rows.is_empty() { None } else { Some(0) });
         self.focus = Focus::List;
@@ -921,7 +1002,7 @@ impl App {
         if let LibraryScope::Project { project } = &scope {
             self.request.project_override = Some(project.clone());
         }
-        self.set_rows(scope_name(&scope), rows);
+        self.set_rows(scope_name(&scope), rows, ListContext::Categories);
     }
     fn projects(&mut self) {
         if !self.can_leave() {
@@ -943,7 +1024,7 @@ impl App {
             }),
         }));
         self.remember();
-        self.set_rows("PROJECTS + GLOBAL".into(), rows);
+        self.set_rows("PROJECTS + GLOBAL".into(), rows, ListContext::Projects);
     }
     fn notes(&mut self, scope: LibraryScope, note_type: &str) {
         if !self.can_leave() {
@@ -964,7 +1045,150 @@ impl App {
             .collect();
         self.remember();
         self.scope = scope;
-        self.set_rows(format!("{} / {note_type}", scope_name(&self.scope)), rows);
+        self.set_rows(
+            format!("{} / {note_type}", scope_name(&self.scope)),
+            rows,
+            ListContext::Notes {
+                note_type: note_type.to_owned(),
+            },
+        );
+    }
+    fn scope_exists(&self, scope: &LibraryScope) -> bool {
+        match scope {
+            LibraryScope::Global => self.projection.is_some(),
+            LibraryScope::Project { project } => {
+                self.projection.as_ref().is_some_and(|projection| {
+                    projection
+                        .projects
+                        .iter()
+                        .any(|shelf| &shelf.project == project)
+                })
+            }
+        }
+    }
+    fn category_exists(&self, scope: &LibraryScope, note_type: &str) -> bool {
+        let Some(projection) = &self.projection else {
+            return false;
+        };
+        let categories = match scope {
+            LibraryScope::Global => Some(&projection.global.categories),
+            LibraryScope::Project { project } => projection
+                .projects
+                .iter()
+                .find(|shelf| &shelf.project == project)
+                .map(|shelf| &shelf.categories),
+        };
+        categories.is_some_and(|categories| {
+            categories
+                .iter()
+                .any(|category| category.note_type == note_type)
+        })
+    }
+    fn scope_allowed_by_request(&self, scope: &LibraryScope) -> bool {
+        self.pinned_project.as_ref().is_none_or(
+            |pinned| matches!(scope, LibraryScope::Project { project } if project == pinned),
+        )
+    }
+    fn select_target(&mut self, matches: impl Fn(&Target) -> bool) -> bool {
+        let Some(index) = self.rows.iter().position(|row| matches(&row.target)) else {
+            return false;
+        };
+        self.list.select(Some(index));
+        true
+    }
+    fn restore_loaded_navigation(&mut self) -> bool {
+        let Some(state) = self.restored_navigation.take() else {
+            return false;
+        };
+        let Some(projection) = &self.projection else {
+            return false;
+        };
+        if !state.belongs_to(&projection.root) {
+            return false;
+        }
+        match state.location {
+            NavigationLocation::Projects { selected_scope } => {
+                if self.pinned_project.is_some() {
+                    return false;
+                }
+                self.projects();
+                if let Some(selected_scope) = selected_scope {
+                    self.select_target(
+                        |target| matches!(target, Target::Scope(scope) if scope == &selected_scope),
+                    );
+                }
+            }
+            NavigationLocation::Categories {
+                scope,
+                selected_note_type,
+            } => {
+                if !self.scope_allowed_by_request(&scope) || !self.scope_exists(&scope) {
+                    return false;
+                }
+                self.categories(scope);
+                self.navigation.clear();
+                if let Some(note_type) = selected_note_type {
+                    self.select_target(|target| {
+                        matches!(target, Target::Category(_, candidate) if candidate == &note_type)
+                    });
+                }
+            }
+            NavigationLocation::Notes {
+                scope,
+                note_type,
+                selected_note,
+            } => {
+                if !self.scope_allowed_by_request(&scope) || !self.scope_exists(&scope) {
+                    return false;
+                }
+                self.categories(scope.clone());
+                self.navigation.clear();
+                if !self.category_exists(&scope, &note_type) {
+                    self.message(
+                        "Previous navigation target no longer exists; restored its nearest valid location.",
+                    );
+                    return true;
+                }
+                self.notes(scope, &note_type);
+                if let Some(id) = selected_note {
+                    self.select_target(
+                        |target| matches!(target, Target::Note(candidate) if candidate == &id),
+                    );
+                }
+            }
+            NavigationLocation::Note {
+                scope,
+                note_type,
+                id,
+            } => {
+                if !self.scope_allowed_by_request(&scope) || !self.scope_exists(&scope) {
+                    return false;
+                }
+                self.categories(scope.clone());
+                self.navigation.clear();
+                if !self.category_exists(&scope, &note_type) {
+                    self.message(
+                        "Previous navigation target no longer exists; restored its nearest valid location.",
+                    );
+                    return true;
+                }
+                self.notes(scope.clone(), &note_type);
+                let valid_note = self.books().into_iter().any(|book| {
+                    book.id == id && book.scope == scope && book.note_type == note_type
+                });
+                if !valid_note {
+                    self.message(
+                        "Previous note no longer exists; restored its validated category.",
+                    );
+                    return true;
+                }
+                self.select_target(
+                    |target| matches!(target, Target::Note(candidate) if candidate == &id),
+                );
+                self.open(&id);
+            }
+        }
+        true
     }
     pub fn books(&self) -> Vec<&LibraryBook> {
         self.projection
@@ -1108,7 +1332,12 @@ impl App {
                 self.categories(self.scope.clone());
                 self.navigation.clear();
                 self.focus = Focus::Prompt;
-                self.message("Library loaded.");
+                let restored = self.restore_loaded_navigation();
+                self.message(if restored {
+                    "Library loaded; previous navigation restored."
+                } else {
+                    "Library loaded."
+                });
                 if let Some(id) = self.pending_open.take() {
                     self.submit(Job::Open(self.request.clone(), id));
                 }
@@ -1170,6 +1399,7 @@ impl App {
                             target: Target::Note(hit.id),
                         })
                         .collect(),
+                    ListContext::Search,
                 );
                 self.message(&format!(
                     "{} matches{}",
@@ -1385,6 +1615,7 @@ impl App {
                     self.title = previous.title;
                     self.rows = previous.rows;
                     self.scope = previous.scope;
+                    self.list_context = previous.list_context;
                     if let LibraryScope::Project { project } = &self.scope {
                         self.request.project_override = Some(project.clone());
                     }
@@ -2063,6 +2294,16 @@ mod tests {
         fn root(&self) -> PathBuf {
             self.temp.join("root")
         }
+        fn restart(&self, state: NavigationState) -> App {
+            let (sender, jobs) = mpsc::channel();
+            let mut app = App::new(self.app.request.clone(), sender, true, false, false);
+            app.restore_navigation(state);
+            app.load();
+            while app.busy {
+                app.receive(execute_job(jobs.try_recv().unwrap()));
+            }
+            app
+        }
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
@@ -2122,6 +2363,94 @@ mod tests {
         validate_project(&fixture.app.request).unwrap();
         fixture.app.command("quit");
         assert!(fixture.app.quit);
+    }
+
+    #[test]
+    fn navigation_state_restores_an_exact_note_from_fresh_core_bytes() {
+        let mut fixture = Fixture::new();
+        fixture.app.open(ID);
+        fixture.finish();
+        let state = fixture.app.navigation_state().expect("clean navigation");
+        let before = fs::read_to_string(fixture.path()).unwrap();
+        let external = format!("{before}\nFresh cross-launch source.\n");
+        replace_library_document(&fixture.app.request, ID, &before, &external).unwrap();
+
+        let restored = fixture.restart(state);
+
+        assert_eq!(restored.document.as_ref().unwrap().id, ID);
+        assert_eq!(restored.document.as_ref().unwrap().source, external);
+        assert!(matches!(
+            restored.list_context,
+            ListContext::Notes { ref note_type } if note_type == "entity"
+        ));
+        assert!(matches!(
+            restored.rows[restored.list.selected().unwrap()].target,
+            Target::Note(ref id) if id == ID
+        ));
+    }
+
+    #[test]
+    fn stale_navigation_falls_back_without_restoring_drafts_or_paths() {
+        let mut fixture = Fixture::new();
+        let root = fixture.app.projection.as_ref().unwrap().root.clone();
+        let stale = NavigationState::new(
+            &root,
+            NavigationLocation::Note {
+                scope: LibraryScope::Project {
+                    project: "example".into(),
+                },
+                note_type: "entity".into(),
+                id: "Projects/example/entities/missing.md".into(),
+            },
+        );
+
+        let restored = fixture.restart(stale);
+
+        assert!(restored.document.is_none());
+        assert!(matches!(
+            restored.list_context,
+            ListContext::Notes { ref note_type } if note_type == "entity"
+        ));
+        assert!(
+            restored
+                .messages
+                .iter()
+                .any(|message| message.contains("Previous note no longer exists"))
+        );
+
+        fixture.open_editor();
+        fixture.app.paste("unsaved");
+        assert!(fixture.app.navigation_state().is_none());
+    }
+
+    #[test]
+    fn explicit_project_and_exact_root_override_unrelated_saved_navigation() {
+        let fixture = Fixture::new();
+        let root = fixture.app.projection.as_ref().unwrap().root.clone();
+        let global = NavigationState::new(
+            &root,
+            NavigationLocation::Categories {
+                scope: LibraryScope::Global,
+                selected_note_type: None,
+            },
+        );
+        let restored = fixture.restart(global);
+        assert_eq!(
+            restored.scope,
+            LibraryScope::Project {
+                project: "example".into()
+            }
+        );
+
+        let unrelated = NavigationState::new(
+            Path::new("/different/root"),
+            NavigationLocation::Projects {
+                selected_scope: None,
+            },
+        );
+        let restored = fixture.restart(unrelated);
+        assert!(matches!(restored.list_context, ListContext::Categories));
+        assert_eq!(restored.title, "example");
     }
 
     #[test]

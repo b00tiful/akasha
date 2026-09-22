@@ -113,7 +113,7 @@ def check_screen_observer():
     assert screen.text() == ''
 
 
-def check(binary, root, agent_home, term, full=False):
+def check(binary, root, agent_home, term, full=False, expect_restore=False):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 110, 0, 0))
     before = termios.tcgetattr(slave)
@@ -122,6 +122,7 @@ def check(binary, root, agent_home, term, full=False):
         fcntl.ioctl(0, termios.TIOCSCTTY, 0)
     env = dict(os.environ, TERM=term)
     env.pop('NO_COLOR', None)
+    env['XDG_STATE_HOME'] = str(root.parent / 'state')
     args = [str(binary), '--root', str(root), '--project', 'example', 'tui']
     if not full:
         args += ['--ascii', '--no-motion', '--no-color']
@@ -163,6 +164,8 @@ def check(binary, root, agent_home, term, full=False):
         send(value.encode() + b'\r')
     try:
         wait_for(b'Library loaded')
+        if expect_restore:
+            wait_for(b'Projects/example/records/tasks/pty-created.md')
         assert b'\x1b[?1049h' in output
         assert b'\x1b[?2004h' in output
         assert b'\x1b[?1004h' in output
@@ -274,6 +277,8 @@ def check(binary, root, agent_home, term, full=False):
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
             drain(0.2)
             assert process.poll() is None
+            command('open Projects/example/records/tasks/pty-created.md')
+            wait_for(b'Projects/example/records/tasks/pty-created.md')
         else:
             length = len(output)
             drain(0.4)
@@ -311,8 +316,15 @@ def main():
         (temp / 'repository').mkdir()
         agent_home = temp / 'codex-home'
         agent_home.mkdir()
+        expect_restore = False
         for term in ['xterm-256color', 'xterm', 'linux']:
-            check(args.binary.resolve(), root, agent_home, term, full=term == 'xterm-256color')
+            full = term == 'xterm-256color'
+            check(args.binary.resolve(), root, agent_home, term, full=full,
+                  expect_restore=expect_restore)
+            expect_restore = True
+        state = temp / 'state/akasha/tui-navigation-v1.json'
+        assert state.is_file(), 'clean exit must publish navigation state'
+        assert state.stat().st_mode & 0o777 == 0o600, 'navigation state must be private'
         subprocess.run([str(args.binary.resolve()), '--root', str(root), '--project', 'example', 'validate'], check=True, stdout=subprocess.DEVNULL)
 
 if __name__ == '__main__':

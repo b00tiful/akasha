@@ -1,6 +1,7 @@
 mod app;
 mod editor;
 mod starlight;
+mod state;
 mod view;
 
 use std::io::{self, IsTerminal};
@@ -75,6 +76,12 @@ fn terminal_session(
     no_motion: bool,
     ascii: bool,
 ) -> io::Result<()> {
+    let state_path = state::state_path();
+    let (restored_navigation, state_warning) = match state_path.as_deref().map(state::load) {
+        Some(Ok(state)) => (state, None),
+        Some(Err(error)) => (None, Some(error)),
+        None => (None, None),
+    };
     enable_raw_mode()?;
     let _guard = TerminalGuard;
     execute!(
@@ -94,6 +101,14 @@ fn terminal_session(
         ascii,
         !no_color && std::env::var_os("NO_COLOR").is_none(),
     );
+    if let Some(restored_navigation) = restored_navigation {
+        app.restore_navigation(restored_navigation);
+    }
+    if let Some(warning) = state_warning {
+        app.message(&format!(
+            "Navigation persistence was ignored: {warning}. A clean exit will replace it."
+        ));
+    }
     app.load();
     let started = Instant::now();
     let mut redraw = true;
@@ -142,6 +157,9 @@ fn terminal_session(
             }
             redraw = true;
         }
+    }
+    if let (Some(path), Some(navigation)) = (state_path, app.navigation_state()) {
+        state::save(&path, &navigation)?;
     }
     Ok(())
 }

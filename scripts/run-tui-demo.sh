@@ -14,7 +14,7 @@ cp -R -- "$project_dir/tests/fixtures/resolution/valid-root" "$demo_dir/root"
 cp -- "$project_dir/tests/fixtures/tui/"*.md "$demo_dir/root/Projects/example/templates/"
 mkdir -- "$demo_dir/repository"
 demo_status=0
-cargo run --quiet --manifest-path "$project_dir/Cargo.toml" -p akasha-cli -- \
+XDG_STATE_HOME="$demo_dir/state" cargo run --quiet --manifest-path "$project_dir/Cargo.toml" -p akasha-cli -- \
   --root "$demo_dir/root" --project example tui "$@" || demo_status=$?
 if "$keep_open" && [[ -t 0 && -t 1 ]]; then
   rm -rf -- "$demo_dir"
