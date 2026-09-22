@@ -68,6 +68,16 @@ export interface DesktopLibrary {
   recovery: NoteEditRecovery;
 }
 
+export interface LocalNavigationState {
+  version: 1;
+  root: string;
+  project: string;
+  section: string | null;
+  sky_anchor: string | null;
+  page_anchors: Record<string, string>;
+  note: string | null;
+}
+
 export interface LibraryDocument {
   id: string;
   source: string;

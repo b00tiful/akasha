@@ -1,9 +1,14 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use akasha_desktop::{
-    library_document, library_projection, save_library_document, search_project_library,
+    LocalNavigationState, library_document, library_projection, load_local_navigation_file,
+    save_library_document, save_local_navigation_file, search_project_library,
 };
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -99,6 +104,114 @@ fn adapter_saves_through_the_checked_core_boundary() {
     )
     .expect_err("stale desktop baseline must conflict");
     assert_eq!(stale.code, 5);
+}
+
+#[test]
+fn local_navigation_state_is_private_atomic_and_bound_to_one_projection() {
+    let temp = TempDir::new("local-navigation");
+    let path = temp.path().join("state/local-navigation.json");
+    let mut page_anchors = BTreeMap::new();
+    page_anchors.insert(
+        "entity".to_owned(),
+        "Projects/example/entities/core.md".to_owned(),
+    );
+    let mut state = LocalNavigationState {
+        version: 1,
+        root: "/validated/root".to_owned(),
+        project: "example".to_owned(),
+        section: Some("entity".to_owned()),
+        sky_anchor: Some("entity".to_owned()),
+        page_anchors,
+        note: Some("Projects/example/entities/core.md".to_owned()),
+    };
+
+    save_local_navigation_file(&path, &state).expect("save local navigation");
+    assert_eq!(
+        load_local_navigation_file(&path, &state.root, &state.project)
+            .expect("load local navigation"),
+        Some(state.clone())
+    );
+    assert_eq!(
+        load_local_navigation_file(&path, "/other/root", &state.project)
+            .expect("ignore another root"),
+        None
+    );
+    #[cfg(unix)]
+    {
+        assert_eq!(
+            fs::metadata(path.parent().expect("state parent"))
+                .expect("state directory metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&path)
+                .expect("state file metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    state.note = None;
+    save_local_navigation_file(&path, &state).expect("replace local navigation");
+    assert_eq!(
+        load_local_navigation_file(&path, &state.root, &state.project)
+            .expect("load replaced navigation"),
+        Some(state)
+    );
+    assert_eq!(
+        fs::read_dir(path.parent().expect("state parent"))
+            .expect("read state directory")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn local_navigation_state_rejects_invalid_or_untrusted_files() {
+    let temp = TempDir::new("invalid-local-navigation");
+    let path = temp.path().join("state/local-navigation.json");
+    let invalid = LocalNavigationState {
+        version: 2,
+        root: "/validated/root".to_owned(),
+        project: "example".to_owned(),
+        section: None,
+        sky_anchor: None,
+        page_anchors: BTreeMap::new(),
+        note: None,
+    };
+    let error = save_local_navigation_file(&path, &invalid)
+        .expect_err("unknown state version must fail before writing");
+    assert_eq!(error.code, 4);
+    assert!(!path.exists());
+
+    fs::create_dir_all(path.parent().expect("state parent")).expect("create state directory");
+    fs::write(
+        &path,
+        br#"{"version":1,"root":"/validated/root","project":"example","section":null,"sky_anchor":null,"page_anchors":{},"note":null,"unknown":true}"#,
+    )
+    .expect("write malformed state");
+    #[cfg(unix)]
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+        .expect("make malformed state private");
+    let error = load_local_navigation_file(&path, "/validated/root", "example")
+        .expect_err("unknown fields must fail closed");
+    assert_eq!(error.code, 4);
+    assert!(error.message.contains("unknown field"));
+
+    #[cfg(unix)]
+    {
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
+            .expect("make state overly broad");
+        let error = load_local_navigation_file(&path, "/validated/root", "example")
+            .expect_err("broad state mode must fail closed");
+        assert_eq!(error.code, 4);
+        assert!(error.message.contains("not private"));
+    }
 }
 
 fn copy_tree(source: &Path, destination: &Path) {

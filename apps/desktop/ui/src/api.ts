@@ -1,6 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import type { DesktopLibrary, LibraryDocument, LibrarySearchResult, NoteEditResult } from "./types";
+import type {
+  DesktopLibrary,
+  LibraryDocument,
+  LibrarySearchResult,
+  LocalNavigationState,
+  NoteEditResult,
+} from "./types";
 
 function optional(value: string): string | null {
   const trimmed = value.trim();
@@ -52,4 +58,15 @@ export function saveDocument(
     expectedSource,
     replacementSource,
   });
+}
+
+export function loadLocalNavigation(
+  root: string,
+  project: string,
+): Promise<LocalNavigationState | null> {
+  return invoke<LocalNavigationState | null>("load_local_navigation", { root, project });
+}
+
+export function saveLocalNavigation(state: LocalNavigationState): Promise<void> {
+  return invoke<void>("save_local_navigation", { state });
 }

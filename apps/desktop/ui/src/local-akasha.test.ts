@@ -31,7 +31,12 @@ describe("Local Akasha hierarchy", () => {
     const model = localAkashaModel(localFixture(count, sectionCount));
     const host = document.createElement("div"); document.body.append(host);
     const navigation: LocalNavigation = { section: null, skyPage: 0, pages: {} };
-    const callbacks = { canNavigate: vi.fn(() => true), onSelect: vi.fn(), onBack: vi.fn() };
+    const callbacks = {
+      canNavigate: vi.fn(() => true),
+      onSelect: vi.fn(),
+      onBack: vi.fn(),
+      onNavigationChange: vi.fn(),
+    };
     const handle = mountLocalAkasha(host, model, navigation, reduced, callbacks);
     return { host, model, navigation, callbacks, handle };
   }
@@ -109,7 +114,7 @@ describe("Local Akasha hierarchy", () => {
   });
 
   it("visits all 53 notes in bounded orbital pages and restores the overview", () => {
-    const { host, handle, navigation } = mount();
+    const { host, handle, navigation, callbacks } = mount();
     const initial = [...host.querySelectorAll<HTMLElement>(".local-section")].map((node) => node.style.cssText);
     host.querySelector<HTMLButtonElement>('[data-section="section-0"]')!.click();
     const seen = new Set<string>();
@@ -121,6 +126,7 @@ describe("Local Akasha hierarchy", () => {
     }
     expect(seen.size).toBe(53);
     expect(navigation.pages["section-0"]).toBe(3);
+    expect(callbacks.onNavigationChange).toHaveBeenCalled();
     handle.back();
     expect([...host.querySelectorAll<HTMLElement>(".local-section")].map((node) => node.style.cssText)).toEqual(initial);
     expect((document.activeElement as HTMLElement).dataset.section).toBe("section-0");

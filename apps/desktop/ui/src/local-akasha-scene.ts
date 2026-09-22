@@ -22,7 +22,12 @@ export function mountLocalAkasha(
   model: LocalAkashaModel,
   navigation: LocalNavigation,
   reducedMotion: boolean,
-  callbacks: { canNavigate(): boolean; onSelect(book: LibraryBook): void; onBack(): void },
+  callbacks: {
+    canNavigate(): boolean;
+    onSelect(book: LibraryBook): void;
+    onBack(): void;
+    onNavigationChange(): void;
+  },
 ): LocalSceneHandle {
   const root = document.createElement("section");
   root.className = "local-akasha";
@@ -111,6 +116,7 @@ export function mountLocalAkasha(
     count.textContent = `${sections.length} sections · ${model.noteCount} notes`;
     controls(navigation.skyPage, sections.length, SKY_PAGE_SIZE, (page) => {
       navigation.skyPage = page;
+      callbacks.onNavigationChange();
       showDirectory();
       directory.querySelector<HTMLButtonElement>("button")?.focus();
     });
@@ -160,6 +166,7 @@ export function mountLocalAkasha(
     const changePage = (next: number) => {
       if (!callbacks.canNavigate()) return;
       navigation.pages[section.note_type] = next;
+      callbacks.onNavigationChange();
       showSection(true);
     };
     const remaining = section.books.length - (page + 1) * ORBIT_PAGE_SIZE;
@@ -199,6 +206,7 @@ export function mountLocalAkasha(
     const source = star && bounds.width ? { x: (star.x + star.width / 2 - bounds.x) / bounds.width,
       y: (star.y + star.height / 2 - bounds.y) / bounds.height } : stagePoint(positions.get(section.note_type)!);
     navigation.section = section.note_type;
+    callbacks.onNavigationChange();
     showSection();
     directory.hidden = false;
     directory.inert = true;
@@ -216,6 +224,7 @@ export function mountLocalAkasha(
     const previous = navigation.section;
     selectedId = null;
     navigation.section = null;
+    callbacks.onNavigationChange();
     root.classList.remove("has-note");
     system.inert = true;
     directory.hidden = false;
@@ -268,6 +277,7 @@ export function mountLocalAkasha(
         const section = sections.find((item) => item.books.some((book) => book.id === id));
         if (section) {
           navigation.section = section.note_type;
+          navigation.skyPage = Math.floor(sections.indexOf(section) / SKY_PAGE_SIZE);
           navigation.pages[section.note_type] = Math.floor(section.books.findIndex((book) => book.id === id) / ORBIT_PAGE_SIZE);
         }
       }
@@ -276,6 +286,7 @@ export function mountLocalAkasha(
         if (!id) [...system.querySelectorAll<HTMLButtonElement>(".local-note")]
           .find((node) => node.dataset.note === lastSelectedId)?.focus();
       }
+      callbacks.onNavigationChange();
     },
   };
 }

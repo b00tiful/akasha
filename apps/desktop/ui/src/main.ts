@@ -1,10 +1,22 @@
 import "./styles.css";
 
-import { loadDocument, loadLibrary, saveDocument, searchProject } from "./api";
+import {
+  loadDocument,
+  loadLibrary,
+  loadLocalNavigation,
+  saveDocument,
+  saveLocalNavigation,
+  searchProject,
+} from "./api";
 import { NoteViewer, type ViewerMode } from "./editor";
 import { renderFallback, renderLocalFallback } from "./fallback";
 import { localAkashaModel } from "./local-akasha-model";
 import { mountLocalAkasha, type LocalNavigation, type LocalSceneHandle } from "./local-akasha-scene";
+import {
+  emptyLocalNavigation,
+  restoreLocalNavigation,
+  snapshotLocalNavigation,
+} from "./local-akasha-state";
 import {
   allBooks,
   libraryShelves,
@@ -82,9 +94,11 @@ let activeResolution: { root: string; project: string } | null = null;
 let localScene: LocalSceneHandle | null = null;
 let localMode = new URLSearchParams(location.search).get("view") === "local";
 const localNavigation = new Map<string, LocalNavigation>();
+const pendingLocalNotes = new Map<string, LibraryBook>();
 let documentRequest = 0;
 let searchRequest = 0;
 let switchingScope = false;
+let navigationSave = Promise.resolve();
 
 reducedMotion.checked = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 document.documentElement.classList.toggle("reduced-motion", reducedMotion.checked);
@@ -215,6 +229,7 @@ async function openLibrary(
   try {
     library = await loadLibrary(requestedResolution.root, requestedResolution.project);
     activeResolution = { root: library.projection.root, project: library.projection.selected_project };
+    const navigationWarning = await hydrateLocalNavigation(library);
     rootInput.value = requestedResolution.root;
     projectInput.value = requestedResolution.project;
     selectedId = null;
@@ -242,19 +257,21 @@ async function openLibrary(
     closeSearch();
 
     if (preferred) {
+      pendingLocalNotes.delete(localAkashaModel(library.projection).key);
       await selectBook(preferred);
-    } else {
+    } else if (!(localMode && await restorePendingLocalNote(library))) {
       noteOverlay.hidden = true;
       viewer.setDocument("", false);
       metaHost.innerHTML = "<p>Select a note from an open volume.</p>";
     }
 
     const recovery = library.recovery === "none" ? "" : ` / recovery ${library.recovery}`;
+    const success = localMode
+      ? `Local project ${library.projection.selected_project} / validation passed${recovery}`
+      : `${library.projection.total_books} canonical notes / ${library.projection.projects.length} projects / validation passed${recovery}`;
     setStatus(
-      localMode
-        ? `Local project ${library.projection.selected_project} / validation passed${recovery}`
-        : `${library.projection.total_books} canonical notes / ${library.projection.projects.length} projects / validation passed${recovery}`,
-      "success",
+      navigationWarning ? `${success} / ${navigationWarning}` : success,
+      navigationWarning ? "warning" : "success",
     );
   } catch (error) {
     library = null;
@@ -310,6 +327,7 @@ async function renderScene(current: DesktopLibrary): Promise<void> {
       },
       onSelect: (book) => void selectBook(book),
       onBack: () => { if (!noteOverlay.hidden) closeNote(); else localScene?.back(); },
+      onNavigationChange: persistLocalNavigation,
     });
     volumePanel.hidden = true;
     return;
@@ -346,7 +364,8 @@ async function switchScope(): Promise<void> {
   localMode = !localMode;
   try {
     await renderScene(library);
-    if (!localMode) renderVolume();
+    if (localMode) await restorePendingLocalNote(library);
+    else renderVolume();
     setStatus(localMode ? `Local project ${library.projection.selected_project}` : "Global archive", "success");
     scopeToggle.focus();
   } catch (error) {
@@ -355,6 +374,43 @@ async function switchScope(): Promise<void> {
     switchingScope = false;
     scopeToggle.disabled = false;
   }
+}
+
+async function hydrateLocalNavigation(current: DesktopLibrary): Promise<string | null> {
+  const model = localAkashaModel(current.projection);
+  if (localNavigation.has(model.key)) return null;
+  try {
+    const state = await loadLocalNavigation(model.root, model.project);
+    const restored = restoreLocalNavigation(model, state);
+    localNavigation.set(model.key, restored.navigation);
+    if (restored.note) pendingLocalNotes.set(model.key, restored.note);
+    return null;
+  } catch (error) {
+    localNavigation.set(model.key, emptyLocalNavigation());
+    return `saved local navigation ignored: ${errorMessage(error)}`;
+  }
+}
+
+async function restorePendingLocalNote(current: DesktopLibrary): Promise<boolean> {
+  const key = localAkashaModel(current.projection).key;
+  const book = pendingLocalNotes.get(key);
+  if (!book) return false;
+  pendingLocalNotes.delete(key);
+  await selectBook(book);
+  return true;
+}
+
+function persistLocalNavigation(): void {
+  if (!library) return;
+  const model = localAkashaModel(library.projection);
+  const navigation = localNavigation.get(model.key);
+  if (!navigation) return;
+  const state = snapshotLocalNavigation(model, navigation, selectedId);
+  navigationSave = navigationSave
+    .then(() => saveLocalNavigation(state))
+    .catch((error) => {
+      setStatus(`Local navigation was not saved: ${errorMessage(error)}`, "warning");
+    });
 }
 
 async function chooseShelf(id: string): Promise<void> {

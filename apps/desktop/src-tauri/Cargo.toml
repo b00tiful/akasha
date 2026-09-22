@@ -12,6 +12,7 @@ desktop = ["dep:tauri"]
 [dependencies]
 akasha-core = { path = "../../../crates/akasha-core" }
 serde.workspace = true
+serde_json.workspace = true
 tauri = { workspace = true, optional = true }
 
 [build-dependencies]

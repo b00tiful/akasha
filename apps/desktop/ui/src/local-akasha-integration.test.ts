@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import shell from "../index.html?raw";
-import type { DesktopLibrary, LibraryBook, LibraryDocument, LibrarySearchResult } from "./types";
+import type {
+  DesktopLibrary,
+  LibraryBook,
+  LibraryDocument,
+  LibrarySearchResult,
+  LocalNavigationState,
+} from "./types";
 
 describe("local scene and shared editor integration", () => {
   it("protects dirty edits, binds exact saves and searches, and ignores stale document responses", async () => {
@@ -36,6 +42,8 @@ describe("local scene and shared editor integration", () => {
     const loadDocument = vi.fn((_root: string, _project: string, id: string) =>
       new Promise<LibraryDocument>((resolve) => loads.push({ id, resolve })));
     const saveDocument = vi.fn(async () => ({ changed: true }));
+    const loadLocalNavigation = vi.fn(async () => null);
+    const saveLocalNavigation = vi.fn(async (_state: LocalNavigationState) => undefined);
     const searchProject = vi.fn(async (): Promise<LibrarySearchResult> => ({
       query: "second", scope: { kind: "project", project: "example" }, total_matches: 1,
       truncated: false, hits: [{ id: books[1]!.id, label: books[1]!.label,
@@ -43,6 +51,7 @@ describe("local scene and shared editor integration", () => {
     }));
     vi.doMock("./api", () => ({
       loadLibrary: vi.fn(async () => library), loadDocument, saveDocument, searchProject,
+      loadLocalNavigation, saveLocalNavigation,
     }));
     vi.doMock("./scene", () => ({ mountLibraryScene: vi.fn(async () => ({
       aimedShelfId: () => null, select: vi.fn(), destroy: vi.fn(),
@@ -51,12 +60,17 @@ describe("local scene and shared editor integration", () => {
     const documents = vi.spyOn(NoteViewer.prototype, "setDocument");
     await import("./main");
     await vi.waitFor(() => expect(document.querySelectorAll(".local-section")).toHaveLength(1));
+    expect(loadLocalNavigation).toHaveBeenCalledWith("/resolved/root", "example");
     expect(document.querySelector(".brand-name")!.textContent).toBe("AKASHA LOCAL VAULT");
     expect(document.querySelector("#dashboard-title")!.textContent).toBe("Vault status");
     expect(document.querySelector("#dashboard-compact")!.textContent).toContain("Open tasks3");
     expect(document.querySelector("#dashboard-projects")!.textContent).not.toContain("other");
     const click = (selector: string) => document.querySelector<HTMLButtonElement>(selector)!.click();
     click(".local-section");
+    await vi.waitFor(() => expect(saveLocalNavigation).toHaveBeenCalled());
+    expect(saveLocalNavigation.mock.calls.at(-1)![0]).toMatchObject({
+      root: "/resolved/root", project: "example", section: "entity", note: null,
+    });
     click(".local-note");
     click(".local-note:nth-of-type(2)");
     expect(loads).toHaveLength(2);
@@ -86,6 +100,9 @@ describe("local scene and shared editor integration", () => {
     loads[2]!.resolve({ id: books[1]!.id, source: "# Changed second\n" });
     await vi.waitFor(() => expect(documents).toHaveBeenLastCalledWith("# Changed second\n", true));
     click("#note-close");
+    await vi.waitFor(() => expect(saveLocalNavigation.mock.calls.at(-1)![0]).toMatchObject({
+      root: "/resolved/root", project: "example", note: null,
+    }));
     expect((document.activeElement as HTMLElement).dataset.note).toBe(books[1]!.id);
     expect(document.querySelector(".local-akasha")!.getAttribute("data-phase")).toBe("section");
     click("#search-toggle");
