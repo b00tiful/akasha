@@ -22,6 +22,8 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 
 use app::App;
 
+const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
 /// Drop restores the terminal on normal exit and unwinding, including partial setup failure.
 struct TerminalGuard;
 impl Drop for TerminalGuard {
@@ -96,12 +98,12 @@ fn terminal_session(
     let started = Instant::now();
     let mut redraw = true;
     let mut last_tick = Instant::now();
+    let mut last_refresh_check = Instant::now();
     let mut focused = true;
     while !app.quit {
         match responses.try_recv() {
             Ok(result) => {
-                app.receive(result);
-                redraw = true;
+                redraw |= app.receive(result);
             }
             Err(mpsc::TryRecvError::Empty) => {}
             Err(mpsc::TryRecvError::Disconnected) => {
@@ -116,6 +118,10 @@ fn terminal_session(
             last_tick = Instant::now();
             redraw = true;
         }
+        if focused && last_refresh_check.elapsed() >= AUTO_REFRESH_INTERVAL {
+            app.check_external_changes();
+            last_refresh_check = Instant::now();
+        }
         if redraw {
             terminal.draw(|frame| view::draw(frame, &mut app))?;
             redraw = false;
@@ -126,7 +132,11 @@ fn terminal_session(
                 Event::Paste(text) => app.paste(&text),
                 Event::Mouse(mouse) => app.mouse(mouse),
                 Event::Resize(_, _) => {}
-                Event::FocusGained => focused = true,
+                Event::FocusGained => {
+                    focused = true;
+                    app.check_external_changes();
+                    last_refresh_check = Instant::now();
+                }
                 Event::FocusLost => focused = false,
                 _ => {}
             }

@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, VecDeque};
+use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -255,8 +256,20 @@ enum Workflow {
     Lifecycle(Box<LifecycleForm>),
 }
 
+pub(super) struct WatchedSource {
+    path: PathBuf,
+    expected: String,
+}
+
+pub(super) struct RefreshCheck {
+    request: ResolveRequest,
+    projection: Box<LibraryProjection>,
+    changed: bool,
+}
+
 pub(super) enum Job {
     Load(ResolveRequest),
+    Check(ResolveRequest, Box<LibraryProjection>, Vec<WatchedSource>),
     Open(ResolveRequest, String),
     Search(ResolveRequest, String, Option<LibraryScope>),
     Context(ResolveRequest),
@@ -276,6 +289,7 @@ pub(super) enum Job {
 }
 pub(super) enum Response {
     Loaded(ResolveRequest, Box<LibraryProjection>),
+    Checked(Result<RefreshCheck, String>),
     Opened(LibraryDocument),
     Found(LibrarySearchResult),
     Text(String, String),
@@ -309,6 +323,30 @@ fn execute_job(job: Job) -> WorkResult {
             request.root_override = Some(projection.root.clone());
             request.project_override = Some(projection.selected_project.clone());
             Ok(Response::Loaded(request, Box::new(projection)))
+        }
+        Job::Check(mut request, previous, watched) => {
+            let checked = (|| {
+                let projection = build_library_projection(&request).map_err(|e| err(&e))?;
+                request.root_override = Some(projection.root.clone());
+                request.project_override = Some(projection.selected_project.clone());
+                let watched_changed = watched.into_iter().try_fold(false, |changed, source| {
+                    fs::read_to_string(&source.path)
+                        .map(|current| changed || current != source.expected)
+                        .map_err(|error| {
+                            format!(
+                                "could not check {} for external changes: {error}",
+                                source.path.display()
+                            )
+                        })
+                })?;
+                let changed = *previous != projection || watched_changed;
+                Ok(RefreshCheck {
+                    request,
+                    projection: Box::new(projection),
+                    changed,
+                })
+            })();
+            Ok(Response::Checked(checked))
         }
         Job::Open(request, id) => {
             recover_pending_note_edit(&request).map_err(|e| err(&e))?;
@@ -443,6 +481,8 @@ pub(super) struct App {
     pub max_scroll: u16,
     pub messages: VecDeque<String>,
     pub busy: bool,
+    pub checking: bool,
+    pub external_change_pending: bool,
     pub quit: bool,
     pub no_motion: bool,
     pub ascii: bool,
@@ -490,6 +530,8 @@ impl App {
             max_scroll: 0,
             messages: VecDeque::new(),
             busy: false,
+            checking: false,
+            external_change_pending: false,
             quit: false,
             no_motion,
             ascii,
@@ -511,6 +553,58 @@ impl App {
 
     pub fn load(&mut self) {
         self.submit(Job::Load(self.request.clone()));
+    }
+    pub fn check_external_changes(&mut self) -> bool {
+        if self.busy || self.checking || self.external_change_pending {
+            return false;
+        }
+        let Some(projection) = self.projection.clone() else {
+            return false;
+        };
+        let watched = self.watched_sources();
+        match self.jobs.send(Job::Check(
+            self.request.clone(),
+            Box::new(projection),
+            watched,
+        )) {
+            Ok(()) => {
+                self.checking = true;
+                true
+            }
+            Err(_) => {
+                self.message("Memory worker unavailable; exit and restart Akasha.");
+                false
+            }
+        }
+    }
+    fn watched_sources(&self) -> Vec<WatchedSource> {
+        match &self.workflow {
+            Some(Workflow::Creation(form)) => vec![WatchedSource {
+                path: form.prepared.projection.clone(),
+                expected: form.prepared.projection_source.clone(),
+            }],
+            Some(Workflow::Lifecycle(form)) => vec![
+                WatchedSource {
+                    path: form.prepared.path.clone(),
+                    expected: form.prepared.source.clone(),
+                },
+                WatchedSource {
+                    path: form.prepared.roadmap.clone(),
+                    expected: form.prepared.roadmap_source.clone(),
+                },
+            ],
+            None => self
+                .document
+                .as_ref()
+                .zip(self.request.root_override.as_ref())
+                .map(|(document, root)| {
+                    vec![WatchedSource {
+                        path: root.join(&document.id),
+                        expected: document.source.clone(),
+                    }]
+                })
+                .unwrap_or_default(),
+        }
     }
     fn submit(&mut self, job: Job) {
         if self.busy {
@@ -986,11 +1080,20 @@ impl App {
             editor.source(),
         ));
     }
-    pub fn receive(&mut self, response: WorkResult) {
-        self.busy = false;
+    pub fn receive(&mut self, response: WorkResult) -> bool {
+        let redraw = !matches!(
+            &response,
+            Ok(Response::Checked(Ok(RefreshCheck { changed: false, .. })))
+        );
+        if matches!(&response, Ok(Response::Checked(_))) {
+            self.checking = false;
+        } else {
+            self.busy = false;
+        }
         match response {
             Err(error) => self.message(&format!("Operation failed: {error}")),
             Ok(Response::Loaded(request, projection)) => {
+                self.external_change_pending = false;
                 self.request = request;
                 self.scope = LibraryScope::Project {
                     project: projection.selected_project.clone(),
@@ -1009,6 +1112,36 @@ impl App {
                 if let Some(id) = self.pending_open.take() {
                     self.submit(Job::Open(self.request.clone(), id));
                 }
+            }
+            Ok(Response::Checked(Err(error))) => {
+                self.external_change_pending = true;
+                self.message(&format!(
+                    "External library change could not be refreshed: {error}. Drafts were retained; fix the source, then press F5."
+                ));
+            }
+            Ok(Response::Checked(Ok(checked))) if !checked.changed => {}
+            Ok(Response::Checked(Ok(_))) if self.dirty() => {
+                self.external_change_pending = true;
+                self.message(
+                    "External changes detected. Drafts were retained; save may conflict. Save or discard, then press F5.",
+                );
+            }
+            Ok(Response::Checked(Ok(checked))) => {
+                self.request = checked.request;
+                self.scope = LibraryScope::Project {
+                    project: checked.projection.selected_project.clone(),
+                };
+                self.projection = Some(*checked.projection);
+                self.document = None;
+                self.editor = None;
+                self.editing = false;
+                self.body_title = "WELCOME TO AKASHA".into();
+                self.body = HELP.into();
+                self.scroll = 0;
+                self.categories(self.scope.clone());
+                self.navigation.clear();
+                self.focus = Focus::Prompt;
+                self.message("Library refreshed after external changes.");
             }
             Ok(Response::Opened(document)) => {
                 self.body_title = document.id.clone();
@@ -1074,7 +1207,7 @@ impl App {
                     Ok(editor) => editor,
                     Err(error) => {
                         self.message(&format!("Operation failed: {error}"));
-                        return;
+                        return true;
                     }
                 };
                 let fields = prepared
@@ -1119,14 +1252,14 @@ impl App {
                     Ok(editor) => editor,
                     Err(error) => {
                         self.message(&format!("Operation failed: {error}"));
-                        return;
+                        return true;
                     }
                 };
                 let roadmap = match Editor::new(&prepared.roadmap_source) {
                     Ok(editor) => editor,
                     Err(error) => {
                         self.message(&format!("Operation failed: {error}"));
-                        return;
+                        return true;
                     }
                 };
                 self.workflow = Some(Workflow::Lifecycle(Box::new(LifecycleForm {
@@ -1163,6 +1296,7 @@ impl App {
                 self.load();
             }
         }
+        redraw
     }
 
     pub fn command(&mut self, input: &str) {
@@ -1859,6 +1993,7 @@ mod tests {
     };
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
     const ID: &str = "Projects/example/entities/core.md";
+    const GLOBAL_ID: &str = "Global/entities/rust-pattern.md";
     const TASK_ID: &str = "Projects/example/records/tasks/active.md";
     const CREATED_TASK_ID: &str = "Projects/example/records/tasks/tui-created.md";
     const TASK_TEMPLATE: &str = "---\nschema_version: 1\nproject: {{project}}\ntype: {{type}}\nstatus: {{status}}\ncreated: {{created}}\nupdated: {{updated}}\n---\n\n# {{title}}\n\n{{body}}\n";
@@ -1904,8 +2039,12 @@ mod tests {
             );
             fixture
         }
-        fn finish(&mut self) {
-            self.app.receive(execute_job(self.jobs.try_recv().unwrap()));
+        fn finish(&mut self) -> bool {
+            self.app.receive(execute_job(self.jobs.try_recv().unwrap()))
+        }
+        fn check_external_changes(&mut self) -> bool {
+            assert!(self.app.check_external_changes());
+            self.finish()
         }
         fn open_editor(&mut self) {
             self.app.open(ID);
@@ -2011,6 +2150,154 @@ mod tests {
         fixture.app.open(ID);
         fixture.finish();
         assert_eq!(fixture.app.document.as_ref().unwrap().source, external);
+    }
+
+    #[test]
+    fn automatic_check_is_silent_until_a_clean_external_change_refreshes_the_library() {
+        let mut fixture = Fixture::new();
+        fixture.app.open(GLOBAL_ID);
+        fixture.finish();
+        let before = fixture
+            .app
+            .document
+            .as_ref()
+            .expect("global document")
+            .source
+            .clone();
+        let message_count = fixture.app.messages.len();
+
+        let redraw = fixture.check_external_changes();
+
+        assert!(fixture.app.document.is_some());
+        assert_eq!(fixture.app.messages.len(), message_count);
+        assert!(!redraw, "an unchanged automatic check must not repaint");
+        let external = format!("{before}\nExternal global detail.\n");
+        fs::write(fixture.root().join(GLOBAL_ID), &external).unwrap();
+
+        fixture.check_external_changes();
+
+        assert!(!fixture.app.external_change_pending);
+        assert!(fixture.app.document.is_none());
+        assert!(fixture.app.editor.is_none());
+        assert_eq!(
+            fs::read_to_string(fixture.root().join(GLOBAL_ID)).unwrap(),
+            external
+        );
+        assert_eq!(
+            fixture.app.messages.back().map(String::as_str),
+            Some("Library refreshed after external changes.")
+        );
+    }
+
+    #[test]
+    fn automatic_check_signals_external_edit_without_replacing_dirty_editor() {
+        let mut fixture = Fixture::new();
+        fixture.open_editor();
+        let before = fs::read_to_string(fixture.path()).unwrap();
+        fixture.app.paste("\nlocal draft\n");
+        let draft = fixture.app.editor.as_ref().unwrap().source();
+        let external = format!("{before}\nexternal edit\n");
+        replace_library_document(&fixture.app.request, ID, &before, &external).unwrap();
+
+        fixture.check_external_changes();
+
+        assert!(fixture.app.external_change_pending);
+        assert!(fixture.app.dirty());
+        assert_eq!(fixture.app.editor.as_ref().unwrap().source(), draft);
+        assert_eq!(fs::read_to_string(fixture.path()).unwrap(), external);
+        assert!(
+            fixture
+                .app
+                .messages
+                .back()
+                .unwrap()
+                .contains("Drafts were retained")
+        );
+    }
+
+    #[test]
+    fn automatic_check_keeps_the_current_view_when_external_source_is_invalid() {
+        let mut fixture = Fixture::new();
+        fixture.app.open(GLOBAL_ID);
+        fixture.finish();
+        let loaded = fixture.app.document.as_ref().unwrap().source.clone();
+        fs::write(
+            fixture.root().join(GLOBAL_ID),
+            "---\ntype: entity\n---\n\ninvalid external source\n",
+        )
+        .unwrap();
+
+        fixture.check_external_changes();
+
+        assert!(fixture.app.external_change_pending);
+        assert_eq!(fixture.app.document.as_ref().unwrap().source, loaded);
+        assert!(fixture.app.editor.is_none());
+        assert!(
+            fixture
+                .app
+                .messages
+                .back()
+                .unwrap()
+                .contains("could not be refreshed")
+        );
+    }
+
+    #[test]
+    fn automatic_check_preserves_creation_inputs_after_external_change() {
+        let mut fixture = Fixture::new();
+        fixture.app.command("create task");
+        fixture.finish();
+        fixture.app.paste("draft-task.md");
+        let global_path = fixture.root().join(GLOBAL_ID);
+        let before = fs::read_to_string(&global_path).unwrap();
+        let external = before.replace("status: stable", "status: reviewed");
+        fs::write(&global_path, &external).unwrap();
+
+        fixture.check_external_changes();
+
+        assert!(fixture.app.external_change_pending);
+        assert!(fixture.app.in_workflow());
+        assert!(fixture.app.creation_input_active());
+        assert_eq!(fixture.app.prompt.lines(), ["draft-task.md"]);
+        assert_eq!(fs::read_to_string(global_path).unwrap(), external);
+    }
+
+    #[test]
+    fn automatic_check_preserves_both_lifecycle_drafts_after_external_change() {
+        let mut fixture = Fixture::new();
+        fixture.app.open(TASK_ID);
+        fixture.finish();
+        fixture.app.command("lifecycle");
+        fixture.finish();
+        let (before, task_draft, roadmap_draft) = {
+            let Some(Workflow::Lifecycle(form)) = &mut fixture.app.workflow else {
+                panic!("task lifecycle form was not prepared");
+            };
+            let before = form.prepared.source.clone();
+            let task_draft = format!("{}\nlocal task draft\n", before.trim_end());
+            let roadmap_draft = format!(
+                "{}\nlocal roadmap draft\n",
+                form.prepared.roadmap_source.trim_end()
+            );
+            form.task = Editor::new(&task_draft).unwrap();
+            form.roadmap = Editor::new(&roadmap_draft).unwrap();
+            (before, task_draft, roadmap_draft)
+        };
+        let external = format!("{}\nexternal task edit\n", before.trim_end());
+        replace_library_document(&fixture.app.request, TASK_ID, &before, &external).unwrap();
+
+        fixture.check_external_changes();
+
+        assert!(fixture.app.external_change_pending);
+        let Some(Workflow::Lifecycle(form)) = &fixture.app.workflow else {
+            panic!("external refresh discarded the lifecycle form");
+        };
+        assert_eq!(form.task.source(), task_draft);
+        assert_eq!(form.roadmap.source(), roadmap_draft);
+        assert_eq!(
+            fs::read_to_string(fixture.root().join(TASK_ID)).unwrap(),
+            external
+        );
     }
 
     #[test]

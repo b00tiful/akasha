@@ -171,7 +171,13 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         ])),
         name,
     );
-    let state = if app.busy {
+    let state = if app.external_change_pending && app.in_workflow() {
+        "external change · form pending"
+    } else if app.external_change_pending && app.dirty() {
+        "external change · unsaved"
+    } else if app.external_change_pending {
+        "external change · F5"
+    } else if app.busy {
         "working"
     } else if app.in_workflow() {
         "form pending"
@@ -190,7 +196,14 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
                 },
                 subdued(app),
             ),
-            Span::styled(state, if app.dirty() { accent(app) } else { ink(app) }),
+            Span::styled(
+                state,
+                if app.dirty() || app.external_change_pending {
+                    accent(app)
+                } else {
+                    ink(app)
+                },
+            ),
         ]))
         .alignment(Alignment::Right),
         status,
