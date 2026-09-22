@@ -2291,7 +2291,9 @@ impl App {
                 return;
             }
             if let Some(editor) = self.active_editor_mut() {
-                let text = text.replace("\r\n", "\n");
+                // Terminal paste may encode line breaks as bare CR (for example VTE).
+                // Normalize input only; Editor retains the source document's separator.
+                let text = text.replace("\r\n", "\n").replace('\r', "\n");
                 if text
                     .chars()
                     .any(|c| c.is_control() && c != '\n' && c != '\t')
@@ -3381,6 +3383,56 @@ mod tests {
         fixture.app.command("home");
         assert!(fixture.app.dirty());
         assert_ne!(fixture.app.body_title, "WELCOME TO AKASHA");
+    }
+
+    #[test]
+    fn terminal_paste_newlines_preserve_document_style_and_undo() {
+        for separator in ["\n", "\r\n"] {
+            for ending in ["\n", "\r\n", "\r"] {
+                let mut fixture = Fixture::new();
+                let original = fs::read_to_string(fixture.path())
+                    .unwrap()
+                    .replace("\r\n", "\n")
+                    .replace('\n', separator);
+                replace_library_document(
+                    &fixture.app.request,
+                    ID,
+                    &fs::read_to_string(fixture.path()).unwrap(),
+                    &original,
+                )
+                .unwrap();
+                fixture.open_editor();
+                let paste = format!("{ending}Привет 世界 e\u{301}{ending}\tsecond{ending}");
+                fixture.app.paste(&paste);
+                let expected = format!(
+                    "{original}{separator}Привет 世界 e\u{301}{separator}\tsecond{separator}"
+                );
+                assert_eq!(fixture.app.editor.as_ref().unwrap().source(), expected);
+                assert!(fixture.app.dirty());
+                assert!(fixture.app.editor.as_mut().unwrap().area.undo());
+                assert_eq!(fixture.app.editor.as_ref().unwrap().source(), original);
+                fixture.app.paste(&paste);
+                fixture.app.command("save");
+                fixture.finish();
+                assert_eq!(fs::read_to_string(fixture.path()).unwrap(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_paste_normalization_does_not_admit_other_controls() {
+        let mut fixture = Fixture::new();
+        fixture.open_editor();
+        let original = fixture.app.editor.as_ref().unwrap().source();
+        for control in ['\0', '\x1b', '\x7f', '\u{85}', '\u{9b}'] {
+            fixture.app.paste(&format!("line\rnext{control}unsafe"));
+            assert_eq!(fixture.app.editor.as_ref().unwrap().source(), original);
+            assert!(!fixture.app.dirty());
+            assert_eq!(
+                fixture.app.messages.back().unwrap(),
+                "Paste contains unsupported control characters."
+            );
+        }
     }
 
     #[test]
