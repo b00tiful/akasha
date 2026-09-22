@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import shell from "../index.html?raw";
-import type { DesktopLibrary, LibraryBook, LibraryDocument } from "./types";
+import type { DesktopLibrary, LibraryBook, LibraryDocument, LibrarySearchResult } from "./types";
 
 describe("local scene and shared editor integration", () => {
-  it("protects dirty edits, binds saves to resolved identity, and ignores stale document responses", async () => {
+  it("protects dirty edits, binds exact saves and searches, and ignores stale document responses", async () => {
     document.body.innerHTML = new DOMParser().parseFromString(shell, "text/html").body.innerHTML;
     history.replaceState(null, "", "/?view=local");
     vi.stubGlobal("matchMedia", () => ({ matches: true, addEventListener: vi.fn(),
@@ -36,7 +36,14 @@ describe("local scene and shared editor integration", () => {
     const loadDocument = vi.fn((_root: string, _project: string, id: string) =>
       new Promise<LibraryDocument>((resolve) => loads.push({ id, resolve })));
     const saveDocument = vi.fn(async () => ({ changed: true }));
-    vi.doMock("./api", () => ({ loadLibrary: vi.fn(async () => library), loadDocument, saveDocument }));
+    const searchProject = vi.fn(async (): Promise<LibrarySearchResult> => ({
+      query: "second", scope: { kind: "project", project: "example" }, total_matches: 1,
+      truncated: false, hits: [{ id: books[1]!.id, label: books[1]!.label,
+        scope: books[1]!.scope, line: 2, snippet: "Second matching line" }],
+    }));
+    vi.doMock("./api", () => ({
+      loadLibrary: vi.fn(async () => library), loadDocument, saveDocument, searchProject,
+    }));
     vi.doMock("./scene", () => ({ mountLibraryScene: vi.fn(async () => ({
       aimedShelfId: () => null, select: vi.fn(), destroy: vi.fn(),
     })) }));
@@ -81,6 +88,20 @@ describe("local scene and shared editor integration", () => {
     click("#note-close");
     expect((document.activeElement as HTMLElement).dataset.note).toBe(books[1]!.id);
     expect(document.querySelector(".local-akasha")!.getAttribute("data-phase")).toBe("section");
+    click("#search-toggle");
+    const searchInput = document.querySelector<HTMLInputElement>("#search-input")!;
+    expect(document.activeElement).toBe(searchInput);
+    searchInput.value = "second";
+    document.querySelector<HTMLFormElement>("#search-form")!
+      .dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(searchProject).toHaveBeenCalledWith("/resolved/root", "example", "second"));
+    await vi.waitFor(() => expect(document.querySelector("#search-summary")!.textContent).toContain("1 match"));
+    expect(document.querySelector(".search-hit")!.textContent).toContain("Second matching line");
+    click(".search-hit");
+    await vi.waitFor(() => expect(loads).toHaveLength(4));
+    loads[3]!.resolve({ id: books[1]!.id, source: "# Changed second\n" });
+    await vi.waitFor(() => expect(document.querySelector<HTMLElement>("#search-panel")!.hidden).toBe(true));
+    click("#note-close");
     click("#scope-toggle");
     await vi.waitFor(() => expect(document.querySelector("#dashboard-title")!.textContent).toBe("Library status"));
     expect(document.querySelector("#dashboard-compact")!.textContent).toContain("Open tasks99");

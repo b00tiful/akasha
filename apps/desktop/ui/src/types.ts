@@ -73,6 +73,22 @@ export interface LibraryDocument {
   source: string;
 }
 
+export interface LibrarySearchHit {
+  id: string;
+  label: string;
+  scope: LibraryScope;
+  line: number | null;
+  snippet: string;
+}
+
+export interface LibrarySearchResult {
+  query: string;
+  scope: LibraryScope | null;
+  total_matches: number;
+  truncated: boolean;
+  hits: LibrarySearchHit[];
+}
+
 export type NoteEditRecovery = "none" | "discarded" | "rolled-back" | "finalized";
 
 export interface NoteEditResult {

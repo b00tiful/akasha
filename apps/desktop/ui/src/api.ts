@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import type { DesktopLibrary, LibraryDocument, NoteEditResult } from "./types";
+import type { DesktopLibrary, LibraryDocument, LibrarySearchResult, NoteEditResult } from "./types";
 
 function optional(value: string): string | null {
   const trimmed = value.trim();
@@ -23,6 +23,18 @@ export function loadDocument(
     root: optional(root),
     project: optional(project),
     id,
+  });
+}
+
+export function searchProject(
+  root: string,
+  project: string,
+  query: string,
+): Promise<LibrarySearchResult> {
+  return invoke<LibrarySearchResult>("search_project", {
+    root: optional(root),
+    project,
+    query,
   });
 }
 

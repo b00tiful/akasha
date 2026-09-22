@@ -33,6 +33,7 @@
           <span class="dashboard-frame-corner chrome-frame-corner dashboard-frame-corner-sw" aria-hidden="true"></span>
           <span class="dashboard-frame-corner chrome-frame-corner dashboard-frame-corner-se" aria-hidden="true"></span>
           <button id="dashboard-toggle" class="icon-button" type="button" aria-label="Toggle dashboard" aria-expanded="false" aria-pressed="false">◇</button>
+          <button id="search-toggle" class="icon-button" type="button" aria-label="Search this project" aria-expanded="false">⌕</button>
           <button id="inventory-toggle" class="icon-button" type="button" aria-label="Toggle exact inventory">▤</button>
           <button id="settings-toggle" class="icon-button" type="button" aria-label="Open library settings">⚙</button>
         </div>
@@ -146,6 +147,25 @@
             <button id="inventory-close" class="icon-button" type="button" aria-label="Close inventory">×</button>
           </header>
           <div id="fallback" class="fallback"></div>
+        </aside>
+
+        <aside id="search-panel" class="drawer search-drawer arcane-frame" aria-labelledby="search-title" hidden>
+          <header>
+            <div>
+              <p class="eyebrow">CORE SEARCH</p>
+              <h2 id="search-title">Search this project</h2>
+            </div>
+            <button id="search-close" class="icon-button" type="button" aria-label="Close search">×</button>
+          </header>
+          <form id="search-form" class="search-form">
+            <label for="search-input">Title, path, or Markdown source</label>
+            <div>
+              <input id="search-input" type="search" maxlength="256" required autocomplete="off" />
+              <button type="submit">Search</button>
+            </div>
+          </form>
+          <p id="search-summary" class="search-summary" role="status">Enter 1–256 characters.</p>
+          <div id="search-results" class="search-results"></div>
         </aside>
 
         <aside id="settings-panel" class="drawer settings-drawer arcane-frame" aria-labelledby="settings-title" hidden>

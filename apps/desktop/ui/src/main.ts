@@ -1,6 +1,6 @@
 import "./styles.css";
 
-import { loadDocument, loadLibrary, saveDocument } from "./api";
+import { loadDocument, loadLibrary, saveDocument, searchProject } from "./api";
 import { NoteViewer, type ViewerMode } from "./editor";
 import { renderFallback, renderLocalFallback } from "./fallback";
 import { localAkashaModel } from "./local-akasha-model";
@@ -15,7 +15,7 @@ import {
 } from "./projection";
 import { mountLibraryScene, type SceneHandle } from "./scene";
 import type { SpatialDirection } from "./scene-model";
-import type { CommandError, DesktopLibrary, LibraryBook } from "./types";
+import type { CommandError, DesktopLibrary, LibraryBook, LibrarySearchResult } from "./types";
 
 const form = required<HTMLFormElement>("library-form");
 const rootInput = required<HTMLInputElement>("root-input");
@@ -56,6 +56,13 @@ const dashboardProjects = required<HTMLElement>("dashboard-projects");
 const inventoryPanel = required<HTMLElement>("inventory-panel");
 const inventoryToggle = required<HTMLButtonElement>("inventory-toggle");
 const inventoryClose = required<HTMLButtonElement>("inventory-close");
+const searchPanel = required<HTMLElement>("search-panel");
+const searchToggle = required<HTMLButtonElement>("search-toggle");
+const searchClose = required<HTMLButtonElement>("search-close");
+const searchForm = required<HTMLFormElement>("search-form");
+const searchInput = required<HTMLInputElement>("search-input");
+const searchSummary = required<HTMLElement>("search-summary");
+const searchResults = required<HTMLElement>("search-results");
 const settingsPanel = required<HTMLElement>("settings-panel");
 const settingsToggle = required<HTMLButtonElement>("settings-toggle");
 const settingsClose = required<HTMLButtonElement>("settings-close");
@@ -76,6 +83,7 @@ let localScene: LocalSceneHandle | null = null;
 let localMode = new URLSearchParams(location.search).get("view") === "local";
 const localNavigation = new Map<string, LocalNavigation>();
 let documentRequest = 0;
+let searchRequest = 0;
 let switchingScope = false;
 
 reducedMotion.checked = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -98,6 +106,12 @@ dashboardToggle.addEventListener("click", toggleDashboard);
 dashboardExpand.addEventListener("click", toggleDashboard);
 inventoryToggle.addEventListener("click", () => toggleDrawer(inventoryPanel, inventoryToggle));
 inventoryClose.addEventListener("click", () => closeDrawer(inventoryPanel, inventoryToggle));
+searchToggle.addEventListener("click", toggleSearch);
+searchClose.addEventListener("click", closeSearch);
+searchForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void runProjectSearch();
+});
 settingsToggle.addEventListener("click", () => toggleDrawer(settingsPanel, settingsToggle));
 settingsClose.addEventListener("click", () => closeDrawer(settingsPanel, settingsToggle));
 
@@ -196,6 +210,7 @@ async function openLibrary(
 ): Promise<void> {
   setStatus("Validating the library through Akasha Core…");
   documentRequest++;
+  clearSearch();
   form.classList.add("is-loading");
   try {
     library = await loadLibrary(requestedResolution.root, requestedResolution.project);
@@ -224,6 +239,7 @@ async function openLibrary(
     await renderScene(library);
     renderSelection();
     closeDrawer(settingsPanel, settingsToggle);
+    closeSearch();
 
     if (preferred) {
       await selectBook(preferred);
@@ -325,6 +341,7 @@ async function switchScope(): Promise<void> {
   scopeToggle.disabled = true;
   closeNote();
   closeDrawer(inventoryPanel, inventoryToggle);
+  closeSearch();
   closeDrawer(settingsPanel, settingsToggle);
   localMode = !localMode;
   try {
@@ -433,6 +450,7 @@ async function openBookFromInventory(book: LibraryBook): Promise<void> {
       return;
     }
     closeDrawer(inventoryPanel, inventoryToggle);
+    closeSearch();
     await selectBook(book);
     return;
   }
@@ -638,6 +656,7 @@ function toggleDashboard(): void {
 function toggleDrawer(panel: HTMLElement, trigger: HTMLButtonElement): void {
   const willOpen = panel.hidden;
   closeDrawer(inventoryPanel, inventoryToggle);
+  closeSearch();
   closeDrawer(settingsPanel, settingsToggle);
   panel.hidden = !willOpen;
   trigger.setAttribute("aria-expanded", String(willOpen));
@@ -655,6 +674,8 @@ function closeTopLayer(): void {
     void closeVolume();
   } else if (!inventoryPanel.hidden) {
     closeDrawer(inventoryPanel, inventoryToggle);
+  } else if (!searchPanel.hidden) {
+    closeSearch();
   } else if (!settingsPanel.hidden) {
     closeDrawer(settingsPanel, settingsToggle);
   } else if (dashboard.classList.contains("is-expanded")) {
@@ -663,6 +684,88 @@ function closeTopLayer(): void {
     localScene?.back();
   } else if (activeShelfId) {
     closeShelf();
+  }
+}
+
+function toggleSearch(): void {
+  if (!localMode || !library) return;
+  const willOpen = searchPanel.hidden;
+  closeDrawer(inventoryPanel, inventoryToggle);
+  closeSearch();
+  closeDrawer(settingsPanel, settingsToggle);
+  searchPanel.hidden = !willOpen;
+  searchToggle.setAttribute("aria-expanded", String(willOpen));
+  if (willOpen) searchInput.focus();
+}
+
+function closeSearch(): void {
+  searchPanel.hidden = true;
+  searchToggle.setAttribute("aria-expanded", "false");
+}
+
+function clearSearch(): void {
+  searchRequest++;
+  searchInput.value = "";
+  searchSummary.textContent = "Enter 1–256 characters.";
+  searchResults.replaceChildren();
+  searchForm.removeAttribute("aria-busy");
+}
+
+async function runProjectSearch(): Promise<void> {
+  if (!localMode || !library || !activeResolution) return;
+  const request = ++searchRequest;
+  const resolution = activeResolution;
+  searchForm.setAttribute("aria-busy", "true");
+  searchSummary.textContent = `Searching ${resolution.project}…`;
+  searchResults.replaceChildren();
+  try {
+    const result = await searchProject(resolution.root, resolution.project, searchInput.value);
+    if (request !== searchRequest || resolution !== activeResolution || !localMode) return;
+    renderSearchResult(result);
+  } catch (error) {
+    if (request !== searchRequest) return;
+    searchSummary.textContent = `Search failed: ${errorMessage(error)}`;
+    setStatus(`Search failed: ${errorMessage(error)}`, "error");
+  } finally {
+    if (request === searchRequest) searchForm.removeAttribute("aria-busy");
+  }
+}
+
+function renderSearchResult(result: LibrarySearchResult): void {
+  if (!library) return;
+  const project = library.projection.selected_project;
+  searchResults.replaceChildren();
+  searchSummary.textContent = result.truncated
+    ? `Showing ${result.hits.length} of ${result.total_matches} matches in ${project}.`
+    : `${result.total_matches} ${result.total_matches === 1 ? "match" : "matches"} in ${project}.`;
+  const books = new Map(
+    library.projection.projects
+      .find((shelf) => shelf.project === project)
+      ?.categories.flatMap((category) => category.books)
+      .map((book) => [book.id, book]) ?? [],
+  );
+  for (const hit of result.hits) {
+    if (hit.scope.kind !== "project" || hit.scope.project !== project) continue;
+    const book = books.get(hit.id);
+    if (!book) continue;
+    const node = document.createElement("button");
+    node.type = "button";
+    node.className = "search-hit";
+    const title = document.createElement("strong");
+    title.textContent = hit.label;
+    const id = document.createElement("span");
+    id.textContent = hit.line === null ? hit.id : `${hit.id}:${hit.line}`;
+    const snippet = document.createElement("small");
+    snippet.textContent = hit.snippet;
+    node.append(title, id, snippet);
+    node.addEventListener("click", () => void openBookFromInventory(book));
+    searchResults.append(node);
+  }
+  if (result.total_matches === 0) {
+    const empty = document.createElement("p");
+    empty.className = "search-empty";
+    empty.textContent = `No exact literal matches for “${result.query}”.`;
+    searchResults.append(empty);
   }
 }
 

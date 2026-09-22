@@ -2,7 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use akasha_desktop::{library_document, library_projection, save_library_document};
+use akasha_desktop::{
+    library_document, library_projection, save_library_document, search_project_library,
+};
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -42,6 +44,24 @@ fn adapter_loads_only_a_projected_exact_document() {
         "Projects/example/index.md",
     )
     .expect_err("reject non-projected document");
+    assert_eq!(error.code, 4);
+}
+
+#[test]
+fn adapter_searches_only_the_selected_project_through_core() {
+    let result = search_project_library(Some(fixture_root()), "example".to_owned(), "core")
+        .expect("search selected project");
+
+    assert!(result.total_matches > 0);
+    assert!(!result.truncated);
+    assert!(result.hits.iter().all(|hit| !hit.id.starts_with("Global/")));
+    assert!(result.hits.iter().all(|hit| hit.scope
+        == akasha_core::LibraryScope::Project {
+            project: "example".to_owned(),
+        }));
+
+    let error = search_project_library(Some(fixture_root()), "example".to_owned(), "   ")
+        .expect_err("blank query must retain core validation");
     assert_eq!(error.code, 4);
 }
 

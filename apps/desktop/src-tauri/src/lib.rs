@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use akasha_core::{
-    LibraryDocument, LibraryProjection, NoteEditRecovery, NoteEditResult, ResolveRequest,
-    build_library_projection, load_library_document, recover_pending_note_edit,
-    render_library_markdown, replace_library_document,
+    LibraryDocument, LibraryProjection, LibraryScope, LibrarySearchResult, NoteEditRecovery,
+    NoteEditResult, ResolveRequest, build_library_projection, load_library_document,
+    recover_pending_note_edit, render_library_markdown, replace_library_document, search_library,
 };
 use serde::Serialize;
 
@@ -57,6 +57,24 @@ pub fn library_document(
     })
 }
 
+pub fn search_project_library(
+    root: Option<PathBuf>,
+    project: String,
+    query: &str,
+) -> Result<LibrarySearchResult, DesktopError> {
+    let request = request(root, Some(project.clone()))?;
+    search_library(
+        &request,
+        query,
+        Some(&LibraryScope::Project { project }),
+        30,
+    )
+    .map_err(|error| DesktopError {
+        code: error.exit_code(),
+        message: error.to_string(),
+    })
+}
+
 pub fn save_library_document(
     root: Option<PathBuf>,
     project: Option<String>,
@@ -101,6 +119,16 @@ fn load_document(
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
+fn search_project(
+    root: Option<PathBuf>,
+    project: String,
+    query: String,
+) -> Result<LibrarySearchResult, DesktopError> {
+    search_project_library(root, project, &query)
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
 fn save_document(
     root: Option<PathBuf>,
     project: Option<String>,
@@ -117,6 +145,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_library,
             load_document,
+            search_project,
             save_document
         ])
         .run(tauri::generate_context!())
