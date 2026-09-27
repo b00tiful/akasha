@@ -3,9 +3,21 @@
 set -euo pipefail
 # Dedicated demo windows can return to a real interactive shell after the TUI exits.
 keep_open=false
-if [[ "${1:-}" == --keep-open ]]; then
-  keep_open=true
+color_preview=false
+while [[ "${1:-}" == --keep-open || "${1:-}" == --color-preview ]]; do
+  if [[ "$1" == --keep-open ]]; then
+    keep_open=true
+  else
+    color_preview=true
+  fi
   shift
+done
+if "$color_preview"; then
+  # A terminal started by an agent may inherit NO_COLOR from the agent process.
+  # This explicit demo option restores the application's normal color path.
+  unset NO_COLOR
+elif [[ ${NO_COLOR+x} ]]; then
+  printf 'NO_COLOR is set; this demo will be monochrome. Use --color-preview to see the color theme.\n' >&2
 fi
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 demo_dir="$(mktemp -d /tmp/akasha-tui-demo.XXXXXX)"
