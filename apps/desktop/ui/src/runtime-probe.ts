@@ -25,6 +25,17 @@ interface SurfaceReport {
   render: RuntimeRenderInfo | null;
 }
 
+const eventLoopPhases = [
+  "local",
+  "firstGlobalMount",
+  "globalWarmup",
+  "globalIdle",
+  "globalActivation",
+  "scopeSoak",
+  "globalFinalIdle",
+] as const;
+type EventLoopPhase = (typeof eventLoopPhases)[number];
+
 interface RuntimeReport {
   version: 1;
   passed: boolean;
@@ -45,6 +56,7 @@ interface RuntimeReport {
     webglCanvases: number;
   };
   eventLoopDelayMs: SampleSummary;
+  eventLoopByPhaseMs: Record<EventLoopPhase, SampleSummary>;
   longTasks: { supported: boolean; durationsMs: SampleSummary };
   checks: RuntimeCheck[];
   error?: string;
@@ -132,6 +144,12 @@ export function scheduleRuntimeProbe(): void {
 async function runRuntimeProbe(): Promise<void> {
   const checks: RuntimeCheck[] = [];
   const eventLoopDelays: number[] = [];
+  const phaseDelays = Object.fromEntries(eventLoopPhases.map((name) => [name, [] as number[]])) as
+    Record<EventLoopPhase, number[]>;
+  let phase: EventLoopPhase = "local";
+  const eventLoopByPhase = (): Record<EventLoopPhase, SampleSummary> => Object.fromEntries(
+    eventLoopPhases.map((name) => [name, roundedSummary(summarizeSamples(phaseDelays[name]))]),
+  ) as Record<EventLoopPhase, SampleSummary>;
   const longTasks: number[] = [];
   let local = surfaceReport("local");
   let globalIdle = surfaceReport("global");
@@ -143,7 +161,9 @@ async function runRuntimeProbe(): Promise<void> {
   let lastInterval = performance.now();
   const interval = window.setInterval(() => {
     const now = performance.now();
-    eventLoopDelays.push(Math.max(0, now - lastInterval - 50));
+    const delay = Math.max(0, now - lastInterval - 50);
+    eventLoopDelays.push(delay);
+    phaseDelays[phase].push(delay);
     lastInterval = now;
   }, 50);
   let longTaskSupported = false;
@@ -232,6 +252,7 @@ async function runRuntimeProbe(): Promise<void> {
     await waitFor(() => document.querySelector<HTMLElement>("#note-overlay")?.hidden === true, "note close");
 
     const firstGlobalStarted = performance.now();
+    phase = "firstGlobalMount";
     click("#scope-toggle");
     await waitFor(
       () => document.querySelector(".world-canvas") !== null &&
@@ -241,9 +262,11 @@ async function runRuntimeProbe(): Promise<void> {
       12_000,
     );
     firstGlobalSwitchMs = performance.now() - firstGlobalStarted;
+    phase = "globalWarmup";
     check(checks, "first global scene mount", firstGlobalSwitchMs <= 5_000, firstGlobalSwitchMs, "<= 5,000 ms");
 
     await sleep(3_000);
+    phase = "globalIdle";
     runtimeMetrics.resetSamples("global");
     await sleep(8_000);
     globalIdle = surfaceReport("global");
@@ -260,6 +283,7 @@ async function runRuntimeProbe(): Promise<void> {
     check(checks, "global GPU p95", (globalIdle.gpuMs.p95 ?? Infinity) <= 5.5,
       globalIdle.gpuMs.p95, "<= 5.5 ms");
 
+    phase = "globalActivation";
     runtimeMetrics.resetSamples("global");
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     await sleep(4_000);
@@ -282,6 +306,7 @@ async function runRuntimeProbe(): Promise<void> {
     check(checks, "global reduced-motion resume", runtimeMetrics.snapshot("global").frames > afterGlobalReduced,
       runtimeMetrics.snapshot("global").frames - afterGlobalReduced, "> 0 frames");
 
+    phase = "scopeSoak";
     for (let cycle = 0; cycle < 3; cycle++) {
       let switchedAt = performance.now();
       click("#scope-toggle");
@@ -303,6 +328,7 @@ async function runRuntimeProbe(): Promise<void> {
     check(checks, "scope-switch soak", (soakSwitchMs.maximum ?? Infinity) <= 5_000,
       soakSwitchMs.maximum, "every switch <= 5,000 ms");
 
+    phase = "globalFinalIdle";
     await sleep(5_000);
 
     const localLifecycle = runtimeMetrics.snapshot("local");
@@ -350,6 +376,7 @@ async function runRuntimeProbe(): Promise<void> {
         webglCanvases,
       },
       eventLoopDelayMs,
+      eventLoopByPhaseMs: eventLoopByPhase(),
       longTasks: { supported: longTaskSupported, durationsMs: roundedSummary(summarizeSamples(longTasks)) },
       checks,
     });
@@ -382,6 +409,7 @@ async function runRuntimeProbe(): Promise<void> {
         webglCanvases: document.querySelectorAll(".world-canvas").length,
       },
       eventLoopDelayMs: roundedSummary(summarizeSamples(eventLoopDelays)),
+      eventLoopByPhaseMs: eventLoopByPhase(),
       longTasks: { supported: longTaskSupported, durationsMs: roundedSummary(summarizeSamples(longTasks)) },
       checks,
       error: error instanceof Error ? error.message : String(error),
