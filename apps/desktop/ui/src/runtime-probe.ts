@@ -58,7 +58,11 @@ const sleep = (milliseconds: number): Promise<void> =>
 async function waitFor(test: () => boolean, label: string, timeout = 8_000): Promise<void> {
   const startedAt = performance.now();
   while (!test()) {
-    if (performance.now() - startedAt > timeout) throw new Error(`timed out waiting for ${label}`);
+    if (performance.now() - startedAt > timeout) {
+      const status = (document.querySelector("#status")?.textContent?.trim() ?? "missing").slice(0, 160);
+      const switching = document.querySelector<HTMLButtonElement>("#scope-toggle")?.disabled ?? false;
+      throw new Error(`timed out waiting for ${label}; status: ${status}; scope switch pending: ${switching}`);
+    }
     await sleep(25);
   }
 }
@@ -101,6 +105,9 @@ async function publish(report: RuntimeReport): Promise<void> {
 function click<T extends HTMLElement>(selector: string): T {
   const element = document.querySelector<T>(selector);
   if (!element) throw new Error(`runtime probe could not find ${selector}`);
+  if (element instanceof HTMLButtonElement && element.disabled) {
+    throw new Error(`runtime probe tried to click disabled ${selector}`);
+  }
   element.click();
   return element;
 }
@@ -156,6 +163,7 @@ async function runRuntimeProbe(): Promise<void> {
   try {
     await waitFor(() => document.querySelector(".local-akasha") !== null, "Local Akasha startup");
     const reduced = document.querySelector<HTMLInputElement>("#reduced-motion")!;
+    const scopeToggle = document.querySelector<HTMLButtonElement>("#scope-toggle")!;
     reduced.checked = false;
     reduced.dispatchEvent(new Event("change"));
 
@@ -227,7 +235,8 @@ async function runRuntimeProbe(): Promise<void> {
     click("#scope-toggle");
     await waitFor(
       () => document.querySelector(".world-canvas") !== null &&
-        !document.querySelector(".pixel-stage")?.classList.contains("is-local"),
+        !document.querySelector(".pixel-stage")?.classList.contains("is-local") &&
+        !scopeToggle.disabled,
       "global scene",
       12_000,
     );
@@ -276,11 +285,18 @@ async function runRuntimeProbe(): Promise<void> {
     for (let cycle = 0; cycle < 3; cycle++) {
       let switchedAt = performance.now();
       click("#scope-toggle");
-      await waitFor(() => document.querySelector(".local-akasha") !== null, `soak local ${cycle}`);
+      await waitFor(
+        () => document.querySelector(".local-akasha") !== null && !scopeToggle.disabled,
+        `soak local ${cycle}`,
+      );
       soakSwitches.push(performance.now() - switchedAt);
       switchedAt = performance.now();
       click("#scope-toggle");
-      await waitFor(() => document.querySelector(".world-canvas") !== null, `soak global ${cycle}`, 12_000);
+      await waitFor(
+        () => document.querySelector(".world-canvas") !== null && !scopeToggle.disabled,
+        `soak global ${cycle}`,
+        12_000,
+      );
       soakSwitches.push(performance.now() - switchedAt);
     }
     const soakSwitchMs = roundedSummary(summarizeSamples(soakSwitches));
