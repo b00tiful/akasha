@@ -381,7 +381,9 @@ export async function mountLibraryScene(
   reducedMotion: boolean,
   callbacks: LibrarySceneCallbacks,
 ): Promise<SceneHandle> {
+  const mountStartedAt = runtimeMetrics.enabled ? performance.now() : 0;
   await document.fonts.load('72px "Departure Mono"');
+  const fontsReadyAt = runtimeMetrics.enabled ? performance.now() : 0;
   const renderScale = sceneRenderScale();
   const renderWidth = SCENE_WIDTH * renderScale;
   const renderHeight = SCENE_HEIGHT * renderScale;
@@ -440,12 +442,14 @@ export async function mountLibraryScene(
   renderer.domElement.dataset.visualMode = debugMode;
   renderer.domElement.dataset.renderScale = String(renderScale);
   renderer.domElement.dataset.cornerShadows = activationShadowDiagnostic;
+  const rendererReadyAt = runtimeMetrics.enabled ? performance.now() : 0;
   addLighting(world);
   const stars = createStarField(world, random);
   const groundCircle = createGroundCircle(world);
   const backgroundEffects = createBackgroundEffects(world, overlay, random);
   const fogSprites = createCornerFog(overlay);
   const worldMotes = createWorldMotes(world, random);
+  const ambientReadyAt = runtimeMetrics.enabled ? performance.now() : 0;
 
   const shelfLayer = new THREE.Group();
   world.add(shelfLayer);
@@ -483,6 +487,7 @@ export async function mountLibraryScene(
     actor.root.position.copy(actor.homePosition);
     actor.projected = projectWorldPosition(actor.shelf.id, actor.root.position);
   }
+  const cabinetsReadyAt = runtimeMetrics.enabled ? performance.now() : 0;
 
   let aimedId = (initialAimedShelfId
     ? primaryActorsBySource.get(initialAimedShelfId)?.shelf.id
@@ -575,15 +580,20 @@ export async function mountLibraryScene(
       motionReduced,
       random,
     );
+    const updateFinishedAt = profile ? performance.now() : 0;
     render(profile);
     if (profile) {
-      runtimeMetrics.frame("global", frameTime!, performance.now() - started, {
+      const renderFinishedAt = performance.now();
+      runtimeMetrics.frame("global", frameTime!, renderFinishedAt - started, {
         drawCalls: renderer.info.render.calls,
         triangles: renderer.info.render.triangles,
         lines: renderer.info.render.lines,
         points: renderer.info.render.points,
         geometries: renderer.info.memory.geometries,
         textures: renderer.info.memory.textures,
+      }, {
+        updateMs: updateFinishedAt - started,
+        renderMs: renderFinishedAt - updateFinishedAt,
       });
     }
   };
@@ -862,8 +872,21 @@ export async function mountLibraryScene(
     renderTargets: debugMode === "raw" ? 0 : 1,
     estimatedRenderTargetBytes: debugMode === "raw" ? 0 : renderWidth * renderHeight * 8,
   });
+  const firstDrawStartedAt = runtimeMetrics.enabled ? performance.now() : 0;
   update(0);
   startAnimation();
+  if (runtimeMetrics.enabled) {
+    const mountFinishedAt = performance.now();
+    runtimeMetrics.mountTiming("global", {
+      fontWaitMs: fontsReadyAt - mountStartedAt,
+      rendererMs: rendererReadyAt - fontsReadyAt,
+      ambientMs: ambientReadyAt - rendererReadyAt,
+      cabinetsMs: cabinetsReadyAt - ambientReadyAt,
+      wiringMs: firstDrawStartedAt - cabinetsReadyAt,
+      firstDrawMs: mountFinishedAt - firstDrawStartedAt,
+      totalMs: mountFinishedAt - mountStartedAt,
+    });
+  }
 
   return {
     aimedShelfId: () => sourceIdForVisual(aimedId),

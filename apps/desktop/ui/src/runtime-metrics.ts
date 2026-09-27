@@ -14,11 +14,29 @@ export interface RuntimeRenderInfo {
   estimatedRenderTargetBytes: number;
 }
 
+export interface RuntimeMountTiming {
+  fontWaitMs: number;
+  rendererMs: number;
+  ambientMs: number;
+  cabinetsMs: number;
+  wiringMs: number;
+  firstDrawMs: number;
+  totalMs: number;
+}
+
+export interface RuntimeFrameCpu {
+  updateMs: number;
+  renderMs: number;
+}
+
 export interface RuntimeSurfaceSnapshot {
   frames: number;
   intervalsMs: number[];
   cpuMs: number[];
+  updateCpuMs: number[];
+  renderCpuMs: number[];
   gpuMs: number[];
+  mountTimings: RuntimeMountTiming[];
   mounts: number;
   destroys: number;
   active: number;
@@ -36,7 +54,10 @@ function emptySurface(): RuntimeSurfaceState {
     frames: 0,
     intervalsMs: [],
     cpuMs: [],
+    updateCpuMs: [],
+    renderCpuMs: [],
     gpuMs: [],
+    mountTimings: [],
     mounts: 0,
     destroys: 0,
     active: 0,
@@ -70,6 +91,13 @@ export class RuntimeMetrics {
     state.render = render;
   }
 
+  mountTiming(surface: RuntimeSurface, timing: RuntimeMountTiming): void {
+    if (!this.enabled) return;
+    const timings = this.#surfaces[surface].mountTimings;
+    if (timings.length === 8) timings.shift();
+    timings.push({ ...timing });
+  }
+
   destroy(surface: RuntimeSurface): void {
     if (!this.enabled) return;
     const state = this.#surfaces[surface];
@@ -83,6 +111,7 @@ export class RuntimeMetrics {
     timestamp: number,
     cpuMs: number,
     render?: Partial<RuntimeRenderInfo>,
+    cpuParts?: RuntimeFrameCpu,
   ): void {
     if (!this.enabled) return;
     const state = this.#surfaces[surface];
@@ -92,6 +121,10 @@ export class RuntimeMetrics {
     state.lastFrameAt = timestamp;
     state.frames++;
     appendSample(state.cpuMs, cpuMs);
+    if (cpuParts) {
+      appendSample(state.updateCpuMs, cpuParts.updateMs);
+      appendSample(state.renderCpuMs, cpuParts.renderMs);
+    }
     if (render && state.render) Object.assign(state.render, render);
   }
 
@@ -106,6 +139,8 @@ export class RuntimeMetrics {
     state.frames = 0;
     state.intervalsMs = [];
     state.cpuMs = [];
+    state.updateCpuMs = [];
+    state.renderCpuMs = [];
     state.gpuMs = [];
     state.lastFrameAt = null;
   }
@@ -116,7 +151,10 @@ export class RuntimeMetrics {
       frames: state.frames,
       intervalsMs: [...state.intervalsMs],
       cpuMs: [...state.cpuMs],
+      updateCpuMs: [...state.updateCpuMs],
+      renderCpuMs: [...state.renderCpuMs],
       gpuMs: [...state.gpuMs],
+      mountTimings: state.mountTimings.map((timing) => ({ ...timing })),
       mounts: state.mounts,
       destroys: state.destroys,
       active: state.active,

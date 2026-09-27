@@ -4,6 +4,7 @@ import {
   runtimeMetrics,
   runtimeProbeEnabled,
   summarizeSamples,
+  type RuntimeMountTiming,
   type RuntimeRenderInfo,
   type RuntimeSurface,
   type SampleSummary,
@@ -21,6 +22,8 @@ interface SurfaceReport {
   refreshHz: number | null;
   intervalMs: SampleSummary;
   cpuMs: SampleSummary;
+  updateCpuMs: SampleSummary;
+  renderCpuMs: SampleSummary;
   gpuMs: SampleSummary;
   render: RuntimeRenderInfo | null;
 }
@@ -43,6 +46,7 @@ interface RuntimeReport {
   local: SurfaceReport;
   globalIdle: SurfaceReport;
   globalTransition: SurfaceReport;
+  globalMountTimings: RuntimeMountTiming[];
   interactions: {
     localTransitionMs: number;
     noteOpenMs: number;
@@ -101,6 +105,8 @@ function surfaceReport(surface: RuntimeSurface): SurfaceReport {
     refreshHz: intervalMs.median === null ? null : rounded(1_000 / intervalMs.median),
     intervalMs,
     cpuMs: roundedSummary(summarizeSamples(snapshot.cpuMs)),
+    updateCpuMs: roundedSummary(summarizeSamples(snapshot.updateCpuMs)),
+    renderCpuMs: roundedSummary(summarizeSamples(snapshot.renderCpuMs)),
     gpuMs: roundedSummary(summarizeSamples(snapshot.gpuMs)),
     render: snapshot.render,
   };
@@ -363,6 +369,7 @@ async function runRuntimeProbe(): Promise<void> {
       local,
       globalIdle,
       globalTransition,
+      globalMountTimings: runtimeMetrics.snapshot("global").mountTimings,
       interactions: {
         localTransitionMs: rounded(localTransitionMs)!,
         noteOpenMs: rounded(noteOpenMs)!,
@@ -396,6 +403,7 @@ async function runRuntimeProbe(): Promise<void> {
       local,
       globalIdle: globalIdle.frames ? globalIdle : surfaceReport("global"),
       globalTransition: globalTransition.frames ? globalTransition : surfaceReport("global"),
+      globalMountTimings: runtimeMetrics.snapshot("global").mountTimings,
       interactions: {
         localTransitionMs: rounded(localTransitionMs)!,
         noteOpenMs: rounded(noteOpenMs)!,
