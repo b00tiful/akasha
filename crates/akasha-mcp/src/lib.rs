@@ -44,6 +44,8 @@ impl<T: Serialize> IntoCallToolResult for ToolExecutionError<T> {
 #[derive(Clone)]
 pub struct OnboardingMcpServer {
     resolution: ResolveRequest,
+    // Keep each core check and its proposal-store update in one ordered tool operation.
+    workflow: Arc<Mutex<()>>,
     proposals: Arc<Mutex<ProposalStore>>,
 }
 
@@ -64,6 +66,7 @@ impl OnboardingMcpServer {
     pub fn new(resolution: ResolveRequest) -> Self {
         Self {
             resolution,
+            workflow: Arc::new(Mutex::new(())),
             proposals: Arc::new(Mutex::new(ProposalStore::default())),
         }
     }
@@ -158,6 +161,10 @@ impl OnboardingMcpServer {
         &self,
         Parameters(_input): Parameters<PrepareInput>,
     ) -> Result<Json<PrepareOutput>, ToolExecutionError<PrepareOutput>> {
+        let _workflow = self
+            .workflow
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match prepare_onboarding(&self.resolution) {
             Ok(preparation) => Ok(Json(PrepareOutput::success(preparation))),
             Err(error) => Err(ToolExecutionError::new(PrepareOutput::failure(error))),
@@ -179,6 +186,10 @@ impl OnboardingMcpServer {
         &self,
         Parameters(input): Parameters<ValidateInput>,
     ) -> Result<Json<ValidateOutput>, ToolExecutionError<ValidateOutput>> {
+        let _workflow = self
+            .workflow
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let request = self.proposal_request(input.proposal);
         match preview_onboarding_batch(&request) {
             Ok(preview) => {
@@ -204,6 +215,10 @@ impl OnboardingMcpServer {
         &self,
         Parameters(input): Parameters<PreviewInput>,
     ) -> Result<Json<PreviewOutput>, ToolExecutionError<PreviewOutput>> {
+        let _workflow = self
+            .workflow
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(stored) = self.load_proposal(&input.proposal_id) else {
             return Err(ToolExecutionError::new(PreviewOutput::missing(
                 &input.proposal_id,
@@ -225,7 +240,7 @@ impl OnboardingMcpServer {
         annotations(
             read_only_hint = false,
             destructive_hint = true,
-            idempotent_hint = true,
+            idempotent_hint = false,
             open_world_hint = false
         )
     )]
@@ -233,6 +248,10 @@ impl OnboardingMcpServer {
         &self,
         Parameters(input): Parameters<ApplyInput>,
     ) -> Result<Json<ApplyOutput>, ToolExecutionError<ApplyOutput>> {
+        let _workflow = self
+            .workflow
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(stored) = self.load_proposal(&input.proposal_id) else {
             return Err(ToolExecutionError::new(ApplyOutput::missing(
                 &input.proposal_id,
@@ -719,7 +738,10 @@ mod tests {
             let annotations = tool.annotations.expect("tool safety annotations");
             assert_eq!(annotations.read_only_hint, Some(read_only));
             assert_eq!(annotations.destructive_hint, Some(destructive));
-            assert_eq!(annotations.idempotent_hint, Some(true));
+            assert_eq!(
+                annotations.idempotent_hint,
+                Some(name != "akasha_onboarding_apply")
+            );
             assert_eq!(annotations.open_world_hint, Some(false));
         }
     }
@@ -764,6 +786,105 @@ mod tests {
         assert!(applied.success);
         assert_eq!(applied.created_notes, vec!["entities/core.md"]);
         assert!(fixture.project.join("entities/core.md").is_file());
+    }
+
+    #[test]
+    fn concurrent_apply_consumes_one_preview_and_retries_do_not_write() {
+        use std::sync::Barrier;
+
+        let fixture = Fixture::new();
+        let server = OnboardingMcpServer::new(fixture.resolution.clone());
+        let Json(validated) = server
+            .validate(Parameters(ValidateInput {
+                proposal: fixture.proposal(),
+            }))
+            .unwrap_or_else(|_| panic!("validate succeeds"));
+        let proposal_id = validated.proposal_id.expect("proposal id");
+        let Json(previewed) = server
+            .preview(Parameters(PreviewInput {
+                proposal_id: proposal_id.clone(),
+            }))
+            .unwrap_or_else(|_| panic!("preview succeeds"));
+        let preview_id = previewed.preview_id.expect("preview id");
+
+        let start = Arc::new(Barrier::new(3));
+        let results = std::thread::scope(|scope| {
+            let calls = (0..2)
+                .map(|_| {
+                    let server = server.clone();
+                    let start = start.clone();
+                    let proposal_id = proposal_id.clone();
+                    let preview_id = preview_id.clone();
+                    scope.spawn(move || {
+                        start.wait();
+                        server
+                            .apply(Parameters(ApplyInput {
+                                proposal_id,
+                                approved_preview_id: preview_id,
+                            }))
+                            .map(|_| ())
+                            .map_err(|error| error.0.error.expect("classified error").exit_code)
+                    })
+                })
+                .collect::<Vec<_>>();
+            start.wait();
+            calls
+                .into_iter()
+                .map(|call| call.join().expect("apply thread"))
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results.iter().filter(|result| **result == Err(5)).count(),
+            1
+        );
+
+        let published = [
+            fixture.project.join("entities/core.md"),
+            fixture.project.join("index.md"),
+            fixture.project.join("roadmap.md"),
+            fixture.project.join(".akasha-state.toml"),
+        ];
+        let before = published
+            .iter()
+            .map(|path| fs::read(path).expect("published file"))
+            .collect::<Vec<_>>();
+        let replay = server.apply(Parameters(ApplyInput {
+            proposal_id: proposal_id.clone(),
+            approved_preview_id: preview_id.clone(),
+        }));
+        assert_eq!(
+            replay
+                .err()
+                .expect("consumed preview")
+                .0
+                .error
+                .unwrap()
+                .exit_code,
+            5
+        );
+        for (path, expected) in published.iter().zip(&before) {
+            assert_eq!(fs::read(path).expect("file after replay"), *expected);
+        }
+
+        let restarted = OnboardingMcpServer::new(fixture.resolution);
+        let retry = restarted.apply(Parameters(ApplyInput {
+            proposal_id,
+            approved_preview_id: preview_id,
+        }));
+        assert_eq!(
+            retry
+                .err()
+                .expect("lost proposal")
+                .0
+                .error
+                .unwrap()
+                .exit_code,
+            4
+        );
+        for (path, expected) in published.iter().zip(&before) {
+            assert_eq!(fs::read(path).expect("file after restart"), *expected);
+        }
     }
 
     #[test]
