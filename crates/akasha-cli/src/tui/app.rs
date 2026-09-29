@@ -10,13 +10,15 @@ use super::state::{NavigationLocation, NavigationState};
 use crate::discover_agent_home;
 use crate::render::{agent_wiring_action_name, session_hook_action_name};
 use akasha_core::{
-    AgentClient, AgentWiringPlan, LibraryBook, LibraryDocument, LibraryProjection, LibraryScope,
-    LibrarySearchResult, MutableNoteCreationForm, MutableNoteCreationResult, NoteClass,
-    RecordUpdateResult, ResolveRequest, SessionHookWiringPlan, TaskLifecycleForm, assemble_context,
-    build_library_projection, create_mutable_note, load_library_document, prepare_agent_wiring,
-    prepare_mutable_note_creation, prepare_session_hook_wiring, prepare_task_lifecycle,
-    recover_pending_note_edit, render_context_markdown, replace_library_document, search_library,
-    update_record, validate_project,
+    AgentClient, AgentWiringPlan, EventCreationResult, LibraryBook, LibraryDocument,
+    LibraryProjection, LibraryScope, LibrarySearchResult, MutableNoteCreationForm,
+    MutableNoteCreationResult, NoteClass, RecordUpdateResult, ResolveRequest,
+    SessionHookWiringPlan, TaskLifecycleForm, assemble_context, assemble_session_breadcrumb,
+    build_library_projection, capture_handoff, create_mutable_note, load_library_document,
+    prepare_agent_wiring, prepare_mutable_note_creation, prepare_session_hook_wiring,
+    prepare_task_lifecycle, recover_pending_note_edit, render_context_markdown,
+    render_session_breadcrumb, replace_library_document, search_library, update_record,
+    validate_project,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -100,6 +102,16 @@ const COMMANDS: &[Completion] = &[
         description: "Read bounded project orientation",
     },
     Completion {
+        command: "breadcrumb",
+        argument: "",
+        description: "Show open tasks and the latest handoff",
+    },
+    Completion {
+        command: "handoff",
+        argument: "PATH | NAME=VALUE | ...",
+        description: "Capture a configured handoff event",
+    },
+    Completion {
         command: "create",
         argument: "TYPE",
         description: "Create a configured record or entity",
@@ -177,7 +189,7 @@ fn prompt_area(text: String) -> TextArea<'static> {
     prompt_area_with_placeholder(text, PROMPT_PLACEHOLDER)
 }
 
-pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       update the open task and roadmap together\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\nconfirm PLAN_ID authorize the displayed integration plan\nrefresh         reload data (or press F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and task lifecycle forms show exact configured templates and\nmaintained projections. Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. Integration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nOpen from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
+pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       update the open task and roadmap together\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff PATH | NAME=VALUE | ...\n                capture a handoff from the configured template\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\nconfirm PLAN_ID authorize the displayed integration plan\nrefresh         reload data (or press F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and task lifecycle forms show exact configured templates and\nmaintained projections. Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. Integration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nOpen from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Focus {
@@ -294,6 +306,8 @@ pub(super) enum Job {
     Open(ResolveRequest, String),
     Search(ResolveRequest, String, Option<LibraryScope>),
     Context(ResolveRequest),
+    Breadcrumb(ResolveRequest),
+    CaptureHandoff(ResolveRequest, PathBuf, BTreeMap<String, String>),
     Validate(ResolveRequest),
     Save(ResolveRequest, String, String, String),
     PrepareCreate(ResolveRequest, String),
@@ -317,6 +331,7 @@ pub(super) enum Response {
     Found(LibrarySearchResult),
     Text(String, String),
     Saved(String),
+    HandoffCreated(EventCreationResult),
     CreatePrepared(MutableNoteCreationForm),
     Created(MutableNoteCreationResult),
     TaskPrepared(TaskLifecycleForm),
@@ -385,6 +400,12 @@ fn execute_job(job: Job) -> WorkResult {
             .map(Response::Found).map_err(|e| err(&e)),
         Job::Context(request) => assemble_context(&request)
             .map(|bundle| Response::Text("PROJECT CONTEXT".into(), render_context_markdown(&bundle)))
+            .map_err(|e| err(&e)),
+        Job::Breadcrumb(request) => assemble_session_breadcrumb(&request)
+            .map(|breadcrumb| Response::Text("PROJECT BREADCRUMB".into(), render_session_breadcrumb(&breadcrumb)))
+            .map_err(|e| err(&e)),
+        Job::CaptureHandoff(request, path, fields) => capture_handoff(&request, &path, &fields)
+            .map(Response::HandoffCreated)
             .map_err(|e| err(&e)),
         Job::Validate(request) => validate_project(&request)
             .map(|report| Response::Text("VALIDATION".into(), format!("Validation passed\n\nProject: {}\nRoot: {}\n\nCanonical metadata, configured layout, links and project state were checked.", report.project, report.root.display())))
@@ -481,6 +502,29 @@ fn integration_arguments(argument: &str) -> Result<(AgentClient, PathBuf), Strin
     discover_agent_home(client, explicit_home)
         .map(|home| (client, home))
         .map_err(|error| format!("{error}; pass an explicit HOME path."))
+}
+
+fn handoff_arguments(argument: &str) -> Result<(PathBuf, BTreeMap<String, String>), String> {
+    const USAGE: &str = "Usage: /handoff RELATIVE.md | NAME=VALUE | NAME=VALUE. Use the exact configured template fields.";
+    let mut parts = argument.split(" | ");
+    let path = parts.next().unwrap_or_default().trim();
+    if path.is_empty() || !path.ends_with(".md") {
+        return Err(USAGE.into());
+    }
+    let mut fields = BTreeMap::new();
+    for part in parts {
+        let (name, value) = part.split_once('=').ok_or(USAGE)?;
+        let name = name.trim();
+        let value = value.trim();
+        if name.is_empty() || value.is_empty() || fields.insert(name.into(), value.into()).is_some()
+        {
+            return Err(USAGE.into());
+        }
+    }
+    if fields.is_empty() {
+        return Err(USAGE.into());
+    }
+    Ok((PathBuf::from(path), fields))
 }
 
 #[derive(Clone, Copy)]
@@ -1536,6 +1580,14 @@ impl App {
                 ));
                 self.load();
             }
+            Ok(Response::HandoffCreated(result)) => {
+                self.pending_open = Some(result.id.clone());
+                self.message(&format!(
+                    "Captured {} through the configured handoff template.",
+                    result.id
+                ));
+                self.load();
+            }
             Ok(Response::TaskPrepared(prepared)) => {
                 let task = match Editor::new(&prepared.source) {
                     Ok(editor) => editor,
@@ -1750,6 +1802,22 @@ impl App {
                 self.submit(Job::PrepareTask(self.request.clone(), document.id.clone()));
             }
             "context" => self.submit(Job::Context(self.request.clone())),
+            "breadcrumb" if argument.is_empty() => {
+                self.submit(Job::Breadcrumb(self.request.clone()))
+            }
+            "breadcrumb" => self.message("Usage: /breadcrumb"),
+            "handoff" => {
+                if !matches!(self.scope, LibraryScope::Project { .. }) {
+                    self.message("Select a project before capturing a handoff.");
+                    return;
+                }
+                match handoff_arguments(argument) {
+                    Ok((path, fields)) => {
+                        self.submit(Job::CaptureHandoff(self.request.clone(), path, fields))
+                    }
+                    Err(error) => self.message(&error),
+                }
+            }
             "validate" => self.submit(Job::Validate(self.request.clone())),
             "integrations" => match integration_arguments(argument) {
                 Ok((client, home)) => {
@@ -2977,6 +3045,75 @@ mod tests {
                 .back()
                 .unwrap()
                 .contains("codex|claude")
+        );
+    }
+
+    #[test]
+    fn breadcrumb_uses_validated_core_status_without_writing() {
+        let mut fixture = Fixture::new();
+        let state = fixture.root().join("Projects/example/.akasha-state.toml");
+        let before = fs::read(&state).unwrap();
+        fixture.app.command("breadcrumb");
+        fixture.finish();
+        assert_eq!(fixture.app.body_title, "PROJECT BREADCRUMB");
+        assert!(fixture.app.body.starts_with("Akasha example — "));
+        assert_eq!(fs::read(state).unwrap(), before);
+        fixture.app.command("breadcrumb extra");
+        assert!(!fixture.app.busy);
+    }
+
+    #[test]
+    fn handoff_capture_uses_configured_template_and_refuses_duplicate_or_dirty_write() {
+        let mut fixture = Fixture::new();
+        fs::write(
+            fixture.root().join("Projects/example/templates/handoff.md"),
+            "---\nschema_version: 1\nproject: {{project}}\ntype: {{type}}\ndate: {{date}}\n---\n\n# {{title}}\n\n{{body}}\n",
+        )
+        .unwrap();
+        let destination = fixture
+            .root()
+            .join("Projects/example/events/handoffs/tui-handoff.md");
+        let command = "handoff tui-handoff.md | date=2026-09-29 | title=TUI checkpoint | body=Next: inspect [[Projects/example/entities/core|core]].";
+        fixture
+            .app
+            .command("handoff tui-handoff.md | date=2026-09-29 | date=2026-09-30");
+        assert!(!fixture.app.busy);
+        assert!(!destination.exists());
+
+        fixture.open_editor();
+        fixture.app.paste("local draft");
+        fixture.app.command(command);
+        assert!(!fixture.app.busy);
+        assert!(!destination.exists());
+        fixture.app.command("discard");
+
+        fixture.app.focus = Focus::Prompt;
+        fixture.app.paste(&format!("/{command}"));
+        press(&mut fixture.app, KeyCode::Enter);
+        fixture.finish();
+        fixture.finish();
+        fixture.finish();
+        let first = fs::read(&destination).unwrap();
+        assert!(String::from_utf8_lossy(&first).contains("# TUI checkpoint"));
+        assert_eq!(
+            fixture.app.document.as_ref().unwrap().id,
+            "Projects/example/events/handoffs/tui-handoff.md"
+        );
+        validate_project(&fixture.app.request).unwrap();
+
+        let state = fixture.root().join("Projects/example/.akasha-state.toml");
+        let state_before = fs::read(&state).unwrap();
+        fixture.app.command(command);
+        fixture.finish();
+        assert_eq!(fs::read(&destination).unwrap(), first);
+        assert_eq!(fs::read(state).unwrap(), state_before);
+        assert!(
+            fixture
+                .app
+                .messages
+                .back()
+                .unwrap()
+                .contains("Operation failed:")
         );
     }
 
