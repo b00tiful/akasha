@@ -1,6 +1,7 @@
 import "./styles.css";
 
 import {
+  inspectRecovery,
   loadDocument,
   loadLibrary,
   loadLocalNavigation,
@@ -68,6 +69,7 @@ const dashboardSigilCategories = required<HTMLElement>("dashboard-sigil-categori
 const dashboardSummary = required<HTMLElement>("dashboard-summary");
 const dashboardProjects = required<HTMLElement>("dashboard-projects");
 const inventoryPanel = required<HTMLElement>("inventory-panel");
+const inventoryTitle = required<HTMLElement>("inventory-title");
 const inventoryToggle = required<HTMLButtonElement>("inventory-toggle");
 const inventoryClose = required<HTMLButtonElement>("inventory-close");
 const searchPanel = required<HTMLElement>("search-panel");
@@ -224,7 +226,7 @@ async function openLibrary(
   preferredId?: string,
   requestedResolution = { root: rootInput.value, project: projectInput.value },
 ): Promise<void> {
-  setStatus("Validating the library through Akasha Core…");
+  setStatus("Checking pending recovery and validating through Akasha Core…");
   documentRequest++;
   clearSearch();
   form.classList.add("is-loading");
@@ -251,6 +253,8 @@ async function openLibrary(
     activeVolume = preferred && preferredShelf ? volumeForBook(preferredShelf, preferred.id) ?? null : null;
 
     renderFallback(fallbackHost, library.projection, (book) => void openBookFromInventory(book));
+    inventoryTitle.textContent = "Library inventory";
+    dashboard.hidden = false;
     renderDashboard(library);
     renderVolume();
     await renderScene(library);
@@ -288,12 +292,29 @@ async function openLibrary(
     localScene = null;
     sceneHost.replaceChildren();
     fallbackHost.replaceChildren();
+    dashboard.hidden = true;
     noteOverlay.hidden = true;
     volumePanel.hidden = true;
-    metaHost.textContent = errorMessage(error);
+    const failure = errorMessage(error);
+    metaHost.textContent = failure;
     viewer.setDocument("", false);
     renderSelection();
-    setStatus(`Library unavailable: ${errorMessage(error)}`, "error");
+    setStatus(`Library unavailable: ${failure}`, "error");
+    const inspection = await inspectRecovery(requestedResolution.root, requestedResolution.project)
+      .catch(() => null);
+    if (inspection?.pending) {
+      inventoryTitle.textContent = "Recovery inspection";
+      const summary = document.createElement("p");
+      summary.textContent = `Automatic recovery could not complete for ${inspection.project}. The library remains unavailable until the journal and project files are reconciled.`;
+      const path = document.createElement("p");
+      path.textContent = `Pending journal: ${inspection.journal_path}`;
+      const guidance = document.createElement("p");
+      guidance.textContent = "Back up the project, inspect the journal and affected files, then retry loading. Keep the journal until the byte conflict is understood.";
+      fallbackHost.replaceChildren(summary, path, guidance);
+      inventoryPanel.hidden = false;
+      inventoryToggle.setAttribute("aria-expanded", "true");
+      setStatus(`Recovery inspection needed: ${failure}`, "error");
+    }
   } finally {
     form.classList.remove("is-loading");
   }

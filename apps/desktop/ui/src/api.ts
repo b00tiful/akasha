@@ -6,6 +6,7 @@ import type {
   LibrarySearchResult,
   LocalNavigationState,
   NoteEditResult,
+  PendingNoteEditInspection,
 } from "./types";
 
 function optional(value: string): string | null {
@@ -15,6 +16,13 @@ function optional(value: string): string | null {
 
 export function loadLibrary(root: string, project: string): Promise<DesktopLibrary> {
   return invoke<DesktopLibrary>("load_library", {
+    root: optional(root),
+    project: optional(project),
+  });
+}
+
+export function inspectRecovery(root: string, project: string): Promise<PendingNoteEditInspection> {
+  return invoke<PendingNoteEditInspection>("inspect_recovery", {
     root: optional(root),
     project: optional(project),
   });

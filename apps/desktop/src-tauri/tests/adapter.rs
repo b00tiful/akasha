@@ -10,7 +10,7 @@ use std::os::unix::fs::PermissionsExt;
 use akasha_desktop::write_runtime_probe_report_file;
 use akasha_desktop::{
     LocalNavigationState, library_document, library_projection, load_local_navigation_file,
-    save_library_document, save_local_navigation_file, search_project_library,
+    recovery_inspection, save_library_document, save_local_navigation_file, search_project_library,
 };
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -52,6 +52,57 @@ fn adapter_loads_only_a_projected_exact_document() {
     )
     .expect_err("reject non-projected document");
     assert_eq!(error.code, 4);
+}
+
+#[test]
+fn recovery_inspection_remains_available_when_library_load_refuses() {
+    let temp = TempDir::new("recovery-inspection");
+    let root = temp.path().join("valid-root");
+    copy_tree(&fixture_root(), &root);
+    fs::create_dir_all(temp.path().join("repository")).expect("create registered repository");
+    let note = root.join("Projects/example/entities/core.md");
+    let state = root.join("Projects/example/.akasha-state.toml");
+    let note_before = fs::read_to_string(&note).unwrap();
+    let state_before = fs::read_to_string(&state).unwrap();
+    let note_after = format!("{note_before}\nChecked replacement.\n");
+    save_library_document(
+        Some(root.clone()),
+        Some("example".to_owned()),
+        "Projects/example/entities/core.md",
+        &note_before,
+        &note_after,
+    )
+    .expect("establish a valid after state");
+    let state_after = fs::read_to_string(&state).unwrap();
+    fs::write(&state, &state_before).unwrap();
+    fs::write(&note, "external editor bytes\n").unwrap();
+    let journal = root.join("Projects/example/.akasha-edit-journal.json");
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "schema_version": 1,
+        "project": "example",
+        "id": "Projects/example/entities/core.md",
+        "note_before": note_before,
+        "note_after": note_after,
+        "state_before": state_before,
+        "state_after": state_after,
+    }))
+    .unwrap();
+    fs::write(&journal, &bytes).expect("seed journal with an external writer conflict");
+
+    let error = library_projection(Some(root.clone()), Some("example".to_owned()))
+        .expect_err("loading must refuse unexpected external bytes");
+    assert_eq!(error.code, 5);
+    let inspection = recovery_inspection(Some(root.clone()), Some("example".to_owned()))
+        .expect("read-only journal inspection");
+    assert_eq!(inspection.project, "example");
+    assert_eq!(inspection.journal_path, journal);
+    assert!(inspection.pending);
+    assert_eq!(fs::read(&journal).unwrap(), bytes);
+    assert_eq!(
+        fs::read_to_string(&note).unwrap(),
+        "external editor bytes\n"
+    );
+    assert_eq!(fs::read_to_string(&state).unwrap(), state_before);
 }
 
 #[test]

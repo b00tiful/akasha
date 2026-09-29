@@ -68,6 +68,12 @@ export interface DesktopLibrary {
   recovery: NoteEditRecovery;
 }
 
+export interface PendingNoteEditInspection {
+  project: string;
+  journal_path: string;
+  pending: boolean;
+}
+
 export interface LocalNavigationState {
   version: 1;
   root: string;

@@ -9,8 +9,9 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use akasha_core::{
     LibraryDocument, LibraryProjection, LibraryScope, LibrarySearchResult, NoteEditRecovery,
-    NoteEditResult, ResolveRequest, build_library_projection, load_library_document,
-    recover_pending_note_edit, render_library_markdown, replace_library_document, search_library,
+    NoteEditResult, PendingNoteEditInspection, ResolveRequest, build_library_projection,
+    inspect_pending_note_edit, load_library_document, recover_pending_note_edit,
+    render_library_markdown, replace_library_document, search_library,
 };
 use serde::{Deserialize, Serialize};
 
@@ -245,6 +246,18 @@ pub fn library_projection(
     })
 }
 
+/// Report the selected project's journal presence without invoking recovery or loading notes.
+pub fn recovery_inspection(
+    root: Option<PathBuf>,
+    project: Option<String>,
+) -> Result<PendingNoteEditInspection, DesktopError> {
+    let request = request(root, project)?;
+    inspect_pending_note_edit(&request).map_err(|error| DesktopError {
+        code: error.exit_code(),
+        message: error.to_string(),
+    })
+}
+
 pub fn library_document(
     root: Option<PathBuf>,
     project: Option<String>,
@@ -309,6 +322,15 @@ fn load_library(
     project: Option<String>,
 ) -> Result<DesktopLibrary, DesktopError> {
     library_projection(root, project)
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn inspect_recovery(
+    root: Option<PathBuf>,
+    project: Option<String>,
+) -> Result<PendingNoteEditInspection, DesktopError> {
+    recovery_inspection(root, project)
 }
 
 #[cfg(feature = "desktop")]
@@ -424,6 +446,7 @@ pub fn run() {
     #[cfg(feature = "runtime-probe")]
     let builder = builder.invoke_handler(tauri::generate_handler![
         load_library,
+        inspect_recovery,
         load_document,
         search_project,
         save_document,
@@ -434,6 +457,7 @@ pub fn run() {
     #[cfg(not(feature = "runtime-probe"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         load_library,
+        inspect_recovery,
         load_document,
         search_project,
         save_document,

@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use akasha_core::{
     NOTE_EDIT_JOURNAL_FILE, NoteEditRecovery, ResolutionEnvironment, ResolveRequest,
-    recover_pending_note_edit, replace_library_document, validate_project,
+    inspect_pending_note_edit, recover_pending_note_edit, replace_library_document,
+    validate_project,
 };
 use serde_json::json;
 
@@ -126,6 +127,15 @@ fn recovers_partial_note_publication_by_rolling_back() {
     fs::write(fixture.state_path(), &versions.state_before).expect("seed old state");
     fixture.write_journal(&versions);
 
+    let journal_before = fs::read(fixture.journal()).expect("read pending journal");
+    let inspection = inspect_pending_note_edit(&fixture.request).expect("inspect pending recovery");
+    assert!(inspection.pending);
+    assert_eq!(inspection.project, "example");
+    assert_eq!(inspection.journal_path, fixture.journal());
+    assert_eq!(fixture.note(), versions.note_after);
+    assert_eq!(fixture.state(), versions.state_before);
+    assert_eq!(fs::read(fixture.journal()).unwrap(), journal_before);
+
     let recovery =
         recover_pending_note_edit(&fixture.request).expect("recover partial note publication");
 
@@ -133,6 +143,7 @@ fn recovers_partial_note_publication_by_rolling_back() {
     assert_eq!(fixture.note(), versions.note_before);
     assert_eq!(fixture.state(), versions.state_before);
     assert!(!fixture.journal().exists());
+    assert!(!inspect_pending_note_edit(&fixture.request).unwrap().pending);
     validate_project(&fixture.request).expect("rolled-back project validates");
 }
 

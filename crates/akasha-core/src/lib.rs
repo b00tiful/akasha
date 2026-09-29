@@ -45,8 +45,9 @@ pub use note_creation::{
 };
 pub use note_edit::{
     EntityUpdateResult, NOTE_EDIT_JOURNAL_FILE, NoteEditError, NoteEditRecovery, NoteEditResult,
-    RecordUpdateResult, TaskLifecycleForm, prepare_task_lifecycle, recover_pending_note_edit,
-    replace_library_document, update_entity, update_record,
+    PendingNoteEditInspection, RecordUpdateResult, TaskLifecycleForm, inspect_pending_note_edit,
+    prepare_task_lifecycle, recover_pending_note_edit, replace_library_document, update_entity,
+    update_record,
 };
 pub use note_template::{
     NoteTemplateError, NoteTemplateScope, ResolvedNoteTemplate, resolve_note_template,

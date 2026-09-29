@@ -38,6 +38,15 @@ pub enum NoteEditRecovery {
     Finalized,
 }
 
+/// Read-only location and presence of the selected project's shared mutation journal.
+/// Presence is a snapshot, not a recovery decision or permission to read project data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PendingNoteEditInspection {
+    pub project: String,
+    pub journal_path: PathBuf,
+    pub pending: bool,
+}
+
 /// Result of one exact-source mutable-note replacement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NoteEditResult {
@@ -825,6 +834,36 @@ pub fn update_entity(
             }),
         },
     }
+}
+
+/// Inspect journal presence without acquiring a write lock or changing any project file.
+pub fn inspect_pending_note_edit(
+    request: &ResolveRequest,
+) -> Result<PendingNoteEditInspection, NoteEditError> {
+    let resolved = resolve_project(request)?;
+    let journal_path = resolved.project_dir.join(NOTE_EDIT_JOURNAL_FILE);
+    let pending = match fs::symlink_metadata(&journal_path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Ok(metadata) if metadata.file_type().is_file() => true,
+        Ok(_) => {
+            return Err(NoteEditError::Validation {
+                path: journal_path,
+                message: "recovery journal is not a regular file".to_owned(),
+            });
+        }
+        Err(source) => {
+            return Err(NoteEditError::FileSystem {
+                operation: "inspect the note edit journal",
+                path: journal_path,
+                source,
+            });
+        }
+    };
+    Ok(PendingNoteEditInspection {
+        project: resolved.project,
+        journal_path,
+        pending,
+    })
 }
 
 /// Resolve a pending exact-byte edit journal without requiring the project to validate first.
