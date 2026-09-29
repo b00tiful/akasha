@@ -262,6 +262,55 @@ fn stale_preview_and_invalid_evidence_write_nothing() {
     assert_eq!(fixture.project_snapshot(), before);
 }
 
+#[cfg(unix)]
+#[test]
+fn non_utf8_onboarding_identity_paths_fail_before_preview_or_approved_apply() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    for byte in [0x80, 0x81] {
+        let mut fixture = Fixture::new("non-utf8-root");
+        let original_root = fixture.resolution.root_override.clone().unwrap();
+        let invalid_root = fixture
+            ._temp
+            .path()
+            .join(OsString::from_vec(vec![b'r', b'o', b'o', b't', byte]));
+        fs::rename(&original_root, &invalid_root).unwrap();
+        fixture.resolution.root_override = Some(invalid_root.clone());
+        fixture.project = invalid_root.join("Projects/example");
+        let request = fixture.evidenced_batch_request();
+        let before = fixture.project_snapshot();
+
+        let error = prepare_onboarding(&fixture.resolution)
+            .expect_err("preparation cannot return a lossy root identity");
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("root path is not valid UTF-8"));
+        let error = preview_onboarding_batch(&request)
+            .expect_err("a non-UTF-8 root cannot enter preview identity hashing");
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("root path is not valid UTF-8"));
+        let error = apply_approved_onboarding_batch(&request, "sha256:unapproved")
+            .expect_err("approved apply must reject the same non-UTF-8 root");
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("root path is not valid UTF-8"));
+        assert_eq!(fixture.project_snapshot(), before);
+    }
+
+    let fixture = Fixture::new("non-utf8-note");
+    let mut request = fixture.evidenced_batch_request();
+    request.notes[0].path = PathBuf::from(OsString::from_vec(vec![b'n', 0x80, b'.', b'm', b'd']));
+    let before = fixture.project_snapshot();
+    let error = preview_onboarding_batch(&request)
+        .expect_err("a non-UTF-8 proposed note path cannot enter proposal hashing");
+    assert_eq!(error.exit_code(), 4);
+    assert!(
+        error
+            .to_string()
+            .contains("proposal paths must be valid UTF-8")
+    );
+    assert_eq!(fixture.project_snapshot(), before);
+}
+
 struct Fixture {
     _temp: TempDir,
     project: PathBuf,

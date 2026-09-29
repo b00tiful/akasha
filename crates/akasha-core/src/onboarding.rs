@@ -290,9 +290,15 @@ pub fn prepare_onboarding(
     request: &ResolveRequest,
 ) -> Result<OnboardingPreparation, OnboardingBatchError> {
     let report = validate_project(request)?;
+    identifier_path_text(&report.root, "root path")?;
+    identifier_path_text(&report.repository_dir, "repository directory path")?;
+    identifier_path_text(&report.project_dir, "project directory path")?;
     let config = load_root_config(&report.root)?;
     let templates_dir = report.project_dir.join(&config.project.templates);
     let (templates, omitted_templates, template_characters) = collect_templates(&templates_dir)?;
+    for template in &templates {
+        identifier_path_text(&template.path, "template path")?;
+    }
 
     let mut all_existing_notes = Vec::new();
     let mut note_types = BTreeMap::new();
@@ -307,13 +313,15 @@ pub fn prepare_onboarding(
         );
         let folder = report.project_dir.join(&note_type.folder);
         for path in canonical_note_paths(&folder)? {
-            all_existing_notes.push(OnboardingInventoryEntry {
+            let entry = OnboardingInventoryEntry {
                 note_type: name.clone(),
                 path: path
                     .strip_prefix(&folder)
                     .expect("canonical notes are collected below their configured folder")
                     .to_path_buf(),
-            });
+            };
+            identifier_path_text(&entry.path, "existing note path")?;
+            all_existing_notes.push(entry);
         }
     }
     all_existing_notes
@@ -354,7 +362,7 @@ pub fn preview_onboarding_batch(
     request: &OnboardingBatchRequest,
 ) -> Result<OnboardingBatchPreview, OnboardingBatchError> {
     let prepared = prepare_batch(request, None)?;
-    Ok(render_preview(request, &prepared))
+    render_preview(request, &prepared)
 }
 
 /// Apply a proposal only when it still exactly matches a previously returned preview identifier.
@@ -363,10 +371,12 @@ pub fn apply_approved_onboarding_batch(
     approved_preview_id: &str,
 ) -> Result<OnboardingBatchResult, OnboardingBatchError> {
     let resolved = resolve_project(&request.resolution)?;
+    identifier_path_text(&resolved.root, "root path")?;
+    identifier_path_text(&resolved.project_dir, "project directory path")?;
     let _lock = ProjectWriteLock::acquire(&resolved.project_dir)?;
     recover_note_mutation_locked(&request.resolution, &resolved.project_dir)?;
     let prepared = prepare_batch(request, Some(&resolved.project_dir))?;
-    let current_preview = render_preview(request, &prepared);
+    let current_preview = render_preview(request, &prepared)?;
     if approved_preview_id != current_preview.preview_id {
         return Err(OnboardingBatchError::Conflict {
             path: prepared.state_path.clone(),
@@ -709,10 +719,10 @@ fn prepare_batch(
 fn render_preview(
     request: &OnboardingBatchRequest,
     prepared: &PreparedBatch,
-) -> OnboardingBatchPreview {
-    let proposal_id = proposal_identifier(request, &prepared.project);
-    let preview_id = preview_identifier(&proposal_id, prepared);
-    OnboardingBatchPreview {
+) -> Result<OnboardingBatchPreview, OnboardingBatchError> {
+    let proposal_id = proposal_identifier(request, &prepared.project)?;
+    let preview_id = preview_identifier(&proposal_id, prepared)?;
+    Ok(OnboardingBatchPreview {
         root: prepared.root.clone(),
         project: prepared.project.clone(),
         project_dir: prepared.project_dir.clone(),
@@ -735,10 +745,13 @@ fn render_preview(
         index_changed: prepared.index_before != request.index.as_bytes(),
         roadmap_changed: prepared.roadmap_before != request.roadmap.as_bytes(),
         state_changed: prepared.state_before != prepared.state_after,
-    }
+    })
 }
 
-fn proposal_identifier(request: &OnboardingBatchRequest, project: &str) -> String {
+fn proposal_identifier(
+    request: &OnboardingBatchRequest,
+    project: &str,
+) -> Result<String, OnboardingBatchError> {
     let mut hasher = Sha256::new();
     hash_field(&mut hasher, ONBOARDING_PROPOSAL_DOMAIN);
     hash_field(&mut hasher, project.as_bytes());
@@ -747,28 +760,48 @@ fn proposal_identifier(request: &OnboardingBatchRequest, project: &str) -> Strin
         .sort_by(|left, right| (&left.note_type, &left.path).cmp(&(&right.note_type, &right.path)));
     for note in notes {
         hash_field(&mut hasher, note.note_type.as_bytes());
-        hash_field(&mut hasher, note.path.to_string_lossy().as_bytes());
+        hash_field(
+            &mut hasher,
+            identifier_path_text(&note.path, "proposal note path")?.as_bytes(),
+        );
         hash_field(&mut hasher, note.source.as_bytes());
     }
     hash_field(&mut hasher, request.index.as_bytes());
     hash_field(&mut hasher, request.roadmap.as_bytes());
-    render_digest(hasher.finalize())
+    Ok(render_digest(hasher.finalize()))
 }
 
-fn preview_identifier(proposal_id: &str, prepared: &PreparedBatch) -> String {
+fn preview_identifier(
+    proposal_id: &str,
+    prepared: &PreparedBatch,
+) -> Result<String, OnboardingBatchError> {
     let mut hasher = Sha256::new();
     hash_field(&mut hasher, ONBOARDING_PREVIEW_DOMAIN);
     hash_field(&mut hasher, proposal_id.as_bytes());
-    hash_field(&mut hasher, prepared.root.to_string_lossy().as_bytes());
+    hash_field(
+        &mut hasher,
+        identifier_path_text(&prepared.root, "root path")?.as_bytes(),
+    );
     hash_field(&mut hasher, prepared.project.as_bytes());
     hash_field(
         &mut hasher,
-        prepared.project_dir.to_string_lossy().as_bytes(),
+        identifier_path_text(&prepared.project_dir, "project directory path")?.as_bytes(),
     );
     hash_field(&mut hasher, &prepared.index_before);
     hash_field(&mut hasher, &prepared.roadmap_before);
     hash_field(&mut hasher, &prepared.state_before);
-    render_digest(hasher.finalize())
+    Ok(render_digest(hasher.finalize()))
+}
+
+fn identifier_path_text<'a>(
+    path: &'a Path,
+    kind: &'static str,
+) -> Result<&'a str, OnboardingBatchError> {
+    path.to_str()
+        .ok_or_else(|| OnboardingBatchError::Validation {
+            path: path.to_path_buf(),
+            message: format!("{kind} is not valid UTF-8"),
+        })
 }
 
 fn hash_field(hasher: &mut Sha256, value: &[u8]) {
