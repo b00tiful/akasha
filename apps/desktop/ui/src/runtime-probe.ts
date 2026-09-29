@@ -24,6 +24,7 @@ interface SurfaceReport {
   cpuMs: SampleSummary;
   updateCpuMs: SampleSummary;
   renderCpuMs: SampleSummary;
+  passCpuMs: { worldMs: SampleSummary; overlayMs: SampleSummary; finalMs: SampleSummary; otherMs: SampleSummary };
   gpuMs: SampleSummary;
   render: RuntimeRenderInfo | null;
 }
@@ -107,6 +108,12 @@ function surfaceReport(surface: RuntimeSurface): SurfaceReport {
     cpuMs: roundedSummary(summarizeSamples(snapshot.cpuMs)),
     updateCpuMs: roundedSummary(summarizeSamples(snapshot.updateCpuMs)),
     renderCpuMs: roundedSummary(summarizeSamples(snapshot.renderCpuMs)),
+    passCpuMs: {
+      worldMs: roundedSummary(summarizeSamples(snapshot.passCpuMs.worldMs)),
+      overlayMs: roundedSummary(summarizeSamples(snapshot.passCpuMs.overlayMs)),
+      finalMs: roundedSummary(summarizeSamples(snapshot.passCpuMs.finalMs)),
+      otherMs: roundedSummary(summarizeSamples(snapshot.passCpuMs.otherMs)),
+    },
     gpuMs: roundedSummary(summarizeSamples(snapshot.gpuMs)),
     render: snapshot.render,
   };

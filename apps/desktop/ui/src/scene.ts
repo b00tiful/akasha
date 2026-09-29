@@ -29,7 +29,7 @@ import {
   type ShelfMotion,
   type SpatialDirection,
 } from "./scene-model";
-import { runtimeMetrics } from "./runtime-metrics";
+import { runtimeMetrics, type RuntimePassCpu } from "./runtime-metrics";
 import type { LibraryProjection } from "./types";
 
 const COLORS = {
@@ -362,6 +362,7 @@ interface PixelPipeline {
     camera: THREE.PerspectiveCamera,
     overlay: THREE.Scene,
     overlayCamera: THREE.OrthographicCamera,
+    recordPasses?: (passes: RuntimePassCpu) => void,
   ): void;
   dispose(): void;
 }
@@ -540,16 +541,21 @@ export async function mountLibraryScene(
     }
   }
 
-  const render = (profile: boolean): void => {
+  let firstDrawPassCpuMs: RuntimePassCpu | undefined;
+  const render = (profile: boolean, firstDraw = false): RuntimePassCpu | undefined => {
+    let passes: RuntimePassCpu | undefined;
     if (profile) {
       renderer.info.reset();
       gpuTimer?.begin();
     }
-    pixelPipeline.render(world, camera, overlay, overlayCamera);
+    pixelPipeline.render(world, camera, overlay, overlayCamera, profile || firstDraw
+      ? (recorded) => { passes = recorded; }
+      : undefined);
     if (profile) gpuTimer?.end();
+    return passes;
   };
 
-  const update = (seconds: number, frameTime: number | null = null): void => {
+  const update = (seconds: number, frameTime: number | null = null, firstDraw = false): void => {
     const profile = runtimeMetrics.enabled && frameTime !== null;
     const started = profile ? performance.now() : 0;
     if (!motionReduced) {
@@ -581,7 +587,8 @@ export async function mountLibraryScene(
       random,
     );
     const updateFinishedAt = profile ? performance.now() : 0;
-    render(profile);
+    const passes = render(profile, firstDraw);
+    if (firstDraw) firstDrawPassCpuMs = passes;
     if (profile) {
       const renderFinishedAt = performance.now();
       runtimeMetrics.frame("global", frameTime!, renderFinishedAt - started, {
@@ -594,6 +601,7 @@ export async function mountLibraryScene(
       }, {
         updateMs: updateFinishedAt - started,
         renderMs: renderFinishedAt - updateFinishedAt,
+        passes,
       });
     }
   };
@@ -873,7 +881,7 @@ export async function mountLibraryScene(
     estimatedRenderTargetBytes: debugMode === "raw" ? 0 : renderWidth * renderHeight * 8,
   });
   const firstDrawStartedAt = runtimeMetrics.enabled ? performance.now() : 0;
-  update(0);
+  update(0, null, runtimeMetrics.enabled);
   startAnimation();
   if (runtimeMetrics.enabled) {
     const mountFinishedAt = performance.now();
@@ -884,6 +892,7 @@ export async function mountLibraryScene(
       cabinetsMs: cabinetsReadyAt - ambientReadyAt,
       wiringMs: firstDrawStartedAt - cabinetsReadyAt,
       firstDrawMs: mountFinishedAt - firstDrawStartedAt,
+      firstDrawPassCpuMs,
       totalMs: mountFinishedAt - mountStartedAt,
     });
   }
@@ -1137,26 +1146,50 @@ function createPixelPipeline(
     camera: THREE.PerspectiveCamera,
     overlay: THREE.Scene,
     overlayCamera: THREE.OrthographicCamera,
-  ): void => {
+    recordPasses?: (passes: RuntimePassCpu) => void,
+  ): RuntimePassCpu | undefined => {
+    const started = recordPasses ? performance.now() : 0;
     renderer.autoClear = true;
     renderer.render(world, camera);
+    const worldFinishedAt = recordPasses ? performance.now() : 0;
     renderer.autoClear = false;
     renderer.clearDepth();
+    const overlayStartedAt = recordPasses ? performance.now() : 0;
     renderer.render(overlay, overlayCamera);
+    const overlayFinishedAt = recordPasses ? performance.now() : 0;
     renderer.autoClear = true;
+    if (!recordPasses) return undefined;
+    return {
+      worldMs: worldFinishedAt - started,
+      overlayMs: overlayFinishedAt - overlayStartedAt,
+      finalMs: 0,
+      otherMs: overlayStartedAt - worldFinishedAt,
+    };
   };
 
   return {
-    render(world, camera, overlay, overlayCamera): void {
+    render(world, camera, overlay, overlayCamera, recordPasses): void {
+      const started = recordPasses ? performance.now() : 0;
       if (debugMode === "raw") {
         renderer.setRenderTarget(null);
-        renderLayers(world, camera, overlay, overlayCamera);
+        const passes = renderLayers(world, camera, overlay, overlayCamera, recordPasses);
+        if (passes) {
+          passes.otherMs = Math.max(0, performance.now() - started - passes.worldMs - passes.overlayMs);
+          recordPasses?.(passes);
+        }
         return;
       }
       renderer.setRenderTarget(target);
-      renderLayers(world, camera, overlay, overlayCamera);
+      const passes = renderLayers(world, camera, overlay, overlayCamera, recordPasses);
       renderer.setRenderTarget(null);
+      const finalStartedAt = recordPasses ? performance.now() : 0;
       renderer.render(postScene, postCamera);
+      if (passes) {
+        const finishedAt = performance.now();
+        passes.finalMs = finishedAt - finalStartedAt;
+        passes.otherMs = Math.max(0, finishedAt - started - passes.worldMs - passes.overlayMs - passes.finalMs);
+        recordPasses?.(passes);
+      }
     },
     dispose(): void {
       target.dispose();

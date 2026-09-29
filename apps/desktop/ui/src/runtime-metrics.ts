@@ -21,12 +21,21 @@ export interface RuntimeMountTiming {
   cabinetsMs: number;
   wiringMs: number;
   firstDrawMs: number;
+  firstDrawPassCpuMs?: RuntimePassCpu;
   totalMs: number;
+}
+
+export interface RuntimePassCpu {
+  worldMs: number;
+  overlayMs: number;
+  finalMs: number;
+  otherMs: number;
 }
 
 export interface RuntimeFrameCpu {
   updateMs: number;
   renderMs: number;
+  passes?: RuntimePassCpu;
 }
 
 export interface RuntimeSurfaceSnapshot {
@@ -35,6 +44,7 @@ export interface RuntimeSurfaceSnapshot {
   cpuMs: number[];
   updateCpuMs: number[];
   renderCpuMs: number[];
+  passCpuMs: Record<keyof RuntimePassCpu, number[]>;
   gpuMs: number[];
   mountTimings: RuntimeMountTiming[];
   mounts: number;
@@ -56,6 +66,7 @@ function emptySurface(): RuntimeSurfaceState {
     cpuMs: [],
     updateCpuMs: [],
     renderCpuMs: [],
+    passCpuMs: { worldMs: [], overlayMs: [], finalMs: [], otherMs: [] },
     gpuMs: [],
     mountTimings: [],
     mounts: 0,
@@ -95,7 +106,10 @@ export class RuntimeMetrics {
     if (!this.enabled) return;
     const timings = this.#surfaces[surface].mountTimings;
     if (timings.length === 8) timings.shift();
-    timings.push({ ...timing });
+    timings.push({
+      ...timing,
+      firstDrawPassCpuMs: timing.firstDrawPassCpuMs ? { ...timing.firstDrawPassCpuMs } : undefined,
+    });
   }
 
   destroy(surface: RuntimeSurface): void {
@@ -124,6 +138,11 @@ export class RuntimeMetrics {
     if (cpuParts) {
       appendSample(state.updateCpuMs, cpuParts.updateMs);
       appendSample(state.renderCpuMs, cpuParts.renderMs);
+      if (cpuParts.passes) {
+        for (const key of ["worldMs", "overlayMs", "finalMs", "otherMs"] as const) {
+          appendSample(state.passCpuMs[key], cpuParts.passes[key]);
+        }
+      }
     }
     if (render && state.render) Object.assign(state.render, render);
   }
@@ -141,6 +160,7 @@ export class RuntimeMetrics {
     state.cpuMs = [];
     state.updateCpuMs = [];
     state.renderCpuMs = [];
+    state.passCpuMs = { worldMs: [], overlayMs: [], finalMs: [], otherMs: [] };
     state.gpuMs = [];
     state.lastFrameAt = null;
   }
@@ -153,8 +173,17 @@ export class RuntimeMetrics {
       cpuMs: [...state.cpuMs],
       updateCpuMs: [...state.updateCpuMs],
       renderCpuMs: [...state.renderCpuMs],
+      passCpuMs: {
+        worldMs: [...state.passCpuMs.worldMs],
+        overlayMs: [...state.passCpuMs.overlayMs],
+        finalMs: [...state.passCpuMs.finalMs],
+        otherMs: [...state.passCpuMs.otherMs],
+      },
       gpuMs: [...state.gpuMs],
-      mountTimings: state.mountTimings.map((timing) => ({ ...timing })),
+      mountTimings: state.mountTimings.map((timing) => ({
+        ...timing,
+        firstDrawPassCpuMs: timing.firstDrawPassCpuMs ? { ...timing.firstDrawPassCpuMs } : undefined,
+      })),
       mounts: state.mounts,
       destroys: state.destroys,
       active: state.active,

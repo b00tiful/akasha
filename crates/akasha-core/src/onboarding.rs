@@ -353,7 +353,7 @@ pub fn prepare_onboarding(
 pub fn preview_onboarding_batch(
     request: &OnboardingBatchRequest,
 ) -> Result<OnboardingBatchPreview, OnboardingBatchError> {
-    let prepared = prepare_batch(request, None, EvidencePolicy::Required)?;
+    let prepared = prepare_batch(request, None)?;
     Ok(render_preview(request, &prepared))
 }
 
@@ -365,11 +365,7 @@ pub fn apply_approved_onboarding_batch(
     let resolved = resolve_project(&request.resolution)?;
     let _lock = ProjectWriteLock::acquire(&resolved.project_dir)?;
     recover_note_mutation_locked(&request.resolution, &resolved.project_dir)?;
-    let prepared = prepare_batch(
-        request,
-        Some(&resolved.project_dir),
-        EvidencePolicy::Required,
-    )?;
+    let prepared = prepare_batch(request, Some(&resolved.project_dir))?;
     let current_preview = render_preview(request, &prepared);
     if approved_preview_id != current_preview.preview_id {
         return Err(OnboardingBatchError::Conflict {
@@ -381,10 +377,12 @@ pub fn apply_approved_onboarding_batch(
     apply_prepared(request, prepared, |_| {})
 }
 
-/// Apply one reviewed, create-only onboarding proposal through the shared core.
+/// Apply one bounded, source-attributed, create-only onboarding proposal through the shared core.
 ///
 /// Exact existing note bytes are rerun no-ops. Differing existing bytes conflict. Index and
 /// roadmap are the only replaceable human-visible files, and project state is published last.
+/// Callers must provide their own review/approval boundary; this API enforces the same proposal
+/// bounds and persistent evidence checks as preview and approved apply.
 pub fn apply_onboarding_batch(
     request: &OnboardingBatchRequest,
 ) -> Result<OnboardingBatchResult, OnboardingBatchError> {
@@ -421,7 +419,7 @@ fn apply_locked(
     locked_project_dir: &Path,
     publication_hook: impl FnMut(OnboardingPublicationStage),
 ) -> Result<OnboardingBatchResult, OnboardingBatchError> {
-    let prepared = prepare_batch(request, Some(locked_project_dir), EvidencePolicy::Unchecked)?;
+    let prepared = prepare_batch(request, Some(locked_project_dir))?;
     apply_prepared(request, prepared, publication_hook)
 }
 
@@ -615,7 +613,6 @@ fn vault_relative_identity(
 fn prepare_batch(
     request: &OnboardingBatchRequest,
     locked_project_dir: Option<&Path>,
-    evidence_policy: EvidencePolicy,
 ) -> Result<PreparedBatch, OnboardingBatchError> {
     if request.notes.is_empty() {
         return Err(OnboardingBatchError::Validation {
@@ -623,9 +620,7 @@ fn prepare_batch(
             message: "an onboarding batch must contain at least one canonical note".to_owned(),
         });
     }
-    if evidence_policy == EvidencePolicy::Required {
-        validate_proposal_bounds(request)?;
-    }
+    validate_proposal_bounds(request)?;
 
     let report = validate_project(&request.resolution)?;
     if locked_project_dir.is_some_and(|locked| report.project_dir != locked) {
@@ -642,7 +637,6 @@ fn prepare_batch(
         &report.repository_dir,
         &config,
         &request.notes,
-        evidence_policy,
     )?;
     let index_path = report.project_dir.join(&config.project.index);
     let roadmap_path = report.project_dir.join(&config.project.roadmap);
@@ -804,12 +798,6 @@ struct PreparedNote {
     evidence_claims: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EvidencePolicy {
-    Unchecked,
-    Required,
-}
-
 #[derive(Debug)]
 struct PreparedBatch {
     root: PathBuf,
@@ -832,7 +820,6 @@ fn prepare_notes(
     repository_dir: &Path,
     config: &RootConfig,
     proposals: &[ProposedNote],
-    evidence_policy: EvidencePolicy,
 ) -> Result<Vec<PreparedNote>, OnboardingBatchError> {
     let mut destinations = BTreeMap::new();
     for proposal in proposals {
@@ -915,12 +902,7 @@ fn prepare_notes(
             message: error.to_string(),
         })?;
         validate_wikilinks_with_targets(root, &path, parsed.body, &proposed_targets)?;
-        let evidence_claims = match evidence_policy {
-            EvidencePolicy::Unchecked => 0,
-            EvidencePolicy::Required => {
-                validate_persistent_evidence(&parsed, repository_dir, &path)?
-            }
-        };
+        let evidence_claims = validate_persistent_evidence(&parsed, repository_dir, &path)?;
 
         let create = match fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
@@ -1655,7 +1637,7 @@ mod tests {
                 notes: vec![ProposedNote {
                     note_type: "entity".to_owned(),
                     path: PathBuf::from("core.md"),
-                    source: "---\nschema_version: 1\nentity: core\nkind: subsystem\nstatus: active\nreviewed: 2026-07-13\n---\n\n# Core\n".to_owned(),
+                    source: "---\nschema_version: 1\nentity: core\nkind: subsystem\nstatus: active\nreviewed: 2026-07-13\nevidence:\n  - kind: unknown\n    claim: The subsystem behavior has not been verified.\n    rationale: This fixture tests publication and recovery.\n---\n\n# Core\n".to_owned(),
                 }],
                 index: "# Index\n".to_owned(),
                 roadmap: String::new(),

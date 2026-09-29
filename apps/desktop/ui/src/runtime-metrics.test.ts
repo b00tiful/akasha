@@ -23,13 +23,20 @@ describe("runtime metrics", () => {
       cabinetsMs: 4,
       wiringMs: 5,
       firstDrawMs: 6,
+      firstDrawPassCpuMs: { worldMs: 2, overlayMs: 1, finalMs: 1, otherMs: 0.5 },
       totalMs: 21,
     };
     const metrics = new RuntimeMetrics(true);
     metrics.mount("global", render);
     metrics.mountTiming("global", mountTiming);
-    metrics.frame("global", 10, 2.1, { drawCalls: 50 }, { updateMs: 0.7, renderMs: 1.4 });
-    metrics.frame("global", 16, 2.4, { triangles: 12_000 }, { updateMs: 0.8, renderMs: 1.6 });
+    metrics.frame("global", 10, 2.1, { drawCalls: 50 }, {
+      updateMs: 0.7, renderMs: 1.4,
+      passes: { worldMs: 0.5, overlayMs: 0.3, finalMs: 0.4, otherMs: 0.1 },
+    });
+    metrics.frame("global", 16, 2.4, { triangles: 12_000 }, {
+      updateMs: 0.8, renderMs: 1.6,
+      passes: { worldMs: 0.6, overlayMs: 0.4, finalMs: 0.5, otherMs: 0.1 },
+    });
     metrics.gpu("global", 3.2);
     metrics.destroy("global");
 
@@ -39,6 +46,10 @@ describe("runtime metrics", () => {
       cpuMs: [2.1, 2.4],
       updateCpuMs: [0.7, 0.8],
       renderCpuMs: [1.4, 1.6],
+      passCpuMs: {
+        worldMs: [0.5, 0.6], overlayMs: [0.3, 0.4],
+        finalMs: [0.4, 0.5], otherMs: [0.1, 0.1],
+      },
       gpuMs: [3.2],
       mountTimings: [mountTiming],
       mounts: 1,
@@ -59,6 +70,7 @@ describe("runtime metrics", () => {
       cpuMs: [],
       updateCpuMs: [],
       renderCpuMs: [],
+      passCpuMs: { worldMs: [], overlayMs: [], finalMs: [], otherMs: [] },
       gpuMs: [],
       mountTimings: [],
       mounts: 0,
@@ -103,6 +115,7 @@ describe("runtime metrics", () => {
       cpuMs: [3],
       updateCpuMs: [],
       renderCpuMs: [],
+      passCpuMs: { worldMs: [], overlayMs: [], finalMs: [], otherMs: [] },
       mountTimings: [{ totalMs: 1 }],
       mounts: 1,
       active: 1,

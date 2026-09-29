@@ -16,7 +16,7 @@ static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 #[test]
 fn applies_valid_notes_projections_and_state_as_one_checked_batch() {
     let fixture = Fixture::new("complete");
-    let request = fixture.batch_request();
+    let request = fixture.evidenced_batch_request();
 
     let result = apply_onboarding_batch(&request).expect("apply onboarding batch");
 
@@ -48,7 +48,7 @@ fn applies_valid_notes_projections_and_state_as_one_checked_batch() {
 #[test]
 fn exact_rerun_is_a_no_op() {
     let fixture = Fixture::new("rerun");
-    let request = fixture.batch_request();
+    let request = fixture.evidenced_batch_request();
     apply_onboarding_batch(&request).expect("apply first batch");
     let state_before = fs::read(fixture.project.join(".akasha-state.toml")).expect("read state");
 
@@ -66,7 +66,7 @@ fn exact_rerun_is_a_no_op() {
 #[test]
 fn differing_existing_note_conflicts_without_mutation() {
     let fixture = Fixture::new("rerun-conflict");
-    let request = fixture.batch_request();
+    let request = fixture.evidenced_batch_request();
     apply_onboarding_batch(&request).expect("apply first batch");
     let before = fixture.project_snapshot();
     let mut changed = request.clone();
@@ -100,7 +100,7 @@ fn invalid_note_and_missing_wikilink_write_nothing() {
     ] {
         let fixture = Fixture::new(label);
         let before = fixture.project_snapshot();
-        let mut request = fixture.batch_request();
+        let mut request = fixture.evidenced_batch_request();
         request.notes[0].source = source.to_owned();
 
         let error = apply_onboarding_batch(&request).expect_err("invalid proposal must fail");
@@ -111,17 +111,40 @@ fn invalid_note_and_missing_wikilink_write_nothing() {
 }
 
 #[test]
+fn public_apply_enforces_preview_evidence_and_size_bounds() {
+    let fixture = Fixture::new("public-apply-policy");
+    let before = fixture.project_snapshot();
+
+    let mut missing_evidence = fixture.batch_request();
+    let error = apply_onboarding_batch(&missing_evidence)
+        .expect_err("public apply must reject unattributed notes");
+    assert_eq!(error.exit_code(), 4);
+    assert!(error.to_string().contains("non-empty `evidence` list"));
+    assert_eq!(fixture.project_snapshot(), before);
+
+    missing_evidence = fixture.evidenced_batch_request();
+    missing_evidence.notes[0]
+        .source
+        .push_str(&"x".repeat(65_536));
+    let error = apply_onboarding_batch(&missing_evidence)
+        .expect_err("public apply must reject oversized notes");
+    assert_eq!(error.exit_code(), 4);
+    assert!(error.to_string().contains("the maximum is 65536"));
+    assert_eq!(fixture.project_snapshot(), before);
+}
+
+#[test]
 fn unsafe_path_and_existing_lock_fail_without_writes() {
     let fixture = Fixture::new("unsafe-path");
     let before = fixture.project_snapshot();
-    let mut request = fixture.batch_request();
+    let mut request = fixture.evidenced_batch_request();
     request.notes[0].path = PathBuf::from("../escape.md");
 
     let error = apply_onboarding_batch(&request).expect_err("unsafe path must fail");
     assert_eq!(error.exit_code(), 4);
     assert_eq!(fixture.project_snapshot(), before);
 
-    let request = fixture.batch_request();
+    let request = fixture.evidenced_batch_request();
     let lock = fixture.project.join(".akasha-write.lock");
     let lock_file = fs::OpenOptions::new()
         .read(true)

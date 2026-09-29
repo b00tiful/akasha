@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -44,7 +44,13 @@ impl<T: Serialize> IntoCallToolResult for ToolExecutionError<T> {
 #[derive(Clone)]
 pub struct OnboardingMcpServer {
     resolution: ResolveRequest,
-    proposals: Arc<Mutex<BTreeMap<String, StoredProposal>>>,
+    proposals: Arc<Mutex<ProposalStore>>,
+}
+
+#[derive(Default)]
+struct ProposalStore {
+    entries: BTreeMap<String, StoredProposal>,
+    insertion_order: VecDeque<String>,
 }
 
 #[derive(Clone)]
@@ -58,7 +64,7 @@ impl OnboardingMcpServer {
     pub fn new(resolution: ResolveRequest) -> Self {
         Self {
             resolution,
-            proposals: Arc::new(Mutex::new(BTreeMap::new())),
+            proposals: Arc::new(Mutex::new(ProposalStore::default())),
         }
     }
 
@@ -79,23 +85,21 @@ impl OnboardingMcpServer {
         }
     }
 
-    fn store_validated_proposal(
-        &self,
-        preview: &OnboardingBatchPreview,
-        request: OnboardingBatchRequest,
-    ) {
+    fn store_validated_proposal(&self, proposal_id: &str, request: OnboardingBatchRequest) {
         let mut proposals = self
             .proposals
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if proposals.len() >= MAX_STORED_PROPOSALS
-            && !proposals.contains_key(&preview.proposal_id)
-            && let Some(oldest_key) = proposals.keys().next().cloned()
-        {
-            proposals.remove(&oldest_key);
+        if !proposals.entries.contains_key(proposal_id) {
+            if proposals.entries.len() >= MAX_STORED_PROPOSALS
+                && let Some(oldest_id) = proposals.insertion_order.pop_front()
+            {
+                proposals.entries.remove(&oldest_id);
+            }
+            proposals.insertion_order.push_back(proposal_id.to_owned());
         }
-        proposals.insert(
-            preview.proposal_id.clone(),
+        proposals.entries.insert(
+            proposal_id.to_owned(),
             StoredProposal {
                 request,
                 last_preview_id: None,
@@ -107,6 +111,7 @@ impl OnboardingMcpServer {
         self.proposals
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entries
             .get(proposal_id)
             .cloned()
     }
@@ -116,6 +121,7 @@ impl OnboardingMcpServer {
             .proposals
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entries
             .get_mut(proposal_id)
         {
             stored.last_preview_id = Some(preview_id);
@@ -127,6 +133,7 @@ impl OnboardingMcpServer {
             .proposals
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entries
             .get_mut(proposal_id)
         {
             stored.last_preview_id = None;
@@ -175,7 +182,7 @@ impl OnboardingMcpServer {
         let request = self.proposal_request(input.proposal);
         match preview_onboarding_batch(&request) {
             Ok(preview) => {
-                self.store_validated_proposal(&preview, request);
+                self.store_validated_proposal(&preview.proposal_id, request);
                 Ok(Json(ValidateOutput::success(&preview)))
             }
             Err(error) => Err(ToolExecutionError::new(ValidateOutput::failure(error))),
@@ -757,6 +764,35 @@ mod tests {
         assert!(applied.success);
         assert_eq!(applied.created_notes, vec!["entities/core.md"]);
         assert!(fixture.project.join("entities/core.md").is_file());
+    }
+
+    #[test]
+    fn proposal_retention_evicts_oldest_insertion_and_keeps_duplicate_age() {
+        let fixture = Fixture::new();
+        let server = OnboardingMcpServer::new(fixture.resolution.clone());
+        let request = server.proposal_request(fixture.proposal());
+        for id in ["z", "a", "b", "c", "d", "e", "f", "g"] {
+            server.store_validated_proposal(id, request.clone());
+        }
+        server.record_preview("z", "previous-preview".to_owned());
+        server.store_validated_proposal("z", request.clone());
+        assert_eq!(server.load_proposal("z").unwrap().last_preview_id, None);
+
+        server.store_validated_proposal("h", request);
+
+        assert!(server.load_proposal("z").is_none());
+        for id in ["a", "b", "c", "d", "e", "f", "g", "h"] {
+            assert!(
+                server.load_proposal(id).is_some(),
+                "{id} must remain retained"
+            );
+        }
+        let stored = server
+            .proposals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(stored.entries.len(), MAX_STORED_PROPOSALS);
+        assert_eq!(stored.insertion_order.len(), MAX_STORED_PROPOSALS);
     }
 
     #[test]
