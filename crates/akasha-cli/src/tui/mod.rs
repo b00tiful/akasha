@@ -6,7 +6,10 @@ mod state;
 mod view;
 
 use std::io::{self, IsTerminal};
+use std::panic::{self, PanicHookInfo};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -26,10 +29,44 @@ use app::App;
 
 const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Drop restores the terminal on normal exit and unwinding, including partial setup failure.
-struct TerminalGuard;
+type PanicHook = dyn Fn(&PanicHookInfo<'_>) + Send + Sync + 'static;
+
+/// Restore before the panic hook prints, so its diagnostic survives the alternate screen.
+struct TerminalGuard {
+    restored: Arc<AtomicBool>,
+    previous_hook: Arc<PanicHook>,
+}
+
+impl TerminalGuard {
+    fn new() -> Self {
+        let restored = Arc::new(AtomicBool::new(false));
+        let previous_hook: Arc<PanicHook> = Arc::from(panic::take_hook());
+        let hook_restored = Arc::clone(&restored);
+        let hook_previous = Arc::clone(&previous_hook);
+        panic::set_hook(Box::new(move |info| {
+            restore_terminal_once(&hook_restored);
+            hook_previous(info);
+        }));
+        Self {
+            restored,
+            previous_hook,
+        }
+    }
+}
+
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        restore_terminal_once(&self.restored);
+        if !std::thread::panicking() {
+            let _ = panic::take_hook();
+            let previous_hook = Arc::clone(&self.previous_hook);
+            panic::set_hook(Box::new(move |info| previous_hook(info)));
+        }
+    }
+}
+
+fn restore_terminal_once(restored: &AtomicBool) {
+    if !restored.swap(true, Ordering::AcqRel) {
         let _ = execute!(
             io::stdout(),
             DisableBracketedPaste,
@@ -83,8 +120,8 @@ fn terminal_session(
         Some(Err(error)) => (None, Some(error)),
         None => (None, None),
     };
+    let _guard = TerminalGuard::new();
     enable_raw_mode()?;
-    let _guard = TerminalGuard;
     execute!(
         io::stdout(),
         EnterAlternateScreen,
@@ -163,4 +200,61 @@ fn terminal_session(
         state::save(&path, &navigation)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TerminalGuard;
+    use std::fs::{self, OpenOptions};
+    use std::process::{Command, Stdio};
+
+    #[test]
+    fn panic_hook_restores_before_reporting() {
+        if std::env::var_os("AKASHA_TUI_PANIC_TEST_CHILD").is_some() {
+            let _guard = TerminalGuard::new();
+            panic!("TUI panic probe");
+        }
+
+        let path = std::env::temp_dir().join(format!(
+            "akasha-tui-panic-{}-{:?}.log",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tui::tests::panic_hook_restores_before_reporting",
+                "--nocapture",
+            ])
+            .env("AKASHA_TUI_PANIC_TEST_CHILD", "1")
+            .stdout(Stdio::from(output.try_clone().unwrap()))
+            .stderr(Stdio::from(output))
+            .status()
+            .unwrap();
+        let transcript = fs::read(&path).unwrap();
+        fs::remove_file(path).unwrap();
+        assert!(!status.success());
+        let restored = transcript
+            .windows(b"\x1b[?1049l".len())
+            .position(|part| part == b"\x1b[?1049l")
+            .expect("alternate screen must close");
+        let diagnostic = transcript
+            .windows(b"TUI panic probe".len())
+            .position(|part| part == b"TUI panic probe")
+            .expect("panic message must remain visible");
+        assert!(restored < diagnostic);
+        assert_eq!(
+            transcript
+                .windows(b"\x1b[?1049l".len())
+                .filter(|part| *part == b"\x1b[?1049l")
+                .count(),
+            1,
+            "panic and guard drop must restore only once"
+        );
+    }
 }

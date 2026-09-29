@@ -28,7 +28,7 @@ use crate::state::{
 use crate::validation::{parse_leading_frontmatter_bytes, validate_configured_note};
 use crate::writes::{
     AtomicCreateError, CheckedReplaceError, ProjectWriteLock, create_file_atomically,
-    replace_file_if_unchanged as replace_checked_file,
+    replace_file_if_unchanged as replace_checked_file, sync_directory,
 };
 
 pub const MAX_ONBOARDING_NOTES: usize = 64;
@@ -509,6 +509,7 @@ fn apply_prepared(
             transaction
                 .created
                 .push((note.path.clone(), note.source.clone()));
+            sync_parent(&note.path, "sync a created onboarding note")?;
         }
         publication_hook(OnboardingPublicationStage::Notes);
 
@@ -519,6 +520,7 @@ fn apply_prepared(
                 before: index_before.clone(),
                 after: request.index.as_bytes().to_vec(),
             });
+            sync_parent(&index_path, "sync the onboarding index replacement")?;
             updated_projections.push(index_path.clone());
         }
         publication_hook(OnboardingPublicationStage::Index);
@@ -528,6 +530,7 @@ fn apply_prepared(
                 before: roadmap_before.clone(),
                 after: request.roadmap.as_bytes().to_vec(),
             });
+            sync_parent(&roadmap_path, "sync the onboarding roadmap replacement")?;
             updated_projections.push(roadmap_path.clone());
         }
         publication_hook(OnboardingPublicationStage::Roadmap);
@@ -537,6 +540,7 @@ fn apply_prepared(
                 before: state_before.clone(),
                 after: state_after,
             });
+            sync_parent(&state_path, "sync the onboarding state replacement")?;
         }
         publication_hook(OnboardingPublicationStage::State);
 
@@ -1446,6 +1450,17 @@ struct Replacement {
     after: Vec<u8>,
 }
 
+fn sync_parent(path: &Path, operation: &'static str) -> Result<(), OnboardingBatchError> {
+    let parent = path
+        .parent()
+        .expect("validated onboarding transaction paths always have a parent");
+    sync_directory(parent).map_err(|source| OnboardingBatchError::FileSystem {
+        operation,
+        path: parent.to_path_buf(),
+        source,
+    })
+}
+
 impl Transaction {
     fn rollback(&mut self) -> Vec<String> {
         let mut failures = Vec::new();
@@ -1459,6 +1474,11 @@ impl Transaction {
                     "could not restore {}: {error}",
                     replacement.path.display()
                 ));
+            } else if let Err(error) = sync_parent(&replacement.path, "sync onboarding rollback") {
+                failures.push(format!(
+                    "could not sync rollback of {}: {error}",
+                    replacement.path.display()
+                ));
             }
         }
         for (path, expected) in self.created.iter().rev() {
@@ -1466,6 +1486,11 @@ impl Transaction {
                 Ok(current) if current == *expected => {
                     if let Err(source) = fs::remove_file(path) {
                         failures.push(format!("could not remove {}: {source}", path.display()));
+                    } else if let Err(error) = sync_parent(path, "sync onboarding rollback") {
+                        failures.push(format!(
+                            "could not sync rollback of {}: {error}",
+                            path.display()
+                        ));
                     }
                 }
                 Ok(_) => failures.push(format!(

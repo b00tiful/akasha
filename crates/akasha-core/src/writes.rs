@@ -120,6 +120,8 @@ impl Error for CheckedReplaceError {
 /// The destination's parent must already exist. Content is written and synced to an exclusively
 /// created staging file in that directory, then published with an atomic hard link. The final
 /// publication therefore fails if a file, directory, or symlink already occupies the destination.
+/// The caller must sync the destination's parent before claiming the new directory entry is
+/// durable across power loss; this helper syncs file content, not the containing directory.
 pub fn create_file_atomically(
     destination: impl AsRef<Path>,
     contents: &[u8],

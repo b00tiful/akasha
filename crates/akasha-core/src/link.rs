@@ -8,7 +8,7 @@ use crate::resolution::{
     CONFIG_SCHEMA_VERSION, POINTER_FILE, ResolutionEnvironment, ResolveError, ResolveRequest,
     canonicalize_directory, relative_to, resolve_project,
 };
-use crate::writes::{AtomicCreateError, create_file_atomically};
+use crate::writes::{AtomicCreateError, create_file_atomically, sync_directory};
 
 /// Inputs for linking one registered Akasha project to a repository.
 #[derive(Debug, Clone)]
@@ -142,6 +142,13 @@ pub fn link_project(request: &LinkRequest) -> Result<LinkResult, LinkError> {
         resolved.project
     );
     create_file_atomically(&pointer, contents.as_bytes())?;
+    sync_directory(&requested_repository).map_err(|source| {
+        LinkError::Creation(AtomicCreateError::FileSystem {
+            operation: "sync the linked repository directory",
+            path: requested_repository.clone(),
+            source,
+        })
+    })?;
 
     Ok(LinkResult {
         root: resolved.root,
