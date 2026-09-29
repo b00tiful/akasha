@@ -27,6 +27,7 @@ pub enum LibraryScope {
 }
 
 /// One canonical note represented as a renderer-neutral book.
+/// Identity and outgoing links stay exact; display fields replace controls with spaces.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LibraryBook {
     /// Stable full vault-relative Markdown path using `/` separators.
@@ -40,7 +41,7 @@ pub struct LibraryBook {
     pub date: Option<String>,
     /// Validated full vault-relative targets in deterministic order.
     pub outgoing_links: Vec<String>,
-    /// Exact textual fallback for visual inspection.
+    /// Control-free textual fallback for visual inspection.
     pub explanation: String,
 }
 
@@ -112,7 +113,8 @@ pub struct LibraryDocument {
     pub source: String,
 }
 
-/// One literal search hit; snippets are bounded plain source, never rendered markup.
+/// One literal search hit; labels and snippets are bounded, control-free display text.
+/// The ID remains an exact canonical path for document selection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LibrarySearchHit {
     pub id: String,
@@ -203,11 +205,7 @@ pub fn search_library(
                 label: book.label.chars().take(160).collect(),
                 scope: book.scope.clone(),
                 line,
-                snippet: snippet
-                    .chars()
-                    .take(160)
-                    .map(|c| if c.is_control() { ' ' } else { c })
-                    .collect(),
+                snippet: display_text(&snippet.chars().take(160).collect::<String>()),
             });
         }
     }
@@ -319,10 +317,11 @@ pub fn build_library_projection(
         total_books += 1;
     }
 
-    let global = LibraryCollection {
+    let mut global = LibraryCollection {
         categories: global_categories.into_values().collect(),
     };
-    let dashboard = build_library_dashboard(&config, &projects, &global, total_books);
+    let mut dashboard = build_library_dashboard(&config, &projects, &global, total_books);
+    sanitize_library_display(&mut projects, &mut global, &mut dashboard);
 
     Ok(LibraryProjection {
         root: selected.root,
@@ -458,6 +457,45 @@ fn count_open_books(
         .count()
 }
 
+fn sanitize_library_display(
+    projects: &mut [LibraryShelf],
+    global: &mut LibraryCollection,
+    dashboard: &mut LibraryDashboard,
+) {
+    for shelf in projects {
+        shelf.status = display_text(&shelf.status);
+        for category in &mut shelf.categories {
+            for book in &mut category.books {
+                sanitize_book_display(book);
+            }
+        }
+    }
+    for category in &mut global.categories {
+        for book in &mut category.books {
+            sanitize_book_display(book);
+        }
+    }
+    sanitize_optional_display(&mut dashboard.latest_activity_date);
+    for project in &mut dashboard.project_metrics {
+        project.status = display_text(&project.status);
+        sanitize_optional_display(&mut project.latest_activity_date);
+    }
+}
+
+fn sanitize_book_display(book: &mut LibraryBook) {
+    book.label = display_text(&book.label);
+    book.explanation = display_text(&book.explanation);
+    for field in [&mut book.status, &mut book.reviewed, &mut book.date] {
+        sanitize_optional_display(field);
+    }
+}
+
+fn sanitize_optional_display(field: &mut Option<String>) {
+    if let Some(value) = field {
+        *value = display_text(value);
+    }
+}
+
 /// Load exact Markdown only when the requested identity belongs to the validated library.
 pub fn load_library_document(
     request: &ResolveRequest,
@@ -523,7 +561,11 @@ fn render_categories(output: &mut String, categories: &[LibraryCategory], headin
             continue;
         }
         for book in &category.books {
-            output.push_str(&format!("\n- `{}` — {}\n", book.id, book.explanation));
+            output.push_str(&format!(
+                "\n- `{}` — {}\n",
+                display_text(&book.id),
+                book.explanation
+            ));
         }
     }
 }
@@ -713,6 +755,19 @@ fn metadata_string(parsed: &ParsedNote<'_>, field: &str) -> Option<String> {
         .and_then(|mapping| mapping.get(field))
         .and_then(|value| value.as_str())
         .map(str::to_owned)
+}
+
+fn display_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
 }
 
 const fn class_name(class: NoteClass) -> &'static str {

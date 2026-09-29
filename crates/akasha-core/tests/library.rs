@@ -424,3 +424,57 @@ fn search_matches_unicode_title_and_exact_path_with_bounded_snippets() {
             .is_empty()
     );
 }
+
+#[test]
+fn library_display_fields_neutralize_controls_without_changing_source_or_identity() {
+    use akasha_core::search_library;
+
+    let fixture = fixture("control-display");
+    let registry = fixture.root.join("Meta/projects.yaml");
+    let registry_source = fs::read_to_string(&registry).unwrap();
+    fs::write(
+        &registry,
+        registry_source.replace("status: active", "status: \"active\\u001b[2J\""),
+    )
+    .unwrap();
+
+    let path = fixture.root.join("Global/entities/rust-pattern.md");
+    let source = concat!(
+        "---\n",
+        "schema_version: 1\n",
+        "type: entity\n",
+        "entity: rust-pattern\n",
+        "title: \"RED\\u001b[31m\\u001b]8;;http://evil\\u0007LINK\"\n",
+        "kind: pattern\n",
+        "status: \"sta\\u001bble\"\n",
+        "reviewed: \"2026-07-13\\u001b]0;X\\u0007\"\n",
+        "---\n\n",
+        "needle \x1b[2J\n",
+    );
+    fs::write(&path, source).unwrap();
+
+    let projection = build_library_projection(&fixture.request).unwrap();
+    let book = &projection.global.categories[0].books[0];
+    assert_eq!(book.id, "Global/entities/rust-pattern.md");
+    assert_eq!(book.label, "RED [31m ]8;;http://evil LINK");
+    assert_eq!(book.status.as_deref(), Some("sta ble"));
+    assert_eq!(book.reviewed.as_deref(), Some("2026-07-13 ]0;X "));
+    assert!(!book.explanation.chars().any(char::is_control));
+    assert_eq!(projection.projects[0].status, "active [2J");
+    assert_eq!(projection.dashboard.project_metrics[0].status, "active [2J");
+    assert!(
+        !render_library_markdown(&projection)
+            .chars()
+            .any(|character| character.is_control() && character != '\n')
+    );
+
+    let result =
+        search_library(&fixture.request, "needle", Some(&LibraryScope::Global), 10).unwrap();
+    assert_eq!(result.hits[0].id, book.id);
+    assert_eq!(result.hits[0].label, book.label);
+    assert_eq!(result.hits[0].snippet, "needle  [2J");
+    assert!(!result.hits[0].snippet.chars().any(char::is_control));
+
+    let document = load_library_document(&fixture.request, &book.id).unwrap();
+    assert_eq!(document.source, source);
+}
