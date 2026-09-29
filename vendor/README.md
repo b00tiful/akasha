@@ -7,9 +7,16 @@ Every recorded source hash was checked against that archive. Its license is reta
 The workspace `[patch.crates-io]` selects this copy for the CLI, Ratatui and textarea;
 no transitive runtime versions change. Do not modify the machine's registry cache.
 
-Only `src/event/source/unix/mio.rs` differs from upstream. The exact text patch is
-`crossterm-escape.patch`; `crossterm-upstream-sha256.json` records original file hashes.
+The local delta is the Unix mio parser plus one redundant-parentheses warning fix in
+`src/terminal/sys/unix.rs`. The exact text patch is `crossterm-escape.patch`;
+`crossterm-upstream-sha256.json` records original file hashes.
 Registry bookkeeping and the upstream development lockfile were omitted.
+
+For exact patch replay from the archive, first convert only the extracted
+`src/event/source/unix/mio.rs` from CRLF to LF. The parser patch and vendored parser use LF;
+`src/terminal/sys/unix.rs` retains upstream CRLF. Applying the patch with `patch -p1` after
+that normalization reproduces both vendored source files byte-for-byte. Root `.gitattributes`
+preserves the CRLF/mixed-ending vendor files and lets Git check their whitespace as intended.
 
 The active Unix mio backend now retains a lone Escape for 250 ms across short polls,
 and caps a blocking poll at that deadline. It returns to readiness polling instead
@@ -40,8 +47,8 @@ python3 scripts/test-tui-pty.py --profile keyboard --split-paste-start
 The standalone vendor tests resolve their own upstream development dependencies;
 the product build and PTY checks use the workspace lockfile. The blocking-input test
 uses a disposable Unix socketpair; a sandbox must permit local socket writes. Local test artifacts
-and that standalone lockfile are ignored. Vendored upstream code retains its existing
-`unused_parens` warning; the application still passes warnings-denied Clippy.
+and that standalone lockfile are ignored. The local source-only warning fix changes no runtime
+behavior; workspace builds should no longer emit `unused_parens` from this vendored crate.
 
 Upstream references (reviewed 2026-09-22):
 - https://github.com/crossterm-rs/crossterm/tree/0.29

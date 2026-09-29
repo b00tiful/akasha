@@ -259,3 +259,8 @@
 +        guard.join().unwrap();
 +    }
 +}
+--- a/src/terminal/sys/unix.rs
++++ b/src/terminal/sys/unix.rs
+@@ -87 +87 @@
+-    let file = File::open("/dev/tty").map(|file| (FileDesc::Owned(file.into())));
++    let file = File::open("/dev/tty").map(|file| FileDesc::Owned(file.into()));

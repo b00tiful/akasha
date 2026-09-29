@@ -1,0 +1,2 @@
+vendor/crossterm/src/terminal/sys/unix.rs -text whitespace=cr-at-eol
+vendor/crossterm-escape.patch -text whitespace=cr-at-eol
