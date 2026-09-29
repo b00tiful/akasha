@@ -14,11 +14,11 @@ use akasha_core::{
     LibraryProjection, LibraryScope, LibrarySearchResult, MutableNoteCreationForm,
     MutableNoteCreationResult, NoteClass, RecordUpdateResult, ResolveRequest,
     SessionHookWiringPlan, TaskLifecycleForm, assemble_context, assemble_session_breadcrumb,
-    build_library_projection, capture_handoff, create_mutable_note, load_library_document,
-    prepare_agent_wiring, prepare_mutable_note_creation, prepare_session_hook_wiring,
-    prepare_task_lifecycle, recover_pending_note_edit, render_context_markdown,
-    render_session_breadcrumb, replace_library_document, search_library, update_record,
-    validate_project,
+    build_library_projection, capture_handoff, create_event, create_mutable_note,
+    load_library_document, prepare_agent_wiring, prepare_mutable_note_creation,
+    prepare_session_hook_wiring, prepare_task_lifecycle, recover_pending_note_edit,
+    render_context_markdown, render_session_breadcrumb, replace_library_document,
+    resolve_note_template, search_library, update_record, validate_project,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -112,6 +112,16 @@ const COMMANDS: &[Completion] = &[
         description: "Capture a configured handoff event",
     },
     Completion {
+        command: "template",
+        argument: "TYPE",
+        description: "Read the exact configured note template",
+    },
+    Completion {
+        command: "event",
+        argument: "TYPE PATH | NAME=VALUE | ...",
+        description: "Create a configured immutable event",
+    },
+    Completion {
         command: "create",
         argument: "TYPE",
         description: "Create a configured record or entity",
@@ -189,7 +199,7 @@ fn prompt_area(text: String) -> TextArea<'static> {
     prompt_area_with_placeholder(text, PROMPT_PLACEHOLDER)
 }
 
-pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       update the open task and roadmap together\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff PATH | NAME=VALUE | ...\n                capture a handoff from the configured template\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\nconfirm PLAN_ID authorize the displayed integration plan\nrefresh         reload data (or press F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and task lifecycle forms show exact configured templates and\nmaintained projections. Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. Integration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nOpen from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
+pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       update the open task and roadmap together\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff PATH | NAME=VALUE | ...\n                capture a handoff from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE PATH | NAME=VALUE | ...\n                create a configured immutable event\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\nconfirm PLAN_ID authorize the displayed integration plan\nrefresh         reload data (or press F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and task lifecycle forms show exact configured templates and\nmaintained projections. Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. Integration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nOpen from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Focus {
@@ -308,6 +318,8 @@ pub(super) enum Job {
     Context(ResolveRequest),
     Breadcrumb(ResolveRequest),
     CaptureHandoff(ResolveRequest, PathBuf, BTreeMap<String, String>),
+    Template(ResolveRequest, String),
+    CreateEvent(ResolveRequest, String, PathBuf, BTreeMap<String, String>),
     Validate(ResolveRequest),
     Save(ResolveRequest, String, String, String),
     PrepareCreate(ResolveRequest, String),
@@ -331,7 +343,7 @@ pub(super) enum Response {
     Found(LibrarySearchResult),
     Text(String, String),
     Saved(String),
-    HandoffCreated(EventCreationResult),
+    EventCreated(EventCreationResult),
     CreatePrepared(MutableNoteCreationForm),
     Created(MutableNoteCreationResult),
     TaskPrepared(TaskLifecycleForm),
@@ -405,8 +417,26 @@ fn execute_job(job: Job) -> WorkResult {
             .map(|breadcrumb| Response::Text("PROJECT BREADCRUMB".into(), render_session_breadcrumb(&breadcrumb)))
             .map_err(|e| err(&e)),
         Job::CaptureHandoff(request, path, fields) => capture_handoff(&request, &path, &fields)
-            .map(Response::HandoffCreated)
+            .map(Response::EventCreated)
             .map_err(|e| err(&e)),
+        Job::Template(request, note_type) => resolve_note_template(&request, &note_type)
+            .map(|template| {
+                Response::Text(
+                    format!("TEMPLATE · {}", template.note_type),
+                    format!(
+                        "Class: {:?}\nSource: {}\nScope: {:?}\n\n{}",
+                        template.class,
+                        template.path.display(),
+                        template.scope,
+                        template.source
+                    ),
+                )
+            })
+            .map_err(|e| err(&e)),
+        Job::CreateEvent(request, note_type, path, fields) =>
+            create_event(&request, &note_type, &path, &fields)
+                .map(Response::EventCreated)
+                .map_err(|e| err(&e)),
         Job::Validate(request) => validate_project(&request)
             .map(|report| Response::Text("VALIDATION".into(), format!("Validation passed\n\nProject: {}\nRoot: {}\n\nCanonical metadata, configured layout, links and project state were checked.", report.project, report.root.display())))
             .map_err(|e| err(&e)),
@@ -506,23 +536,41 @@ fn integration_arguments(argument: &str) -> Result<(AgentClient, PathBuf), Strin
 
 fn handoff_arguments(argument: &str) -> Result<(PathBuf, BTreeMap<String, String>), String> {
     const USAGE: &str = "Usage: /handoff RELATIVE.md | NAME=VALUE | NAME=VALUE. Use the exact configured template fields.";
+    path_and_fields(argument, USAGE)
+}
+
+fn event_arguments(argument: &str) -> Result<(String, PathBuf, BTreeMap<String, String>), String> {
+    const USAGE: &str = "Usage: /event TYPE RELATIVE.md | NAME=VALUE | NAME=VALUE. Use /template TYPE to inspect fields.";
+    let (head, fields) = argument.split_once(" | ").ok_or(USAGE)?;
+    let mut words = head.split_whitespace();
+    let (Some(note_type), Some(path), None) = (words.next(), words.next(), words.next()) else {
+        return Err(USAGE.into());
+    };
+    let (path, fields) = path_and_fields(&format!("{path} | {fields}"), USAGE)?;
+    Ok((note_type.to_owned(), path, fields))
+}
+
+fn path_and_fields(
+    argument: &str,
+    usage: &str,
+) -> Result<(PathBuf, BTreeMap<String, String>), String> {
     let mut parts = argument.split(" | ");
     let path = parts.next().unwrap_or_default().trim();
     if path.is_empty() || !path.ends_with(".md") {
-        return Err(USAGE.into());
+        return Err(usage.into());
     }
     let mut fields = BTreeMap::new();
     for part in parts {
-        let (name, value) = part.split_once('=').ok_or(USAGE)?;
+        let (name, value) = part.split_once('=').ok_or(usage)?;
         let name = name.trim();
         let value = value.trim();
         if name.is_empty() || value.is_empty() || fields.insert(name.into(), value.into()).is_some()
         {
-            return Err(USAGE.into());
+            return Err(usage.into());
         }
     }
     if fields.is_empty() {
-        return Err(USAGE.into());
+        return Err(usage.into());
     }
     Ok((PathBuf::from(path), fields))
 }
@@ -1580,11 +1628,11 @@ impl App {
                 ));
                 self.load();
             }
-            Ok(Response::HandoffCreated(result)) => {
+            Ok(Response::EventCreated(result)) => {
                 self.pending_open = Some(result.id.clone());
                 self.message(&format!(
-                    "Captured {} through the configured handoff template.",
-                    result.id
+                    "Created {} through the configured {} event template.",
+                    result.id, result.note_type
                 ));
                 self.load();
             }
@@ -1818,6 +1866,31 @@ impl App {
                     Err(error) => self.message(&error),
                 }
             }
+            "template" if argument.split_whitespace().count() != 1 => {
+                self.message("Usage: /template TYPE. Select a configured note type.");
+            }
+            "template" => {
+                if !matches!(self.scope, LibraryScope::Project { .. }) {
+                    self.message("Select a project before reading its note template.");
+                    return;
+                }
+                self.submit(Job::Template(self.request.clone(), argument.to_owned()));
+            }
+            "event" => {
+                if !matches!(self.scope, LibraryScope::Project { .. }) {
+                    self.message("Select a project before creating an event.");
+                    return;
+                }
+                match event_arguments(argument) {
+                    Ok((note_type, path, fields)) => self.submit(Job::CreateEvent(
+                        self.request.clone(),
+                        note_type,
+                        path,
+                        fields,
+                    )),
+                    Err(error) => self.message(&error),
+                }
+            }
             "validate" => self.submit(Job::Validate(self.request.clone())),
             "integrations" => match integration_arguments(argument) {
                 Ok((client, home)) => {
@@ -1999,6 +2072,46 @@ impl App {
                             NoteClass::Event => "event",
                         }
                     ),
+                })
+                .collect();
+        }
+        if let Some((command, query)) = prefix
+            .strip_prefix("template ")
+            .map(|query| ("template", query))
+            .or_else(|| prefix.strip_prefix("event ").map(|query| ("event", query)))
+        {
+            if query.chars().any(char::is_whitespace) {
+                return vec![];
+            }
+            let Some(project) = self.request.project_override.as_ref() else {
+                return vec![];
+            };
+            return self
+                .projection
+                .as_ref()
+                .and_then(|projection| {
+                    projection
+                        .projects
+                        .iter()
+                        .find(|shelf| &shelf.project == project)
+                })
+                .into_iter()
+                .flat_map(|shelf| &shelf.categories)
+                .filter(|category| {
+                    (command == "template" || category.class == NoteClass::Event)
+                        && category
+                            .note_type
+                            .to_lowercase()
+                            .contains(&query.to_lowercase())
+                })
+                .map(|category| Suggestion {
+                    command: format!("{command} {}", category.note_type),
+                    argument: if command == "event" {
+                        "RELATIVE.md | NAME=VALUE | ...".into()
+                    } else {
+                        String::new()
+                    },
+                    description: format!("configured {:?} template", category.class),
                 })
                 .collect();
         }
@@ -3115,6 +3228,99 @@ mod tests {
                 .unwrap()
                 .contains("Operation failed:")
         );
+    }
+
+    #[test]
+    fn template_view_uses_exact_configured_source_without_writing() {
+        let mut fixture = Fixture::new();
+        let template = fixture.root().join("Projects/example/templates/session.md");
+        let source =
+            "---\nproject: {{project}}\ntype: {{type}}\ndate: {{date}}\n---\n\n# {{title}}\n";
+        fs::write(&template, source).unwrap();
+        let state = fixture.root().join("Projects/example/.akasha-state.toml");
+        let before = fs::read(&state).unwrap();
+
+        fixture.app.focus = Focus::Prompt;
+        fixture.app.paste("/template ");
+        assert!(
+            fixture
+                .app
+                .completions()
+                .iter()
+                .any(|item| item.command == "template session")
+        );
+        fixture.app.reset_prompt();
+        fixture.app.command("template session");
+        fixture.finish();
+        assert_eq!(fixture.app.body_title, "TEMPLATE · session");
+        assert!(fixture.app.body.contains(&template.display().to_string()));
+        assert!(fixture.app.body.ends_with(source));
+        assert_eq!(fs::read(state).unwrap(), before);
+        assert!(fixture.app.document.is_none());
+        assert!(!fixture.app.dirty());
+    }
+
+    #[test]
+    fn event_command_creates_configured_immutable_note_and_refuses_unsafe_input() {
+        let mut fixture = Fixture::new();
+        fs::write(
+            fixture.root().join("Projects/example/templates/session.md"),
+            "---\nschema_version: 1\nproject: {{project}}\ntype: {{type}}\ndate: {{date}}\n---\n\n# {{title}}\n\n{{body}}\n",
+        )
+        .unwrap();
+        let destination = fixture
+            .root()
+            .join("Projects/example/events/sessions/tui-session.md");
+        let command = "event session tui-session.md | date=2026-09-29 | title=TUI session | body=See [[Projects/example/entities/core|core]].";
+
+        fixture.app.focus = Focus::Prompt;
+        fixture.app.paste("/event ");
+        let suggestions = fixture.app.completions();
+        assert!(
+            suggestions
+                .iter()
+                .any(|item| item.command == "event session")
+        );
+        assert!(!suggestions.iter().any(|item| item.command == "event task"));
+        fixture.app.reset_prompt();
+
+        fixture
+            .app
+            .command("event session tui-session.md | date=2026-09-29 | date=2026-09-30");
+        assert!(!fixture.app.busy);
+        assert!(!destination.exists());
+        fixture.open_editor();
+        fixture.app.paste("local draft");
+        fixture.app.command(command);
+        assert!(!fixture.app.busy);
+        assert!(!destination.exists());
+        fixture.app.command("discard");
+
+        fixture.app.focus = Focus::Prompt;
+        fixture.app.paste(&format!("/{command}"));
+        press(&mut fixture.app, KeyCode::Enter);
+        fixture.finish();
+        fixture.finish();
+        fixture.finish();
+        let first = fs::read(&destination).unwrap();
+        assert!(String::from_utf8_lossy(&first).contains("# TUI session"));
+        assert_eq!(
+            fixture.app.document.as_ref().unwrap().id,
+            "Projects/example/events/sessions/tui-session.md"
+        );
+        validate_project(&fixture.app.request).unwrap();
+
+        let state = fixture.root().join("Projects/example/.akasha-state.toml");
+        let state_before = fs::read(&state).unwrap();
+        fixture.app.command(command);
+        fixture.finish();
+        assert_eq!(fs::read(&destination).unwrap(), first);
+        assert_eq!(fs::read(&state).unwrap(), state_before);
+        fixture
+            .app
+            .command("event task another.md | date=2026-09-29");
+        fixture.finish();
+        assert_eq!(fs::read(state).unwrap(), state_before);
     }
 
     #[test]

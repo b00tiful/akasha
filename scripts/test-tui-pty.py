@@ -161,6 +161,16 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             if process.poll() is not None:
                 break
         raise AssertionError(f'{term}: missing {needle!r}; current screen:\n{screen.text()}')
+    def wait_for_ready(seconds=8):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            drain(0.05)
+            lines = screen.text().splitlines()
+            if len(lines) > 1 and 'AKASHA' in lines[1] and lines[1].rstrip().endswith('ready'):
+                return
+            if process.poll() is not None:
+                break
+        raise AssertionError(f'{term}: TUI did not finish startup; current screen:\n{screen.text()}')
     def send(data):
         os.write(master, data)
         drain()
@@ -176,6 +186,9 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
     try:
         wait_for(b'Library loaded')
         if expect_restore:
+            # The note path is visible in its selected list row before the
+            # asynchronous source load completes. Wait for the reader frame.
+            wait_for(b'READING')
             wait_for(b'Projects/example/records/tasks/pty-created.md')
         assert b'\x1b[?1049h' in output
         assert b'\x1b[?2004h' in output
@@ -312,9 +325,19 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
         elif keyboard:
             # Include the five-second automatic check: unchanged data must stay quiet
             # even when the terminal never supplies focus-reporting events.
+            # The prior profile can leave an open-note navigation state. Its
+            # source loads after "Library loaded", so wait for the worker to
+            # finish before measuring background output.
+            wait_for_ready()
             length = len(output)
+            start_screen = screen.text()
             drain(5.3)
-            assert len(output) == length, 'unchanged background checks must not repaint'
+            assert len(output) == length, (
+                f'unchanged background checks must not repaint: '
+                f'{len(output) - length} bytes after startup; '
+                f'initial screen={start_screen!r}; current screen={screen.text()!r}; '
+                f'new bytes={bytes(output[length:])[:240]!r}'
+            )
             command('open Projects/example/entities/core.md')
             wait_for(b'READING')
             command('edit')
