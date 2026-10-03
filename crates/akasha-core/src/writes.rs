@@ -126,7 +126,11 @@ pub fn create_file_atomically(
     destination: impl AsRef<Path>,
     contents: &[u8],
 ) -> Result<(), AtomicCreateError> {
-    create_file_atomically_with(destination.as_ref(), |file| file.write_all(contents))
+    create_file_atomically_with(destination.as_ref(), |file| {
+        #[cfg(test)]
+        crash_tests::partial_write(file, destination.as_ref(), contents)?;
+        file.write_all(contents)
+    })
 }
 
 /// Replace one regular file only while its exact bytes still match the caller's snapshot.
@@ -164,6 +168,11 @@ pub(crate) fn replace_file_if_unchanged(
     }
 
     let (mut file, staging) = create_staging_file(&path).map_err(map_create_error)?;
+    #[cfg(test)]
+    crash_tests::interrupt_at(&path, crash_tests::Stage::Created);
+    #[cfg(test)]
+    crash_tests::partial_write(&mut file, &path, replacement)
+        .expect("write the selected crash fixture prefix");
     file.write_all(replacement)
         .map_err(|source| CheckedReplaceError::FileSystem {
             operation: "write a checked replacement stage",
@@ -176,12 +185,16 @@ pub(crate) fn replace_file_if_unchanged(
             path: staging.path.clone(),
             source,
         })?;
+    #[cfg(test)]
+    crash_tests::interrupt_at(&path, crash_tests::Stage::BeforeFileSync);
     file.sync_all()
         .map_err(|source| CheckedReplaceError::FileSystem {
             operation: "sync a checked replacement stage",
             path: staging.path.clone(),
             source,
         })?;
+    #[cfg(test)]
+    crash_tests::interrupt_at(&path, crash_tests::Stage::AfterFileSync);
     drop(file);
 
     let current = fs::read(&path).map_err(|source| CheckedReplaceError::FileSystem {
@@ -197,11 +210,18 @@ pub(crate) fn replace_file_if_unchanged(
         path: path.clone(),
         source,
     })?;
+    #[cfg(test)]
+    crash_tests::interrupt_at(&path, crash_tests::Stage::Published);
     Ok(true)
 }
 
 pub(crate) fn sync_directory(directory: &Path) -> io::Result<()> {
-    File::open(directory)?.sync_all()
+    #[cfg(test)]
+    crash_tests::directory_sync(directory, crash_tests::Stage::BeforeDirectorySync);
+    File::open(directory)?.sync_all()?;
+    #[cfg(test)]
+    crash_tests::directory_sync(directory, crash_tests::Stage::AfterDirectorySync);
+    Ok(())
 }
 
 /// One crash-released advisory lock shared by every project mutation path.
@@ -303,6 +323,8 @@ fn create_file_atomically_with(
     reject_existing_destination(&destination)?;
 
     let (mut file, staging) = create_staging_file(&destination)?;
+    #[cfg(test)]
+    crash_tests::interrupt_at(&destination, crash_tests::Stage::Created);
     if let Err(source) = write_contents(&mut file) {
         let path = staging.path.clone();
         drop(file);
@@ -313,6 +335,8 @@ fn create_file_atomically_with(
             source,
         });
     }
+    #[cfg(test)]
+    crash_tests::interrupt_at(&destination, crash_tests::Stage::BeforeFileSync);
     if let Err(source) = file.sync_all() {
         let path = staging.path.clone();
         drop(file);
@@ -323,10 +347,14 @@ fn create_file_atomically_with(
             source,
         });
     }
+    #[cfg(test)]
+    crash_tests::interrupt_at(&destination, crash_tests::Stage::AfterFileSync);
     drop(file);
 
     match fs::hard_link(&staging.path, &destination) {
         Ok(()) => {
+            #[cfg(test)]
+            crash_tests::interrupt_at(&destination, crash_tests::Stage::Published);
             drop(staging);
             Ok(())
         }
@@ -343,6 +371,10 @@ fn create_file_atomically_with(
         }),
     }
 }
+
+#[cfg(test)]
+#[path = "writes_crash_tests.rs"]
+pub(crate) mod crash_tests;
 
 fn canonical_destination(destination: &Path) -> Result<PathBuf, AtomicCreateError> {
     let file_name = destination
@@ -438,6 +470,33 @@ fn create_staging_file(destination: &Path) -> Result<(File, StagingFile), Atomic
             "all staging filename attempts were already occupied",
         ),
     })
+}
+
+/// Reserved non-canonical staging namespace. A match is not proof of ownership and must
+/// never authorize deletion or publication. Callers must reject non-regular entries first.
+pub(crate) fn is_staging_path(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some(name) = name
+        .strip_prefix('.')
+        .and_then(|name| name.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    let Some((destination, suffix)) = name.rsplit_once(".akasha-") else {
+        return false;
+    };
+    let Some((pid, sequence)) = suffix.split_once('-') else {
+        return false;
+    };
+    !destination.is_empty()
+        && pid
+            .parse::<u32>()
+            .is_ok_and(|value| value != 0 && value.to_string() == pid)
+        && sequence
+            .parse::<u64>()
+            .is_ok_and(|value| value.to_string() == sequence)
 }
 
 struct StagingFile {

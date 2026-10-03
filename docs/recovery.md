@@ -126,6 +126,23 @@ file and does not apply any restoration.
    back into the recovered root to bypass validation. Resume external writers
    only after validation and review succeed.
 
+## Abandoned staging files
+
+A process can exit while writing a hidden same-directory file named
+`.<destination>.akasha-<pid>-<sequence>.tmp`. Akasha reserves that exact pattern
+(nonempty destination, positive 32-bit PID and unsigned 64-bit sequence in normal
+decimal spelling). Matching regular files are preserved but excluded from note
+validation, fingerprints, context, library and search. They may contain partial
+private text or be another hard link to a created note. They are not recovery
+journals or canonical notes and do not supply replacement source.
+
+Include these files in the complete backup. A matching filename proves neither
+ownership nor that its writer is dead; do not promote it to Markdown, edit it in
+place, or delete files by a wildcard. Recovery does not automatically clean up
+this residue. Symlinks, directories using the reserved pattern, malformed names
+and unrelated non-Markdown files still cause validation errors. Preserve and
+investigate those errors instead of broadening the ignore rule.
+
 ## Verified boundary
 
 Disposable Rust fixtures cover repeated refusal with exact byte preservation,
@@ -142,6 +159,14 @@ rollback/revalidation after operator reconciliation. Nine Linux PTY scenarios pa
 keyboard-only use and initial refused loads at 40x12, with exact terminal restoration. Background
 observations of active writers' transient journals retain the view and signal external change.
 
-These tests do not simulate physical power loss, a crash inside a filesystem
-write/sync, or concurrent external writers during manual reconciliation. They
-do not establish support for other operating systems or network filesystems.
+Another 147 actual child exits cover staging creation, partial file content,
+before/after file sync, immediate hard-link/rename publication and before/after
+caller directory sync across versions 1/2/3 publication and replacement rollback.
+Exact snapshots include all retained scratch bytes; validation, repeated recovery,
+lock release and fresh publication with residue left in place pass.
+
+These tests exit at instrumented boundaries, including between two parts of a
+staging write. They do not simulate physical power loss, interruption inside a
+kernel write/sync syscall, device flush failures, or concurrent external writers
+during manual reconciliation. They do not establish support for other operating
+systems or network filesystems.

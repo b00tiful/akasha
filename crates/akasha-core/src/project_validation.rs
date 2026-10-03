@@ -457,6 +457,16 @@ fn collect_note_paths(
                 "symbolic links are not allowed in canonical note folders",
             ));
         }
+        if crate::writes::is_staging_path(&path) {
+            if !metadata.is_file() {
+                return Err(invalid_layout(
+                    &path,
+                    "Akasha staging paths must be regular files",
+                ));
+            }
+            // Crashes leave partial stages. Preserve them without treating them as notes.
+            continue;
+        }
         if metadata.is_dir() {
             collect_note_paths(&path, notes)?;
             continue;

@@ -1,5 +1,8 @@
 //! Child-process acceptance. All interruption hooks are compiled out of product builds.
 
+#[path = "note_edit_io_crash_tests.rs"]
+mod io_crash_tests;
+
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::process::Command;
