@@ -389,7 +389,7 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
                     app,
                     area,
                     &mut x,
-                    "Ctrl-P Task",
+                    "Ctrl-P Note",
                     Action::Command("previous"),
                 );
                 button(
@@ -397,7 +397,7 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
                     app,
                     area,
                     &mut x,
-                    "Ctrl-N Roadmap",
+                    &format!("Ctrl-N {}", app.lifecycle_projection_label().unwrap()),
                     Action::Command("next"),
                 );
             } else {
@@ -449,6 +449,14 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
         );
         if app.editable() {
             button(frame, app, area, &mut x, "F2 Edit", Action::Command("edit"));
+            button(
+                frame,
+                app,
+                area,
+                &mut x,
+                "Lifecycle",
+                Action::Command("lifecycle"),
+            );
         }
     } else {
         if let Some(i) = app.list.selected() {

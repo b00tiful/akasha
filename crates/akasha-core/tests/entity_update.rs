@@ -3,8 +3,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use akasha_core::{
-    NOTE_EDIT_JOURNAL_FILE, NoteEditRecovery, ResolutionEnvironment, ResolveRequest,
-    recover_pending_note_edit, update_entity, validate_project,
+    MutableNoteLifecycleResult, NOTE_EDIT_JOURNAL_FILE, NoteClass, NoteEditRecovery,
+    ResolutionEnvironment, ResolveRequest, apply_mutable_note_lifecycle,
+    prepare_mutable_note_lifecycle, recover_pending_note_edit, update_entity, update_record,
+    validate_project,
 };
 use serde_json::json;
 
@@ -13,6 +15,281 @@ const ENTITY_ID: &str = "Projects/example/entities/core.md";
 const RECORD_ID: &str = "Projects/example/records/tasks/active.md";
 const EVENT_ID: &str = "Projects/example/events/sessions/2026-07-13.md";
 const INDEX_ID: &str = "Projects/example/index.md";
+
+#[test]
+fn prepares_all_mutable_classes_with_exact_sources_and_refuses_other_identities() {
+    let fixture = Fixture::new("lifecycle-prepare");
+    let before = lifecycle_snapshot(&fixture.root);
+    for (id, class, projection) in [
+        (ENTITY_ID, NoteClass::Entity, "index.md"),
+        (RECORD_ID, NoteClass::Record, "roadmap.md"),
+        (
+            "Projects/example/records/problems/open.md",
+            NoteClass::Record,
+            "roadmap.md",
+        ),
+    ] {
+        let form = prepare_mutable_note_lifecycle(&fixture.request, id).unwrap();
+        assert_eq!(form.id, id);
+        assert_eq!(form.class, class);
+        assert_eq!(form.path, fixture.root.join(id));
+        assert_eq!(form.source.as_bytes(), fs::read(&form.path).unwrap());
+        assert_eq!(form.projection, fixture.project.join(projection));
+        assert_eq!(
+            form.projection_source.as_bytes(),
+            fs::read(&form.projection).unwrap()
+        );
+    }
+    for id in [
+        EVENT_ID,
+        "Global/entities/rust-pattern.md",
+        "Projects/other/entities/core.md",
+        "../outside.md",
+    ] {
+        assert_eq!(
+            prepare_mutable_note_lifecycle(&fixture.request, id)
+                .unwrap_err()
+                .exit_code(),
+            4
+        );
+    }
+    assert_eq!(lifecycle_snapshot(&fixture.root), before);
+}
+
+#[test]
+fn lifecycle_uses_configured_type_and_projection_paths_and_refuses_configuration_drift() {
+    let fixture = Fixture::new("lifecycle-config");
+    let old = prepare_mutable_note_lifecycle(&fixture.request, ENTITY_ID).unwrap();
+    let config = fixture.root.join("akasha.toml");
+    let source = fs::read_to_string(&config)
+        .unwrap()
+        .replace("index = \"index.md\"", "index = \"memory-map.md\"")
+        .replace("roadmap = \"roadmap.md\"", "roadmap = \"plan.md\"")
+        .replace(
+            "[project.note_types.entity]",
+            "[project.note_types.component]",
+        );
+    fs::write(config, source).unwrap();
+    let global = fixture.root.join("Global/entities/rust-pattern.md");
+    fs::write(
+        &global,
+        fs::read_to_string(&global)
+            .unwrap()
+            .replace("type: entity", "type: component"),
+    )
+    .unwrap();
+    fs::rename(fixture.index_path(), fixture.project.join("memory-map.md")).unwrap();
+    fs::rename(
+        fixture.project.join("roadmap.md"),
+        fixture.project.join("plan.md"),
+    )
+    .unwrap();
+    validate_project(&fixture.request).unwrap();
+    let before = lifecycle_snapshot(&fixture.root);
+    assert_eq!(
+        apply_mutable_note_lifecycle(&fixture.request, &old, &old.source, &old.projection_source)
+            .unwrap_err()
+            .exit_code(),
+        4
+    );
+    let entity = prepare_mutable_note_lifecycle(&fixture.request, ENTITY_ID).unwrap();
+    assert_eq!(entity.note_type, "component");
+    assert_eq!(entity.projection, fixture.project.join("memory-map.md"));
+    let record = prepare_mutable_note_lifecycle(&fixture.request, RECORD_ID).unwrap();
+    assert_eq!(record.projection, fixture.project.join("plan.md"));
+    apply_mutable_note_lifecycle(
+        &fixture.request,
+        &entity,
+        &entity.source,
+        &entity.projection_source,
+    )
+    .unwrap();
+    assert_eq!(lifecycle_snapshot(&fixture.root), before);
+}
+
+#[test]
+fn lifecycle_applies_each_class_exactly_and_reprepared_noop_preserves_bytes() {
+    for id in [
+        ENTITY_ID,
+        RECORD_ID,
+        "Projects/example/records/problems/open.md",
+    ] {
+        let fixture = Fixture::new("lifecycle-apply");
+        let form = prepare_mutable_note_lifecycle(&fixture.request, id).unwrap();
+        let note = format!(
+            "{}\r\nCurrent truth: Привет 世界  ",
+            form.source.replace('\n', "\r\n")
+        );
+        let projection = format!(
+            "{}\r\nReviewed current truth  ",
+            form.projection_source.replace('\n', "\r\n")
+        );
+        let result =
+            apply_mutable_note_lifecycle(&fixture.request, &form, &note, &projection).unwrap();
+        match result {
+            MutableNoteLifecycleResult::Entity(result) => {
+                assert_eq!(form.class, NoteClass::Entity);
+                assert!(result.changed && result.index_changed);
+            }
+            MutableNoteLifecycleResult::Record(result) => {
+                assert_eq!(form.class, NoteClass::Record);
+                assert!(result.changed && result.roadmap_changed);
+            }
+        }
+        assert_eq!(fs::read(&form.path).unwrap(), note.as_bytes());
+        assert_eq!(fs::read(&form.projection).unwrap(), projection.as_bytes());
+        assert!(!fixture.journal().exists());
+        validate_project(&fixture.request).unwrap();
+        let before = lifecycle_snapshot(&fixture.root);
+        let fresh = prepare_mutable_note_lifecycle(&fixture.request, id).unwrap();
+        let result =
+            apply_mutable_note_lifecycle(&fixture.request, &fresh, &note, &projection).unwrap();
+        match result {
+            MutableNoteLifecycleResult::Entity(result) => {
+                assert!(!result.changed && !result.index_changed)
+            }
+            MutableNoteLifecycleResult::Record(result) => {
+                assert!(!result.changed && !result.roadmap_changed)
+            }
+        }
+        assert_eq!(lifecycle_snapshot(&fixture.root), before);
+    }
+}
+
+#[test]
+fn lifecycle_refuses_valid_concurrent_note_or_projection_changes_before_any_write() {
+    for id in [ENTITY_ID, RECORD_ID] {
+        for change_note in [false, true] {
+            let fixture = Fixture::new("lifecycle-conflict");
+            let form = prepare_mutable_note_lifecycle(&fixture.request, id).unwrap();
+            let external_note = if change_note {
+                format!("{}\nExternal current truth.\n", form.source)
+            } else {
+                form.source.clone()
+            };
+            let external_projection = if change_note {
+                form.projection_source.clone()
+            } else {
+                format!("{}\nExternal projection.\n", form.projection_source)
+            };
+            if form.class == NoteClass::Entity {
+                update_entity(
+                    &fixture.request,
+                    id,
+                    &form.source,
+                    &external_note,
+                    &external_projection,
+                )
+                .unwrap();
+            } else {
+                update_record(
+                    &fixture.request,
+                    id,
+                    &form.source,
+                    &external_note,
+                    &external_projection,
+                )
+                .unwrap();
+            }
+            validate_project(&fixture.request).unwrap();
+            let before = lifecycle_snapshot(&fixture.root);
+            for _ in 0..2 {
+                let error = apply_mutable_note_lifecycle(
+                    &fixture.request,
+                    &form,
+                    &format!("{}\nLocal draft.\n", form.source),
+                    &format!("{}\nLocal projection draft.\n", form.projection_source),
+                )
+                .unwrap_err();
+                assert_eq!(error.exit_code(), 5);
+                assert_eq!(lifecycle_snapshot(&fixture.root), before);
+            }
+        }
+    }
+}
+
+#[test]
+fn lifecycle_revalidates_every_prepared_identity_under_the_write_lock() {
+    let fixture = Fixture::new("lifecycle-identities");
+    let form = prepare_mutable_note_lifecycle(&fixture.request, ENTITY_ID).unwrap();
+    let before = lifecycle_snapshot(&fixture.root);
+    for field in [
+        "root",
+        "project",
+        "note_type",
+        "class",
+        "path",
+        "projection",
+    ] {
+        let mut invalid = form.clone();
+        match field {
+            "root" => invalid.root = fixture.root.join("different"),
+            "project" => invalid.project = "other".into(),
+            "note_type" => invalid.note_type = "other".into(),
+            "class" => invalid.class = NoteClass::Record,
+            "path" => invalid.path = fixture.root.join("different.md"),
+            "projection" => invalid.projection = fixture.project.join("different.md"),
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            apply_mutable_note_lifecycle(
+                &fixture.request,
+                &invalid,
+                &form.source,
+                &form.projection_source
+            )
+            .unwrap_err()
+            .exit_code(),
+            4,
+            "{field}"
+        );
+        assert_eq!(lifecycle_snapshot(&fixture.root), before);
+    }
+}
+
+#[test]
+fn lifecycle_preparation_recovers_partial_publication_and_preserves_conflicting_journal_bytes() {
+    let fixture = Fixture::new("lifecycle-recovery");
+    let versions = fixture.successful_versions();
+    fixture.restore_before(&versions);
+    fixture.write_journal(&versions);
+    fs::write(fixture.entity_path(), &versions.note_after).unwrap();
+    let form = prepare_mutable_note_lifecycle(&fixture.request, ENTITY_ID).unwrap();
+    assert_eq!(form.source, versions.note_before);
+    assert_eq!(form.projection_source, versions.index_before);
+    fixture.assert_before(&versions);
+    validate_project(&fixture.request).unwrap();
+
+    fixture.write_journal(&versions);
+    fs::write(fixture.entity_path(), b"external editor bytes\r\n").unwrap();
+    let before = lifecycle_snapshot(&fixture.root);
+    assert_eq!(
+        prepare_mutable_note_lifecycle(&fixture.request, ENTITY_ID)
+            .unwrap_err()
+            .exit_code(),
+        5
+    );
+    assert_eq!(lifecycle_snapshot(&fixture.root), before);
+}
+
+fn lifecycle_snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    fn visit(root: &Path, dir: &Path, result: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(root, &path, result);
+            } else {
+                result.insert(
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+    let mut result = std::collections::BTreeMap::new();
+    visit(root, root, &mut result);
+    result
+}
 
 #[test]
 fn updates_entity_and_explicit_index_with_valid_state() {

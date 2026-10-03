@@ -44,10 +44,11 @@ pub use note_creation::{
     create_mutable_note, prepare_mutable_note_creation,
 };
 pub use note_edit::{
-    EntityUpdateResult, NOTE_EDIT_JOURNAL_FILE, NoteEditError, NoteEditRecovery, NoteEditResult,
-    PendingNoteEditInspection, RecordUpdateResult, TaskLifecycleForm, inspect_pending_note_edit,
-    prepare_task_lifecycle, recover_pending_note_edit, replace_library_document, update_entity,
-    update_record,
+    EntityUpdateResult, MutableNoteLifecycleForm, MutableNoteLifecycleResult,
+    NOTE_EDIT_JOURNAL_FILE, NoteEditError, NoteEditRecovery, NoteEditResult,
+    PendingNoteEditInspection, RecordUpdateResult, TaskLifecycleForm, apply_mutable_note_lifecycle,
+    inspect_pending_note_edit, prepare_mutable_note_lifecycle, prepare_task_lifecycle,
+    recover_pending_note_edit, replace_library_document, update_entity, update_record,
 };
 pub use note_template::{
     NoteTemplateError, NoteTemplateScope, ResolvedNoteTemplate, resolve_note_template,

@@ -12,13 +12,13 @@ use crate::render::{agent_wiring_action_name, session_hook_action_name};
 use akasha_core::{
     AgentClient, AgentWiringPlan, EventCreationResult, LibraryBook, LibraryDocument,
     LibraryProjection, LibraryScope, LibrarySearchResult, MutableNoteCreationForm,
-    MutableNoteCreationResult, NoteClass, RecordUpdateResult, ResolveRequest,
-    SessionHookWiringPlan, TaskLifecycleForm, assemble_context, assemble_session_breadcrumb,
-    build_library_projection, capture_handoff, create_event, create_mutable_note,
-    load_library_document, prepare_agent_wiring, prepare_mutable_note_creation,
-    prepare_session_hook_wiring, prepare_task_lifecycle, recover_pending_note_edit,
-    render_context_markdown, render_session_breadcrumb, replace_library_document,
-    resolve_note_template, search_library, update_record, validate_project,
+    MutableNoteCreationResult, MutableNoteLifecycleForm, MutableNoteLifecycleResult, NoteClass,
+    ResolveRequest, SessionHookWiringPlan, apply_mutable_note_lifecycle, assemble_context,
+    assemble_session_breadcrumb, build_library_projection, capture_handoff, create_event,
+    create_mutable_note, load_library_document, prepare_agent_wiring,
+    prepare_mutable_note_creation, prepare_mutable_note_lifecycle, prepare_session_hook_wiring,
+    recover_pending_note_edit, render_context_markdown, render_session_breadcrumb,
+    replace_library_document, resolve_note_template, search_library, validate_project,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -129,7 +129,7 @@ const COMMANDS: &[Completion] = &[
     Completion {
         command: "lifecycle",
         argument: "",
-        description: "Update the open task and roadmap together",
+        description: "Update the open record/entity and its projection",
     },
     Completion {
         command: "validate",
@@ -199,7 +199,7 @@ fn prompt_area(text: String) -> TextArea<'static> {
     prompt_area_with_placeholder(text, PROMPT_PLACEHOLDER)
 }
 
-pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       update the open task and roadmap together\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff PATH | NAME=VALUE | ...\n                capture a handoff from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE PATH | NAME=VALUE | ...\n                create a configured immutable event\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\nconfirm PLAN_ID authorize the displayed integration plan\nrefresh         reload data (or press F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and task lifecycle forms show exact configured templates and\nmaintained projections. Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. Integration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nOpen from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
+pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       update the open record/entity and its projection\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff PATH | NAME=VALUE | ...\n                capture a handoff from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE PATH | NAME=VALUE | ...\n                create a configured immutable event\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\nconfirm PLAN_ID authorize the displayed integration plan\nrefresh         reload data (or press F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and lifecycle forms show exact configured templates and\nmaintained projections. Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. Integration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nOpen from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Focus {
@@ -283,14 +283,14 @@ impl CreationForm {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum LifecyclePane {
-    Task,
-    Roadmap,
+    Note,
+    Projection,
 }
 
 struct LifecycleForm {
-    prepared: TaskLifecycleForm,
-    task: Editor,
-    roadmap: Editor,
+    prepared: MutableNoteLifecycleForm,
+    note: Editor,
+    projection: Editor,
     pane: LifecyclePane,
 }
 
@@ -330,8 +330,13 @@ pub(super) enum Job {
         BTreeMap<String, String>,
         String,
     ),
-    PrepareTask(ResolveRequest, String),
-    UpdateTask(ResolveRequest, String, String, String, String),
+    PrepareLifecycle(ResolveRequest, String),
+    UpdateLifecycle(
+        ResolveRequest,
+        Box<MutableNoteLifecycleForm>,
+        String,
+        String,
+    ),
     InspectIntegrations(ResolveRequest, AgentClient, PathBuf),
     PrepareIntegration(IntegrationOperation),
     CommitIntegration(IntegrationOperation, String),
@@ -346,8 +351,8 @@ pub(super) enum Response {
     EventCreated(EventCreationResult),
     CreatePrepared(MutableNoteCreationForm),
     Created(MutableNoteCreationResult),
-    TaskPrepared(TaskLifecycleForm),
-    TaskUpdated(RecordUpdateResult),
+    LifecyclePrepared(MutableNoteLifecycleForm),
+    LifecycleUpdated(MutableNoteLifecycleResult),
     IntegrationPrepared(Box<IntegrationReview>),
     IntegrationCommitted(Result<String, String>),
 }
@@ -458,12 +463,12 @@ fn execute_job(job: Job) -> WorkResult {
         )
         .map(Response::Created)
         .map_err(|e| err(&e)),
-        Job::PrepareTask(request, id) => prepare_task_lifecycle(&request, &id)
-            .map(Response::TaskPrepared)
+        Job::PrepareLifecycle(request, id) => prepare_mutable_note_lifecycle(&request, &id)
+            .map(Response::LifecyclePrepared)
             .map_err(|e| err(&e)),
-        Job::UpdateTask(request, id, expected, replacement, roadmap) => {
-            update_record(&request, &id, &expected, &replacement, &roadmap)
-                .map(Response::TaskUpdated)
+        Job::UpdateLifecycle(request, prepared, replacement, projection) => {
+            apply_mutable_note_lifecycle(&request, &prepared, &replacement, &projection)
+                .map(Response::LifecycleUpdated)
                 .map_err(|e| err(&e))
         }
         Job::InspectIntegrations(mut request, client, home) => {
@@ -781,8 +786,8 @@ impl App {
                     expected: form.prepared.source.clone(),
                 },
                 WatchedSource {
-                    path: form.prepared.roadmap.clone(),
-                    expected: form.prepared.roadmap_source.clone(),
+                    path: form.prepared.projection.clone(),
+                    expected: form.prepared.projection_source.clone(),
                 },
             ],
             None => self
@@ -843,13 +848,23 @@ impl App {
             _ => None,
         }
     }
+    pub fn lifecycle_projection_label(&self) -> Option<&'static str> {
+        match &self.workflow {
+            Some(Workflow::Lifecycle(form)) => Some(match form.prepared.class {
+                NoteClass::Record => "ROADMAP",
+                NoteClass::Entity => "INDEX",
+                NoteClass::Event => unreachable!("core preparation rejects events"),
+            }),
+            _ => None,
+        }
+    }
     pub fn active_editor(&self) -> Option<&Editor> {
         match &self.workflow {
             Some(Workflow::Creation(form)) if form.stage == CreationStage::Projection => {
                 Some(&form.projection)
             }
-            Some(Workflow::Lifecycle(form)) if form.pane == LifecyclePane::Task => Some(&form.task),
-            Some(Workflow::Lifecycle(form)) => Some(&form.roadmap),
+            Some(Workflow::Lifecycle(form)) if form.pane == LifecyclePane::Note => Some(&form.note),
+            Some(Workflow::Lifecycle(form)) => Some(&form.projection),
             _ => self.editor.as_ref(),
         }
     }
@@ -859,8 +874,8 @@ impl App {
                 Some(&mut form.projection)
             }
             Some(Workflow::Lifecycle(form)) => match form.pane {
-                LifecyclePane::Task => Some(&mut form.task),
-                LifecyclePane::Roadmap => Some(&mut form.roadmap),
+                LifecyclePane::Note => Some(&mut form.note),
+                LifecyclePane::Projection => Some(&mut form.projection),
             },
             _ => self.editor.as_mut(),
         }
@@ -882,10 +897,15 @@ impl App {
                     NoteClass::Event => "PROJECTION",
                 }
             )),
-            Some(Workflow::Lifecycle(form)) if form.pane == LifecyclePane::Task => {
-                Some("TASK LIFECYCLE · TASK SOURCE".into())
-            }
-            Some(Workflow::Lifecycle(_)) => Some("TASK LIFECYCLE · ROADMAP".into()),
+            Some(Workflow::Lifecycle(form)) => Some(format!(
+                "{} LIFECYCLE · {}",
+                form.prepared.note_type.to_uppercase(),
+                if form.pane == LifecyclePane::Note {
+                    "NOTE SOURCE"
+                } else {
+                    self.lifecycle_projection_label().unwrap()
+                }
+            )),
             None => None,
         }
     }
@@ -894,10 +914,10 @@ impl App {
             Some(Workflow::Creation(form)) if form.stage == CreationStage::Projection => {
                 Some(form.prepared.projection.display().to_string())
             }
-            Some(Workflow::Lifecycle(form)) if form.pane == LifecyclePane::Task => {
+            Some(Workflow::Lifecycle(form)) if form.pane == LifecyclePane::Note => {
                 Some(form.prepared.id.clone())
             }
-            Some(Workflow::Lifecycle(form)) => Some(form.prepared.roadmap.display().to_string()),
+            Some(Workflow::Lifecycle(form)) => Some(form.prepared.projection.display().to_string()),
             _ => None,
         }
     }
@@ -1021,7 +1041,7 @@ impl App {
                 self.show_creation_input();
             }
             Some(Workflow::Lifecycle(form)) => {
-                form.pane = LifecyclePane::Task;
+                form.pane = LifecyclePane::Note;
                 self.editing = true;
                 self.focus = Focus::Reader;
             }
@@ -1032,7 +1052,7 @@ impl App {
     fn next_workflow_step(&mut self) {
         match &mut self.workflow {
             Some(Workflow::Lifecycle(form)) => {
-                form.pane = LifecyclePane::Roadmap;
+                form.pane = LifecyclePane::Projection;
                 self.editing = true;
                 self.focus = Focus::Reader;
             }
@@ -1405,12 +1425,11 @@ impl App {
                 self.message("Complete every form input before applying creation.");
                 return;
             }
-            Some(Workflow::Lifecycle(form)) => Some(Job::UpdateTask(
+            Some(Workflow::Lifecycle(form)) => Some(Job::UpdateLifecycle(
                 self.request.clone(),
-                form.prepared.id.clone(),
-                form.prepared.source.clone(),
-                form.task.source(),
-                form.roadmap.source(),
+                Box::new(form.prepared.clone()),
+                form.note.source(),
+                form.projection.source(),
             )),
             None => None,
         };
@@ -1636,15 +1655,15 @@ impl App {
                 ));
                 self.load();
             }
-            Ok(Response::TaskPrepared(prepared)) => {
-                let task = match Editor::new(&prepared.source) {
+            Ok(Response::LifecyclePrepared(prepared)) => {
+                let note = match Editor::new(&prepared.source) {
                     Ok(editor) => editor,
                     Err(error) => {
                         self.message(&format!("Operation failed: {error}"));
                         return true;
                     }
                 };
-                let roadmap = match Editor::new(&prepared.roadmap_source) {
+                let projection = match Editor::new(&prepared.projection_source) {
                     Ok(editor) => editor,
                     Err(error) => {
                         self.message(&format!("Operation failed: {error}"));
@@ -1653,34 +1672,39 @@ impl App {
                 };
                 self.workflow = Some(Workflow::Lifecycle(Box::new(LifecycleForm {
                     prepared,
-                    task,
-                    roadmap,
-                    pane: LifecyclePane::Task,
+                    note,
+                    projection,
+                    pane: LifecyclePane::Note,
                 })));
                 self.editor = None;
                 self.editing = true;
                 self.focus = Focus::Reader;
-                self.message(
-                    "Task lifecycle form loaded. Edit exact task and roadmap sources; Ctrl-N/Ctrl-P switches documents and Ctrl-S applies both.",
-                );
+                self.message(&format!(
+                    "Lifecycle form loaded. Edit exact note and {} sources; Ctrl-N/Ctrl-P switches documents and Ctrl-S applies both.",
+                    self.lifecycle_projection_label().unwrap().to_lowercase(),
+                ));
             }
-            Ok(Response::TaskUpdated(result)) => {
+            Ok(Response::LifecycleUpdated(result)) => {
+                let (id, note_changed, projection_changed, projection) = match result {
+                    MutableNoteLifecycleResult::Record(result) => {
+                        (result.id, result.changed, result.roadmap_changed, "roadmap")
+                    }
+                    MutableNoteLifecycleResult::Entity(result) => {
+                        (result.id, result.changed, result.index_changed, "index")
+                    }
+                };
                 self.workflow = None;
                 self.editor = None;
                 self.editing = false;
-                self.pending_open = Some(result.id.clone());
+                self.pending_open = Some(id);
                 self.message(&format!(
-                    "Task lifecycle applied: task {}, roadmap {}.",
-                    if result.changed {
+                    "Lifecycle applied: note {}, {projection} {}.",
+                    if note_changed { "updated" } else { "unchanged" },
+                    if projection_changed {
                         "updated"
                     } else {
                         "unchanged"
                     },
-                    if result.roadmap_changed {
-                        "updated"
-                    } else {
-                        "unchanged"
-                    }
                 ));
                 self.load();
             }
@@ -1840,14 +1864,19 @@ impl App {
                 ));
             }
             "lifecycle" if !argument.is_empty() => {
-                self.message("Usage: /lifecycle while a task note is open.");
+                self.message("Usage: /lifecycle while a project record or entity is open.");
             }
             "lifecycle" => {
                 let Some(document) = &self.document else {
-                    self.message("Open a configured task note before starting its lifecycle form.");
+                    self.message(
+                        "Open a project record or entity before starting its lifecycle form.",
+                    );
                     return;
                 };
-                self.submit(Job::PrepareTask(self.request.clone(), document.id.clone()));
+                self.submit(Job::PrepareLifecycle(
+                    self.request.clone(),
+                    document.id.clone(),
+                ));
             }
             "context" => self.submit(Job::Context(self.request.clone())),
             "breadcrumb" if argument.is_empty() => {
@@ -2897,10 +2926,10 @@ mod tests {
             let task_draft = format!("{}\nlocal task draft\n", before.trim_end());
             let roadmap_draft = format!(
                 "{}\nlocal roadmap draft\n",
-                form.prepared.roadmap_source.trim_end()
+                form.prepared.projection_source.trim_end()
             );
-            form.task = Editor::new(&task_draft).unwrap();
-            form.roadmap = Editor::new(&roadmap_draft).unwrap();
+            form.note = Editor::new(&task_draft).unwrap();
+            form.projection = Editor::new(&roadmap_draft).unwrap();
             (before, task_draft, roadmap_draft)
         };
         let external = format!("{}\nexternal task edit\n", before.trim_end());
@@ -2912,8 +2941,8 @@ mod tests {
         let Some(Workflow::Lifecycle(form)) = &fixture.app.workflow else {
             panic!("external refresh discarded the lifecycle form");
         };
-        assert_eq!(form.task.source(), task_draft);
-        assert_eq!(form.roadmap.source(), roadmap_draft);
+        assert_eq!(form.note.source(), task_draft);
+        assert_eq!(form.projection.source(), roadmap_draft);
         assert_eq!(
             fs::read_to_string(fixture.root().join(TASK_ID)).unwrap(),
             external
@@ -3432,10 +3461,10 @@ mod tests {
             .source
             .replace("status: active", "status: done")
             .replace("updated: 2026-07-13", "updated: 2026-09-17");
-        form.task = Editor::new(&replacement).unwrap();
-        form.roadmap = Editor::new(&format!(
+        form.note = Editor::new(&replacement).unwrap();
+        form.projection = Editor::new(&format!(
             "{}\nTask completed through the TUI lifecycle form.\n",
-            form.prepared.roadmap_source.trim_end()
+            form.prepared.projection_source.trim_end()
         ))
         .unwrap();
 
@@ -3460,6 +3489,190 @@ mod tests {
     }
 
     #[test]
+    fn entity_and_problem_lifecycle_forms_apply_exact_paired_sources_and_reopen() {
+        for (id, label) in [
+            (ID, "INDEX"),
+            ("Projects/example/records/problems/open.md", "ROADMAP"),
+        ] {
+            let mut fixture = Fixture::new();
+            fixture.app.open(id);
+            fixture.finish();
+            fixture.app.command("lifecycle");
+            fixture.finish();
+            assert_eq!(fixture.app.lifecycle_projection_label(), Some(label));
+            assert!(
+                fixture
+                    .app
+                    .workflow_title()
+                    .unwrap()
+                    .contains("NOTE SOURCE")
+            );
+            let (note, projection, projection_path) = {
+                let Some(Workflow::Lifecycle(form)) = &mut fixture.app.workflow else {
+                    panic!("missing lifecycle form")
+                };
+                let note = format!("{}\nReviewed Привет 世界  ", form.prepared.source);
+                let projection = format!(
+                    "{}\nReviewed paired projection.\n",
+                    form.prepared.projection_source
+                );
+                form.note = Editor::new(&note).unwrap();
+                form.projection = Editor::new(&projection).unwrap();
+                (note, projection, form.prepared.projection.clone())
+            };
+            control(&mut fixture.app, 'n');
+            assert!(fixture.app.workflow_title().unwrap().ends_with(label));
+            assert_eq!(fixture.app.active_editor().unwrap().source(), projection);
+            control(&mut fixture.app, 'p');
+            assert_eq!(fixture.app.active_editor().unwrap().source(), note);
+            control(&mut fixture.app, 's');
+            fixture.finish();
+            fixture.finish();
+            fixture.finish();
+            assert!(!fixture.app.in_workflow());
+            assert_eq!(fixture.app.document.as_ref().unwrap().id, id);
+            assert_eq!(fixture.app.document.as_ref().unwrap().source, note);
+            assert_eq!(fs::read_to_string(projection_path).unwrap(), projection);
+            validate_project(&fixture.app.request).unwrap();
+        }
+    }
+
+    #[test]
+    fn entity_lifecycle_projection_conflict_retains_both_drafts_until_no_write_discard() {
+        let mut fixture = Fixture::new();
+        fixture.app.open(ID);
+        fixture.finish();
+        fixture.app.command("lifecycle");
+        fixture.finish();
+        let (prepared, note_draft, projection_draft) = {
+            let Some(Workflow::Lifecycle(form)) = &mut fixture.app.workflow else {
+                panic!("missing lifecycle form")
+            };
+            let note = format!("{}\nLocal entity draft.\n", form.prepared.source);
+            let projection = format!("{}\nLocal index draft.\n", form.prepared.projection_source);
+            form.note = Editor::new(&note).unwrap();
+            form.projection = Editor::new(&projection).unwrap();
+            (form.prepared.clone(), note, projection)
+        };
+        let external = format!(
+            "{}\nValid concurrent index update.\n",
+            prepared.projection_source
+        );
+        akasha_core::update_entity(
+            &fixture.app.request,
+            ID,
+            &prepared.source,
+            &prepared.source,
+            &external,
+        )
+        .unwrap();
+        let state = fs::read(fixture.root().join("Projects/example/.akasha-state.toml")).unwrap();
+        fixture.check_external_changes();
+        assert!(fixture.app.external_change_pending);
+        fixture.app.command("save");
+        fixture.finish();
+        assert!(
+            fixture
+                .app
+                .messages
+                .back()
+                .unwrap()
+                .contains("maintained projection no longer matches")
+        );
+        let Some(Workflow::Lifecycle(form)) = &fixture.app.workflow else {
+            panic!("failed apply discarded form")
+        };
+        assert_eq!(form.note.source(), note_draft);
+        assert_eq!(form.projection.source(), projection_draft);
+        for command in ["quit", "global", "refresh"] {
+            fixture.app.command(command);
+            assert!(!fixture.app.quit && !fixture.app.busy);
+            assert!(fixture.app.in_workflow());
+        }
+        fixture.app.command("discard");
+        assert!(!fixture.app.in_workflow());
+        assert_eq!(fs::read_to_string(&prepared.path).unwrap(), prepared.source);
+        assert_eq!(fs::read_to_string(&prepared.projection).unwrap(), external);
+        assert_eq!(
+            fs::read(fixture.root().join("Projects/example/.akasha-state.toml")).unwrap(),
+            state
+        );
+        fixture.app.command("refresh");
+        fixture.finish();
+        assert!(!fixture.app.external_change_pending);
+    }
+
+    #[test]
+    fn entity_lifecycle_invalid_identity_keeps_drafts_and_discard_restores_loaded_note() {
+        let mut fixture = Fixture::new();
+        fixture.app.open(ID);
+        fixture.finish();
+        fixture.app.command("lifecycle");
+        fixture.finish();
+        let (prepared, renamed, projection) = {
+            let Some(Workflow::Lifecycle(form)) = &mut fixture.app.workflow else {
+                panic!("missing lifecycle form")
+            };
+            let renamed = form
+                .prepared
+                .source
+                .replace("entity: core", "entity: renamed");
+            let projection = format!("{}\nDiscard this draft.\n", form.prepared.projection_source);
+            form.note = Editor::new(&renamed).unwrap();
+            form.projection = Editor::new(&projection).unwrap();
+            (form.prepared.clone(), renamed, projection)
+        };
+        fixture.app.command("save");
+        fixture.finish();
+        assert!(fixture.app.messages.back().unwrap().contains("rename"));
+        let Some(Workflow::Lifecycle(form)) = &fixture.app.workflow else {
+            panic!("failed apply discarded form")
+        };
+        assert_eq!(form.note.source(), renamed);
+        assert_eq!(form.projection.source(), projection);
+        fixture.app.command("discard");
+        assert_eq!(
+            fixture.app.document.as_ref().unwrap().source,
+            prepared.source
+        );
+        assert_eq!(fs::read_to_string(prepared.path).unwrap(), prepared.source);
+        assert_eq!(
+            fs::read_to_string(prepared.projection).unwrap(),
+            prepared.projection_source
+        );
+        validate_project(&fixture.app.request).unwrap();
+    }
+
+    #[test]
+    fn lifecycle_refuses_events_global_notes_and_dirty_editors_without_replacing_view() {
+        for id in [GLOBAL_ID, "Projects/example/events/sessions/2026-07-13.md"] {
+            let mut fixture = Fixture::new();
+            fixture.app.open(id);
+            fixture.finish();
+            let source = fixture.app.document.as_ref().unwrap().source.clone();
+            fixture.app.command("lifecycle");
+            fixture.finish();
+            assert!(!fixture.app.in_workflow());
+            assert_eq!(fixture.app.document.as_ref().unwrap().source, source);
+            assert!(
+                fixture
+                    .app
+                    .messages
+                    .back()
+                    .unwrap()
+                    .starts_with("Operation failed")
+            );
+        }
+        let mut fixture = Fixture::new();
+        fixture.open_editor();
+        fixture.app.paste("\nKeep editor draft.\n");
+        let draft = fixture.app.editor.as_ref().unwrap().source();
+        fixture.app.command("lifecycle");
+        assert!(!fixture.app.in_workflow() && !fixture.app.busy);
+        assert_eq!(fixture.app.editor.as_ref().unwrap().source(), draft);
+    }
+
+    #[test]
     fn failed_task_lifecycle_apply_retains_both_drafts() {
         let mut fixture = Fixture::new();
         fixture.app.open(TASK_ID);
@@ -3475,9 +3688,9 @@ mod tests {
                 .prepared
                 .source
                 .replace("status: active", "status: done");
-            let roadmap_draft = format!("{}\nDraft roadmap.\n", form.prepared.roadmap_source);
-            form.task = Editor::new(&task_draft).unwrap();
-            form.roadmap = Editor::new(&roadmap_draft).unwrap();
+            let roadmap_draft = format!("{}\nDraft roadmap.\n", form.prepared.projection_source);
+            form.note = Editor::new(&task_draft).unwrap();
+            form.projection = Editor::new(&roadmap_draft).unwrap();
             (task_draft, roadmap_draft)
         };
         fs::write(
@@ -3492,8 +3705,8 @@ mod tests {
         let Some(Workflow::Lifecycle(form)) = &fixture.app.workflow else {
             panic!("failed apply discarded the lifecycle form");
         };
-        assert_eq!(form.task.source(), task_draft);
-        assert_eq!(form.roadmap.source(), roadmap_draft);
+        assert_eq!(form.note.source(), task_draft);
+        assert_eq!(form.projection.source(), roadmap_draft);
         assert!(
             fixture
                 .app

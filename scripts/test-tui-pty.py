@@ -290,6 +290,48 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             wait_for(b'READING')
             assert created.read_bytes() == task_before_discard + task_addition
             assert roadmap.read_bytes() == roadmap_before_discard + roadmap_addition
+            # Entities pair with the configured index; problems pair with the roadmap.
+            # Inspect both rendered document labels and exact persisted bytes.
+            for identity, title, projection_path, label in [
+                ('Projects/example/entities/core.md', b'ENTITY LIFECYCLE',
+                 root / 'Projects/example/index.md', b'INDEX'),
+                ('Projects/example/records/problems/open.md', b'PROBLEM LIFECYCLE',
+                 roadmap, b'ROADMAP'),
+            ]:
+                command(f'open {identity}')
+                wait_for(b'READING')
+                source_path = root / identity
+                note_before = source_path.read_bytes()
+                projection_before = projection_path.read_bytes()
+                command('lifecycle')
+                wait_for(title)
+                wait_for(b'NOTE SOURCE')
+                send(b'\x1b[1;5F')
+                send(b'\x1b[200~\nDiscard paired note draft.\n\x1b[201~')
+                send(b'\x0e')
+                wait_for(title + ' · '.encode() + label)
+                send(b'\x1b[1;5F')
+                send(b'\x1b[200~\nDiscard paired projection draft.\n\x1b[201~')
+                command('discard')
+                wait_for(b'READING')
+                assert source_path.read_bytes() == note_before
+                assert projection_path.read_bytes() == projection_before
+                command('lifecycle')
+                wait_for(title)
+                send(b'\x1b[1;5F')
+                note_addition = '\nPTY paired note: Привет 世界  \n'.encode()
+                send(b'\x1b[200~' + note_addition + b'\x1b[201~')
+                send(b'\x0e')
+                wait_for(title + ' · '.encode() + label)
+                send(b'\x1b[1;5F')
+                projection_addition = b'\nPTY paired projection update.\n'
+                send(b'\x1b[200~' + projection_addition + b'\x1b[201~')
+                send(b'\x10')  # Ctrl-P returns to the retained note draft.
+                wait_for(b'NOTE SOURCE')
+                send(b'\x13')
+                wait_for(b'READING')
+                assert source_path.read_bytes() == note_before + note_addition
+                assert projection_path.read_bytes() == projection_before + projection_addition
             assert not list(agent_home.iterdir())
             command(f'integrations codex {agent_home}')
             wait_for(b'INTEGRATIONS')
@@ -373,6 +415,23 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             command('discard', from_editor=True)
             wait_for(b'READING')
             assert note.read_bytes() == original + paste, 'keyboard discard must not write'
+            # Both entity/index buffers remain reachable even at 40x12 with no mouse.
+            index = root / 'Projects/example/index.md'
+            index_before = index.read_bytes()
+            command('lifecycle')
+            wait_for(b'ENTITY LIFECYCLE')
+            send(b'\x1b[1;5F')
+            send(b'\x1b[200~\nCompact entity draft.\n\x1b[201~')
+            send(b'\x0e')
+            wait_for('ENTITY LIFECYCLE · INDEX'.encode())
+            send(b'\x1b[1;5F')
+            send(b'\x1b[200~\nCompact index draft.\n\x1b[201~')
+            send(b'\x10')
+            wait_for(b'NOTE SOURCE')
+            command('discard', from_editor=True)
+            wait_for(b'READING')
+            assert note.read_bytes() == original + paste
+            assert index.read_bytes() == index_before
             command(f'search Keyboard {term}')
             wait_for(b'matches')
             command('open Projects/example/entities/core.md')

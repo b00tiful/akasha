@@ -14,7 +14,8 @@ use crate::project_validation::{
     ProjectValidationError, validate_project, validate_wikilinks_with_targets,
 };
 use crate::resolution::{
-    NoteClass, ResolveError, ResolveRequest, RootConfig, load_root_config, resolve_project,
+    NoteClass, ResolveError, ResolveRequest, ResolvedProject, RootConfig, load_root_config,
+    resolve_project,
 };
 use crate::state::{CanonicalNoteEvidence, PROJECT_STATE_FILE, render_updated_project_state};
 use crate::validation::{parse_leading_frontmatter_bytes, validate_configured_note};
@@ -85,6 +86,28 @@ pub struct TaskLifecycleForm {
     pub source: String,
     pub roadmap: PathBuf,
     pub roadmap_source: String,
+}
+
+/// Exact selected-project note and class-owned projection inputs for a checked lifecycle form.
+/// Preparation may recover a pending transaction before loading these sources.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MutableNoteLifecycleForm {
+    pub root: PathBuf,
+    pub project: String,
+    pub note_type: String,
+    pub class: NoteClass,
+    pub id: String,
+    pub path: PathBuf,
+    pub source: String,
+    pub projection: PathBuf,
+    pub projection_source: String,
+}
+
+/// Class-specific result of applying one prepared lifecycle form.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum MutableNoteLifecycleResult {
+    Record(RecordUpdateResult),
+    Entity(EntityUpdateResult),
 }
 
 /// Result of one exact-source entity update with an explicitly accepted index.
@@ -188,6 +211,124 @@ pub fn prepare_task_lifecycle(
         roadmap,
         roadmap_source,
     })
+}
+
+/// Recover, validate and load exact note/projection sources while holding the project lock.
+pub fn prepare_mutable_note_lifecycle(
+    request: &ResolveRequest,
+    id: &str,
+) -> Result<MutableNoteLifecycleForm, NoteEditError> {
+    let resolved = resolve_project(request)?;
+    let _lock = ProjectWriteLock::acquire(&resolved.project_dir)?;
+    recover_note_mutation_locked(request, &resolved.project_dir)?;
+    let config = load_root_config(&resolved.root)?;
+    let library = build_library_projection(request)?;
+    let book = library
+        .projects
+        .iter()
+        .find(|shelf| shelf.project == resolved.project)
+        .into_iter()
+        .flat_map(|shelf| &shelf.categories)
+        .flat_map(|category| &category.books)
+        .find(|book| book.id == id)
+        .ok_or_else(|| NoteEditError::Validation {
+            path: PathBuf::from(id),
+            message: "lifecycle forms require a projected note from the selected project".into(),
+        })?;
+    let projection = resolved.project_dir.join(match book.class {
+        NoteClass::Record => &config.project.roadmap,
+        NoteClass::Entity => &config.project.index,
+        NoteClass::Event => {
+            return Err(NoteEditError::Validation {
+                path: PathBuf::from(id),
+                message: "immutable events cannot enter a lifecycle form".into(),
+            });
+        }
+    });
+    let path = resolved.root.join(id);
+    let read_source = |path: &Path| -> Result<String, NoteEditError> {
+        let bytes = read_regular_file(path, "read exact lifecycle source")?;
+        String::from_utf8(bytes).map_err(|error| NoteEditError::Validation {
+            path: path.to_owned(),
+            message: format!("lifecycle source is not valid UTF-8: {error}"),
+        })
+    };
+    Ok(MutableNoteLifecycleForm {
+        root: resolved.root,
+        project: resolved.project,
+        note_type: book.note_type.clone(),
+        class: book.class,
+        id: id.to_owned(),
+        source: read_source(&path)?,
+        path,
+        projection_source: read_source(&projection)?,
+        projection,
+    })
+}
+
+/// Apply exact edits only while both prepared note and projection baselines still match.
+/// Existing class-specific validation, publication and recovery remain authoritative.
+pub fn apply_mutable_note_lifecycle(
+    request: &ResolveRequest,
+    form: &MutableNoteLifecycleForm,
+    replacement_source: &str,
+    projection_source: &str,
+) -> Result<MutableNoteLifecycleResult, NoteEditError> {
+    match form.class {
+        NoteClass::Record => update_record_checked(
+            request,
+            &form.id,
+            &form.source,
+            replacement_source,
+            projection_source,
+            Some(form),
+        )
+        .map(MutableNoteLifecycleResult::Record),
+        NoteClass::Entity => update_entity_checked(
+            request,
+            &form.id,
+            &form.source,
+            replacement_source,
+            projection_source,
+            Some(form),
+        )
+        .map(MutableNoteLifecycleResult::Entity),
+        NoteClass::Event => Err(NoteEditError::Validation {
+            path: PathBuf::from(&form.id),
+            message: "immutable events cannot enter a lifecycle form".into(),
+        }),
+    }
+}
+
+fn validate_lifecycle_baseline(
+    form: &MutableNoteLifecycleForm,
+    resolved: &ResolvedProject,
+    note_type: &str,
+    class: NoteClass,
+    projection: &Path,
+    projection_before: &[u8],
+) -> Result<(), NoteEditError> {
+    if form.root != resolved.root
+        || form.project != resolved.project
+        || form.note_type != note_type
+        || form.class != class
+        || form.path != resolved.root.join(&form.id)
+        || form.projection != projection
+    {
+        return Err(NoteEditError::Validation {
+            path: form.path.clone(),
+            message:
+                "prepared lifecycle identities no longer match the selected project configuration"
+                    .into(),
+        });
+    }
+    if projection_before != form.projection_source.as_bytes() {
+        return Err(NoteEditError::Conflict {
+            path: projection.to_owned(),
+            message: "the maintained projection no longer matches the source loaded by the lifecycle form".into(),
+        });
+    }
+    Ok(())
 }
 
 impl NoteEditError {
@@ -496,6 +637,24 @@ pub fn update_record(
     replacement_source: &str,
     roadmap_source: &str,
 ) -> Result<RecordUpdateResult, NoteEditError> {
+    update_record_checked(
+        request,
+        id,
+        expected_source,
+        replacement_source,
+        roadmap_source,
+        None,
+    )
+}
+
+fn update_record_checked(
+    request: &ResolveRequest,
+    id: &str,
+    expected_source: &str,
+    replacement_source: &str,
+    roadmap_source: &str,
+    baseline: Option<&MutableNoteLifecycleForm>,
+) -> Result<RecordUpdateResult, NoteEditError> {
     let resolved = resolve_project(request)?;
     let _lock = ProjectWriteLock::acquire(&resolved.project_dir)?;
     let recovery = recover_note_mutation_locked(request, &resolved.project_dir)?;
@@ -555,6 +714,16 @@ pub fn update_record(
     let roadmap_path = resolved.project_dir.join(&config.project.roadmap);
     let index = read_regular_file(&index_path, "read the current index projection")?;
     let roadmap_before = read_regular_file(&roadmap_path, "read the current roadmap projection")?;
+    if let Some(form) = baseline {
+        validate_lifecycle_baseline(
+            form,
+            &resolved,
+            &note_type,
+            NoteClass::Record,
+            &roadmap_path,
+            &roadmap_before,
+        )?;
+    }
     let roadmap_before_text =
         str::from_utf8(&roadmap_before).map_err(|error| NoteEditError::Validation {
             path: roadmap_path.clone(),
@@ -678,6 +847,24 @@ pub fn update_entity(
     replacement_source: &str,
     index_source: &str,
 ) -> Result<EntityUpdateResult, NoteEditError> {
+    update_entity_checked(
+        request,
+        id,
+        expected_source,
+        replacement_source,
+        index_source,
+        None,
+    )
+}
+
+fn update_entity_checked(
+    request: &ResolveRequest,
+    id: &str,
+    expected_source: &str,
+    replacement_source: &str,
+    index_source: &str,
+    baseline: Option<&MutableNoteLifecycleForm>,
+) -> Result<EntityUpdateResult, NoteEditError> {
     let resolved = resolve_project(request)?;
     let _lock = ProjectWriteLock::acquire(&resolved.project_dir)?;
     let recovery = recover_note_mutation_locked(request, &resolved.project_dir)?;
@@ -736,6 +923,16 @@ pub fn update_entity(
     let index_path = resolved.project_dir.join(&config.project.index);
     let roadmap_path = resolved.project_dir.join(&config.project.roadmap);
     let index_before = read_regular_file(&index_path, "read the current index projection")?;
+    if let Some(form) = baseline {
+        validate_lifecycle_baseline(
+            form,
+            &resolved,
+            &note_type,
+            NoteClass::Entity,
+            &index_path,
+            &index_before,
+        )?;
+    }
     let index_before_text =
         str::from_utf8(&index_before).map_err(|error| NoteEditError::Validation {
             path: index_path.clone(),
