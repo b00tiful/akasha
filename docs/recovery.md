@@ -1,0 +1,134 @@
+# Recovering a refused project mutation
+
+Use this procedure when the desktop reports a pending `.akasha-edit-journal.json`
+and refuses to load the selected project because a journaled file has unexpected
+bytes. It covers shared journal versions 1, 2 and 3 on the tested Linux local
+filesystem. Root initialization and client instruction/hook journals have separate
+contracts.
+
+The desktop's load and retry actions can roll back or finalize a transaction.
+Inspection of journal presence only reports its location; it does not establish
+that the project is consistent. The named CLI currently has no recovery command.
+
+## 1. Stop writers and preserve the evidence
+
+1. Record the selected root, project, journal path and complete failure message.
+   A busy writer calls for waiting until that writer finishes, rather than file
+   reconciliation. Keep the persistent `.akasha-write.lock` file in place.
+2. Close Akasha windows/TUIs, stop agent writes, and pause external editors and
+   sync tools for this root. Keep any unsaved editor buffer separately. Advisory
+   locking does not stop an external editor.
+3. Make an owner-only backup of the **complete data root**, including hidden
+   journal/state files, root configuration and registry, outside the live root.
+   Preserve the linked repository's `.akasha.toml` separately if it exists. Use a
+   new destination and check that the copy completed; never overwrite a prior
+   backup. Compare the copied files' exact bytes or hashes with the stopped root.
+   Retain both unexpected external edits and the unmodified journal.
+4. Inspect the backup, with all writers still stopped. Confirm the journal's
+   project matches the selected project, its version is supported, and its note
+   identities resolve inside that project. Projection identities must name its
+   configured index or roadmap. Check paths and file types before copying any
+   image back. A malformed journal, unknown schema, wrong project, path escape,
+   symlink/non-regular file, or unreadable/missing required state/projection is a
+   stop condition: preserve everything and investigate the cause. Do not invent
+   images, edit journal metadata, delete the journal, or recreate the lock.
+
+Backups and decoded images contain private note text. Keep them local with a
+private parent directory (0700) and files (0600); avoid terminal dumps, shared
+temporary directories, or uploading journals as diagnostics.
+
+## 2. Compare exact images and choose rollback
+
+Decode JSON string values as UTF-8 bytes before comparing them with files.
+Escaped `\r\n`, quotes and Unicode in JSON are not their on-disk spelling. Preserve
+line endings, trailing spaces and final-newline presence; do not use a Markdown
+editor that normalizes them. Compare complete files, including state/projections.
+
+| Journal | Recorded artifacts | Accepted current images |
+| --- | --- | --- |
+| Version 1 | `id`, `note_before`, `note_after`, `state_before`, `state_after` | Mutable note: exact before or after. Created note (`note_before: null`): absent or exact after. State: exact before or after. |
+| Version 2 | Version 1 plus `projection.id`, `projection.before`, `projection.after` | The same note/state rules, plus exact before or after for the configured index/roadmap. |
+| Version 3 | Every `notes[].id`/`after`, both `projections[].id`/`before`/`after`, state images | Each created note: absent or exact after. Each projection and state: exact before or after. |
+
+Any third image causes refusal. A trusted journal represents the transaction
+Akasha began; it is not proof against tampering. If its provenance is uncertain,
+use a separately verified backup and investigate before restoring anything.
+
+For the conservative rollback procedure, explicitly choose to abandon the pending
+transaction **after preserving external changes in the verified backup**:
+
+1. For each conflicting mutable note, maintained projection or state file, restore
+   its exact recorded **before** image. Leave already matching files untouched.
+2. A conflicting newly created note has no before image. After verifying its
+   backup, remove that one live file to restore absence. The saved external text
+   stays in the backup for review. Never interpret JSON `null` as file contents.
+3. Compare the restored bytes again. Keep the live journal byte-for-byte unchanged.
+
+In the development workspace, Node can extract a single decoded string into a
+new private staging file without displaying it or changing the live root. Node
+is a development tool here, not a product runtime requirement. Set the three
+variables below to the verified backup and a new owner-only staging directory;
+this example extracts the state preimage:
+
+```bash
+node --input-type=module - \
+  "$RECOVERY_COPY/Projects/example/.akasha-edit-journal.json" \
+  state_before "$RECOVERY_STAGE/state-before.toml" <<'JS'
+import { readFileSync, writeFileSync } from 'node:fs';
+const [journalPath, selector, outputPath] = process.argv.slice(2);
+const allowed = ['note_before', 'state_before', 'projection.before',
+  'projections.0.before', 'projections.1.before'];
+if (!allowed.includes(selector)) throw new Error('Unsupported image selector');
+let value = JSON.parse(readFileSync(journalPath, 'utf8'));
+for (const key of selector.split('.')) value = value?.[key];
+if (typeof value !== 'string') throw new Error('Image is absent or not a string');
+writeFileSync(outputPath, value, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+JS
+```
+
+For version 3, first check the selected projection's `id`; array order alone does
+not establish whether it is the index or roadmap. Review the extracted image
+and destination before restoring it. The extraction refuses an existing output
+file and does not apply any restoration.
+
+## 3. Retry recovery, validate, and reapply reviewed work
+
+1. With external writers still stopped, reopen Akasha, select the same root and
+   project, and submit the library load. The existing core recovery runs under
+   the project lock. An entirely untouched transaction is discarded; a partial
+   transaction rolls back in reverse publication order; a complete, valid
+   after-image is finalized. Restoring a conflicting artifact to its before
+   image normally leads to discard or rollback.
+2. If retry refuses again, retain the journal and all backups, close Akasha and
+   investigate the new failure. Do not repeatedly guess images. Validation can
+   also fail because an unrelated canonical file changed; this procedure does
+   not repair arbitrary out-of-band project changes.
+3. Confirm the journal is gone and the project loads, then run:
+
+   ```bash
+   akasha --root "$AKASHA_ROOT" --project example validate
+   ```
+
+   Require exit status 0. Check the affected notes, maintained projections and
+   state against the expected rollback/commit images. A second load should
+   require no recovery. Keep the backup until the human verifies the result.
+4. Review retained external edits. Reload a fresh baseline and reapply wanted
+   changes through the existing checked editor, entity/record lifecycle update,
+   or reviewed create-only onboarding/event workflow, including its maintained
+   projections and evidence. Never paste a raw state file or an immutable event
+   back into the recovered root to bypass validation. Resume external writers
+   only after validation and review succeed.
+
+## Verified boundary
+
+Disposable Rust fixtures cover repeated refusal with exact byte preservation,
+backup retention, preimage restoration, successful retry and validation for all
+three shared journal versions, including created-note absence and conflicts in
+projections/state. Onboarding also has child-process exit checks after synced
+journal creation, each of two notes, the note batch, index, roadmap and state.
+Recovery in the parent proves the crashed child's lock is released without
+destructors; a second recovery is a byte-preserving no-op.
+
+These tests do not simulate physical power loss, a crash inside a filesystem
+write/sync, or concurrent external writers during manual reconciliation. They
+do not establish support for other operating systems or network filesystems.

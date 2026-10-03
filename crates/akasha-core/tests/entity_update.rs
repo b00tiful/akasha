@@ -130,6 +130,61 @@ fn finalizes_complete_entity_update_and_refuses_unexpected_projection_bytes() {
     assert!(fixture.journal().is_file());
 }
 
+#[test]
+fn operator_reconciles_projection_or_state_conflict_from_backed_up_preimage() {
+    for field in ["projection", "state"] {
+        let fixture = Fixture::new(field);
+        let versions = fixture.successful_versions();
+        fs::write(fixture.state_path(), &versions.state_before).unwrap();
+        fixture.write_journal(&versions);
+        let target = if field == "projection" {
+            fixture.index_path()
+        } else {
+            fixture.state_path()
+        };
+        fs::write(&target, b"external bytes\r\n").unwrap();
+        let backup = fixture._temp.path().join("backup");
+        copy_tree(&fixture.root, &backup);
+        let journal = fs::read(fixture.journal()).unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                recover_pending_note_edit(&fixture.request)
+                    .unwrap_err()
+                    .exit_code(),
+                5
+            );
+            assert_eq!(fs::read(&target).unwrap(), b"external bytes\r\n");
+            assert_eq!(fixture.entity(), versions.note_after);
+            assert_eq!(fs::read(fixture.journal()).unwrap(), journal);
+        }
+        let saved: serde_json::Value = serde_json::from_slice(&journal).unwrap();
+        let preimage = if field == "projection" {
+            &saved["projection"]["before"]
+        } else {
+            &saved["state_before"]
+        };
+        fs::write(&target, preimage.as_str().unwrap()).unwrap();
+        assert_eq!(
+            recover_pending_note_edit(&fixture.request).unwrap(),
+            NoteEditRecovery::RolledBack
+        );
+        fixture.assert_before(&versions);
+        validate_project(&fixture.request).unwrap();
+        assert_eq!(
+            recover_pending_note_edit(&fixture.request).unwrap(),
+            NoteEditRecovery::None
+        );
+        assert_eq!(
+            fs::read(backup.join(target.strip_prefix(&fixture.root).unwrap())).unwrap(),
+            b"external bytes\r\n"
+        );
+        assert_eq!(
+            fs::read(backup.join("Projects/example").join(NOTE_EDIT_JOURNAL_FILE)).unwrap(),
+            journal
+        );
+    }
+}
+
 struct Versions {
     note_before: String,
     note_after: String,

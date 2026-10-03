@@ -401,6 +401,8 @@ pub fn apply_onboarding_batch(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OnboardingPublicationStage {
+    Journal,
+    Note(usize),
     Notes,
     Index,
     Roadmap,
@@ -502,14 +504,16 @@ fn apply_prepared(
         },
     )?;
 
+    publication_hook(OnboardingPublicationStage::Journal);
     let mut transaction = Transaction::default();
     let operation = (|| {
-        for note in notes.iter().filter(|note| note.create) {
+        for (index, note) in notes.iter().filter(|note| note.create).enumerate() {
             create_file_atomically(&note.path, &note.source)?;
             transaction
                 .created
                 .push((note.path.clone(), note.source.clone()));
             sync_parent(&note.path, "sync a created onboarding note")?;
+            publication_hook(OnboardingPublicationStage::Note(index));
         }
         publication_hook(OnboardingPublicationStage::Notes);
 
@@ -1620,6 +1624,272 @@ mod tests {
             "external writer\n"
         );
         assert!(fixture.project.join(NOTE_EDIT_JOURNAL_FILE).is_file());
+    }
+
+    #[test]
+    fn operator_reconciles_backed_up_onboarding_conflicts_before_retry() {
+        for target in [
+            "entities/core.md",
+            "index.md",
+            "roadmap.md",
+            PROJECT_STATE_FILE,
+        ] {
+            let fixture = Fixture::new("operator-reconciliation");
+            let request = crash_request(&fixture);
+            let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = apply_onboarding_batch_with_hook(&request, |stage| {
+                    assert_ne!(stage, OnboardingPublicationStage::Roadmap, "interruption");
+                });
+            }));
+            assert!(interrupted.is_err());
+            let target_path = fixture.project.join(target);
+            fs::write(&target_path, b"external draft\r\n").unwrap();
+            // Retain every file, including the exact journal, outside the live root.
+            let backup = project_snapshot(&fixture.project);
+            let backup_root = project_snapshot(&fixture.root);
+            let backup_dir = fixture.base.join("backup");
+            for (relative, source) in &backup_root {
+                let path = backup_dir.join(relative);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, source).unwrap();
+            }
+            let journal = backup.get(Path::new(NOTE_EDIT_JOURNAL_FILE)).unwrap();
+            for _ in 0..2 {
+                assert_eq!(
+                    crate::recover_pending_note_edit(&request.resolution)
+                        .unwrap_err()
+                        .exit_code(),
+                    5
+                );
+                assert_eq!(project_snapshot(&fixture.project), backup);
+            }
+            let saved: serde_json::Value = serde_json::from_slice(journal).unwrap();
+            match target {
+                "entities/core.md" => fs::remove_file(&target_path).unwrap(), // null preimage
+                PROJECT_STATE_FILE => {
+                    fs::write(&target_path, saved["state_before"].as_str().unwrap()).unwrap()
+                }
+                _ => {
+                    let id = format!("Projects/example/{target}");
+                    let projection = saved["projections"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|item| item["id"] == id)
+                        .unwrap();
+                    fs::write(&target_path, projection["before"].as_str().unwrap()).unwrap();
+                }
+            }
+            assert_eq!(
+                crate::recover_pending_note_edit(&request.resolution).unwrap(),
+                NoteEditRecovery::RolledBack
+            );
+            assert!(!fixture.project.join("entities/core.md").exists());
+            assert!(!fixture.project.join("entities/worker.md").exists());
+            assert_eq!(fs::read(fixture.project.join("index.md")).unwrap(), b"");
+            assert_eq!(fs::read(fixture.project.join("roadmap.md")).unwrap(), b"");
+            assert_eq!(
+                fs::read(fixture.project.join(PROJECT_STATE_FILE)).unwrap(),
+                render_empty_project_state()
+            );
+            validate_project(&request.resolution).unwrap();
+            assert_eq!(
+                crate::recover_pending_note_edit(&request.resolution).unwrap(),
+                NoteEditRecovery::None
+            );
+            assert_eq!(
+                backup.get(Path::new(target)).unwrap(),
+                b"external draft\r\n"
+            );
+            assert_eq!(project_snapshot(&backup_dir), backup_root);
+        }
+    }
+
+    #[test]
+    fn recovers_onboarding_after_child_exit_at_each_durable_publication() {
+        for stage in [
+            OnboardingPublicationStage::Journal,
+            OnboardingPublicationStage::Note(0),
+            OnboardingPublicationStage::Note(1),
+            OnboardingPublicationStage::Notes,
+            OnboardingPublicationStage::Index,
+            OnboardingPublicationStage::Roadmap,
+            OnboardingPublicationStage::State,
+        ] {
+            let fixture = Fixture::new(&format!("child-exit-{stage:?}"));
+            let request = crash_request(&fixture);
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "onboarding::tests::onboarding_publication_exit_child",
+                    "--nocapture",
+                ])
+                .env("AKASHA_ONBOARDING_CRASH_BASE", &fixture.base)
+                .env("AKASHA_ONBOARDING_CRASH_STAGE", format!("{stage:?}"))
+                .output()
+                .unwrap();
+            assert_eq!(
+                status.status.code(),
+                Some(73),
+                "child did not exit at {stage:?}: {status:?}"
+            );
+            let journal_path = fixture.project.join(NOTE_EDIT_JOURNAL_FILE);
+            let journal: serde_json::Value =
+                serde_json::from_slice(&fs::read(&journal_path).unwrap()).unwrap();
+            assert_eq!(journal["notes"].as_array().unwrap().len(), 2);
+            let expected_notes = match stage {
+                OnboardingPublicationStage::Journal => 0,
+                OnboardingPublicationStage::Note(0) => 1,
+                _ => 2,
+            };
+            for (index, note) in request.notes.iter().enumerate() {
+                let path = fixture.project.join("entities").join(&note.path);
+                if index < expected_notes {
+                    assert_eq!(fs::read(path).unwrap(), note.source.as_bytes());
+                } else {
+                    assert!(!path.exists());
+                }
+            }
+            let committed = stage == OnboardingPublicationStage::State;
+            let index_published = matches!(
+                stage,
+                OnboardingPublicationStage::Index
+                    | OnboardingPublicationStage::Roadmap
+                    | OnboardingPublicationStage::State
+            );
+            let roadmap_published = matches!(
+                stage,
+                OnboardingPublicationStage::Roadmap | OnboardingPublicationStage::State
+            );
+            assert_eq!(
+                fs::read_to_string(fixture.project.join("index.md")).unwrap(),
+                if index_published { &request.index } else { "" }
+            );
+            assert_eq!(
+                fs::read_to_string(fixture.project.join("roadmap.md")).unwrap(),
+                if roadmap_published {
+                    &request.roadmap
+                } else {
+                    ""
+                }
+            );
+            assert_eq!(
+                fs::read(fixture.project.join(PROJECT_STATE_FILE)).unwrap(),
+                journal[if committed {
+                    "state_after"
+                } else {
+                    "state_before"
+                }]
+                .as_str()
+                .unwrap()
+                .as_bytes()
+            );
+            assert_eq!(
+                crate::recover_pending_note_edit(&request.resolution).unwrap(),
+                if committed {
+                    NoteEditRecovery::Finalized
+                } else if expected_notes == 0 {
+                    NoteEditRecovery::Discarded
+                } else {
+                    NoteEditRecovery::RolledBack
+                }
+            );
+            for note in &request.notes {
+                let path = fixture.project.join("entities").join(&note.path);
+                if committed {
+                    assert_eq!(fs::read(path).unwrap(), note.source.as_bytes());
+                } else {
+                    assert!(!path.exists());
+                }
+            }
+            assert_eq!(
+                fs::read_to_string(fixture.project.join("index.md")).unwrap(),
+                if committed { &request.index } else { "" }
+            );
+            assert_eq!(
+                fs::read_to_string(fixture.project.join("roadmap.md")).unwrap(),
+                if committed { &request.roadmap } else { "" }
+            );
+            assert_eq!(
+                fs::read(fixture.project.join(PROJECT_STATE_FILE)).unwrap(),
+                journal[if committed {
+                    "state_after"
+                } else {
+                    "state_before"
+                }]
+                .as_str()
+                .unwrap()
+                .as_bytes()
+            );
+            assert!(!journal_path.exists());
+            validate_project(&request.resolution).unwrap();
+            let recovered = project_snapshot(&fixture.project);
+            assert_eq!(
+                crate::recover_pending_note_edit(&request.resolution).unwrap(),
+                NoteEditRecovery::None
+            );
+            assert_eq!(project_snapshot(&fixture.project), recovered);
+        }
+    }
+
+    #[test]
+    fn onboarding_publication_exit_child() {
+        let Some(base) = std::env::var_os("AKASHA_ONBOARDING_CRASH_BASE") else {
+            return;
+        };
+        let base = PathBuf::from(base);
+        // The parent owns cleanup. exit() deliberately bypasses unwinding and lock destructors.
+        let fixture = std::mem::ManuallyDrop::new(Fixture {
+            root: base.join("root"),
+            repository: base.join("repository"),
+            project: base.join("root/Projects/example"),
+            base,
+        });
+        let stage = std::env::var("AKASHA_ONBOARDING_CRASH_STAGE").unwrap();
+        apply_onboarding_batch_with_hook(&crash_request(&fixture), |published| {
+            if format!("{published:?}") == stage {
+                std::process::exit(73);
+            }
+        })
+        .expect("child publication before interruption");
+        panic!("requested publication stage was not reached");
+    }
+
+    fn crash_request(fixture: &Fixture) -> OnboardingBatchRequest {
+        let mut request = fixture.request();
+        request.notes.push(ProposedNote {
+            note_type: "entity".to_owned(),
+            path: PathBuf::from("worker.md"),
+            source: request.notes[0]
+                .source
+                .replace("entity: core", "entity: worker")
+                .replace("# Core", "# Worker"),
+        });
+        request.index =
+            "# Index\n\n[[Projects/example/entities/core]]\n[[Projects/example/entities/worker]]\n"
+                .to_owned();
+        request.roadmap = "# Roadmap\n\nReviewed empty task set.\n".to_owned();
+        request
+    }
+
+    fn project_snapshot(project: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        fn visit(base: &Path, directory: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+            for entry in fs::read_dir(directory).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if entry.file_type().unwrap().is_dir() {
+                    visit(base, &path, files);
+                } else {
+                    files.insert(
+                        path.strip_prefix(base).unwrap().to_path_buf(),
+                        fs::read(path).unwrap(),
+                    );
+                }
+            }
+        }
+        let mut files = BTreeMap::new();
+        visit(project, project, &mut files);
+        files
     }
 
     struct Fixture {

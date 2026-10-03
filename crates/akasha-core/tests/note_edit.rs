@@ -194,6 +194,63 @@ fn finalizes_a_fully_published_edit_and_rejects_unexpected_bytes() {
     assert!(fixture.journal().is_file());
 }
 
+#[test]
+fn operator_backup_and_exact_preimage_restore_allow_safe_recovery() {
+    let fixture = Fixture::new("operator-reconciliation");
+    let versions = fixture.successful_versions();
+    fs::write(fixture.state_path(), &versions.state_before).unwrap();
+    fixture.write_journal(&versions);
+    let external = b"External draft\r\nUnicode: \xce\xbb\r\n  trailing spaces  \r\n";
+    fs::write(fixture.note_path(), external).unwrap();
+
+    // The operator closes all writers, then backs up the complete root outside it.
+    let backup = fixture._temp.path().join("backup");
+    copy_tree(&fixture.root, &backup);
+    let journal = fs::read(fixture.journal()).unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            recover_pending_note_edit(&fixture.request)
+                .unwrap_err()
+                .exit_code(),
+            5
+        );
+        assert_eq!(fs::read(fixture.note_path()).unwrap(), external);
+        assert_eq!(fixture.state(), versions.state_before);
+        assert_eq!(fs::read(fixture.journal()).unwrap(), journal);
+    }
+
+    // Decode the JSON string as exact UTF-8; do not save its escaped JSON spelling.
+    let saved: serde_json::Value = serde_json::from_slice(&journal).unwrap();
+    fs::write(fixture.note_path(), saved["note_before"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        recover_pending_note_edit(&fixture.request).unwrap(),
+        NoteEditRecovery::Discarded
+    );
+    assert_eq!(fixture.note(), versions.note_before);
+    assert_eq!(fixture.state(), versions.state_before);
+    validate_project(&fixture.request).unwrap();
+    assert_eq!(
+        recover_pending_note_edit(&fixture.request).unwrap(),
+        NoteEditRecovery::None
+    );
+    assert_eq!(fs::read(backup.join(ENTITY_ID)).unwrap(), external);
+    assert_eq!(
+        fs::read(backup.join("Projects/example").join(NOTE_EDIT_JOURNAL_FILE)).unwrap(),
+        journal
+    );
+
+    // Reapply reviewed external content through the checked writer and a fresh baseline.
+    let reviewed = format!(
+        "{}\n{}",
+        fixture.note(),
+        std::str::from_utf8(external).unwrap()
+    );
+    replace_library_document(&fixture.request, ENTITY_ID, &fixture.note(), &reviewed).unwrap();
+    assert_eq!(fixture.note(), reviewed);
+    validate_project(&fixture.request).unwrap();
+    assert_eq!(fs::read(backup.join(ENTITY_ID)).unwrap(), external);
+}
+
 struct Versions {
     note_before: String,
     note_after: String,
