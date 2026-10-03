@@ -422,6 +422,10 @@ pub fn create_mutable_note(
     let operation = (|| {
         create_file_atomically(&destination, source.as_bytes())?;
         sync_parent(&destination, "sync the created mutable note")?;
+        #[cfg(test)]
+        crate::note_edit::crash_tests::interrupt_at(
+            crate::note_edit::crash_tests::Stage::PublishedNote,
+        );
         replace_file_if_unchanged(
             projection_path,
             projection_before,
@@ -433,10 +437,18 @@ pub fn create_mutable_note(
                 projection_path,
                 "sync the maintained projection replacement",
             )?;
+            #[cfg(test)]
+            crate::note_edit::crash_tests::interrupt_at(
+                crate::note_edit::crash_tests::Stage::PublishedProjection,
+            );
         }
         replace_file_if_unchanged(&state_path, &state_before, &state_after)
             .map_err(map_checked_replace)?;
         sync_parent(&state_path, "sync the project state replacement")?;
+        #[cfg(test)]
+        crate::note_edit::crash_tests::interrupt_at(
+            crate::note_edit::crash_tests::Stage::PublishedState,
+        );
         validate_project(request)?;
         complete_note_mutation_journal(&journal_path, &journal_source, &resolved.project_dir)?;
         Ok(result_for(recovery))

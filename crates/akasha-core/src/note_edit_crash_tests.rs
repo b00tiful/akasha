@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::*;
 use crate::ResolutionEnvironment;
+use crate::event::{capture_handoff, create_event};
+use crate::note_creation::create_mutable_note;
 use crate::onboarding::{OnboardingBatchRequest, ProposedNote, apply_onboarding_batch};
 
 const ENTITY: &str = "entities/core.md";
@@ -14,7 +16,7 @@ const ENTITY_ID: &str = "Projects/example/entities/core.md";
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Stage {
+pub(crate) enum Stage {
     PublishedJournal,
     PublishedNote,
     PublishedProjection,
@@ -52,10 +54,147 @@ thread_local! {
     static EXIT_STAGE: Cell<Option<Stage>> = const { Cell::new(None) };
 }
 
-pub(super) fn interrupt_at(stage: Stage) {
+pub(crate) fn interrupt_at(stage: Stage) {
     if EXIT_STAGE.get() == Some(stage) {
         // Deliberately bypass unwind and every lock/file/fixture destructor.
         std::process::exit(73);
+    }
+}
+
+#[test]
+fn recovers_event_and_handoff_after_real_publication_exits() {
+    check_lifecycle_publication_exits(&[
+        ("event", "events/sessions/recovery.md", None, 1),
+        ("handoff", "events/handoffs/recovery.md", None, 1),
+    ]);
+}
+
+#[test]
+fn recovers_mutable_creation_and_record_update_after_real_publication_exits() {
+    check_lifecycle_publication_exits(&[
+        (
+            "create-record",
+            "records/tasks/recovery.md",
+            Some("roadmap.md"),
+            2,
+        ),
+        ("create-entity", "entities/recovery.md", Some("index.md"), 2),
+        (
+            "update-record",
+            "records/tasks/active.md",
+            Some("roadmap.md"),
+            2,
+        ),
+    ]);
+}
+
+fn check_lifecycle_publication_exits(cases: &[(&str, &str, Option<&str>, u32)]) {
+    for &(action, note, projection, schema) in cases {
+        for &stage in Stage::PUBLICATION {
+            if projection.is_none() && stage == Stage::PublishedProjection {
+                continue;
+            }
+            let fixture = Fixture::new();
+            fixture.install_lifecycle_templates();
+            let before = snapshot(&fixture.project);
+            fixture.publish_lifecycle(action).unwrap();
+            let after = snapshot(&fixture.project);
+            assert_ne!(
+                before[Path::new(PROJECT_STATE_FILE)],
+                after[Path::new(PROJECT_STATE_FILE)]
+            );
+            assert!(
+                after[Path::new(note)].ends_with("Exact Δ text with trailing spaces  ".as_bytes())
+            );
+            assert!(
+                after[Path::new(note)]
+                    .windows(2)
+                    .any(|bytes| bytes == b"\r\n")
+            );
+            let text = |image: &Snapshot, path: &str| {
+                String::from_utf8(image[Path::new(path)].clone()).unwrap()
+            };
+            let journal = render_journal(&NoteEditJournal {
+                schema_version: schema,
+                project: "example".into(),
+                id: format!("Projects/example/{note}"),
+                note_before: before
+                    .get(Path::new(note))
+                    .map(|source| String::from_utf8(source.clone()).unwrap()),
+                note_after: text(&after, note),
+                projection: projection.map(|path| JournalProjection {
+                    id: format!("Projects/example/{path}"),
+                    before: text(&before, path),
+                    after: text(&after, path),
+                }),
+                state_before: text(&before, PROJECT_STATE_FILE),
+                state_after: text(&after, PROJECT_STATE_FILE),
+            })
+            .unwrap();
+            fixture.restore(&before);
+            fixture.run_child(schema, action, stage);
+
+            let committed = stage == Stage::PublishedState;
+            let mut interrupted = before.clone();
+            if stage != Stage::PublishedJournal {
+                interrupted.insert(note.into(), after[Path::new(note)].clone());
+            }
+            if matches!(stage, Stage::PublishedProjection | Stage::PublishedState)
+                && let Some(path) = projection
+            {
+                interrupted.insert(path.into(), after[Path::new(path)].clone());
+            }
+            if committed {
+                interrupted.insert(
+                    PROJECT_STATE_FILE.into(),
+                    after[Path::new(PROJECT_STATE_FILE)].clone(),
+                );
+            }
+            interrupted.insert(NOTE_EDIT_JOURNAL_FILE.into(), journal);
+            assert_eq!(
+                snapshot(&fixture.project),
+                interrupted,
+                "{action}/{stage:?}"
+            );
+
+            // An external edit after interruption must never be removed or overwritten.
+            if stage == Stage::PublishedNote {
+                let path = projection.unwrap_or(note);
+                fs::write(
+                    fixture.project.join(path),
+                    "external Ω bytes\r\n  retained  ",
+                )
+                .unwrap();
+                let conflict = snapshot(&fixture.project);
+                for _ in 0..2 {
+                    assert_eq!(
+                        recover_pending_note_edit(&fixture.request)
+                            .unwrap_err()
+                            .exit_code(),
+                        5
+                    );
+                    assert_eq!(snapshot(&fixture.project), conflict);
+                }
+                fs::write(fixture.project.join(path), &interrupted[Path::new(path)]).unwrap();
+            }
+            fixture.assert_recovered(
+                if committed {
+                    NoteEditRecovery::Finalized
+                } else if stage == Stage::PublishedJournal {
+                    NoteEditRecovery::Discarded
+                } else {
+                    NoteEditRecovery::RolledBack
+                },
+                if committed { &after } else { &before },
+            );
+            if committed && action != "update-record" {
+                assert_eq!(fixture.publish_lifecycle(action).unwrap_err(), 5);
+            } else if !committed {
+                fixture.publish_lifecycle(action).unwrap();
+            }
+            assert_eq!(snapshot(&fixture.project), after);
+            validate_project(&fixture.request).unwrap();
+        }
     }
 }
 
@@ -249,7 +388,7 @@ fn mutation_exit_child() {
         "recover" => {
             recover_pending_note_edit(&fixture.request).unwrap();
         }
-        _ => panic!("unknown child operation"),
+        action => fixture.publish_lifecycle(action).unwrap(),
     }
     panic!("requested interruption was not reached");
 }
@@ -286,6 +425,31 @@ impl Fixture {
         // Include the persistent lock file in both exact snapshots.
         drop(ProjectWriteLock::acquire(&fixture.project).unwrap());
         fixture
+    }
+
+    fn install_lifecycle_templates(&self) {
+        for (name, metadata) in [
+            (
+                "session",
+                "project: {{project}}\r\ntype: {{type}}\r\ndate: 2026-10-03",
+            ),
+            (
+                "handoff",
+                "project: {{project}}\r\ntype: {{type}}\r\ndate: 2026-10-03",
+            ),
+            (
+                "task",
+                "project: {{project}}\r\ntype: {{type}}\r\nstatus: active\r\ncreated: 2026-10-03\r\nupdated: 2026-10-03",
+            ),
+            (
+                "entity",
+                "entity: recovery\r\nkind: subsystem\r\nstatus: active\r\nreviewed: 2026-10-03",
+            ),
+        ] {
+            fs::write(self.project.join(format!("templates/{name}.md")),
+                format!("---\r\nschema_version: 1\r\n{metadata}\r\n---\r\n\r\n# Recovery Δ\r\n\r\n{{{{body}}}}"),
+            ).unwrap();
+        }
     }
 
     fn from_base(base: PathBuf) -> Self {
@@ -340,6 +504,61 @@ impl Fixture {
                 }).unwrap();
             }
             _ => panic!("unsupported publication fixture"),
+        }
+    }
+
+    fn publish_lifecycle(&self, action: &str) -> Result<(), u8> {
+        let body = "Exact Δ text with trailing spaces  ";
+        let fields = BTreeMap::from([("body".into(), body.into())]);
+        let projection = |path: &str| {
+            format!(
+                "{}\r\nReviewed Δ projection.  ",
+                fs::read_to_string(self.project.join(path)).unwrap()
+            )
+        };
+        match action {
+            "event" => create_event(&self.request, "session", Path::new("recovery.md"), &fields)
+                .map(|_| ())
+                .map_err(|error| error.exit_code()),
+            "handoff" => capture_handoff(&self.request, Path::new("recovery.md"), &fields)
+                .map(|_| ())
+                .map_err(|error| error.exit_code()),
+            "create-record" | "create-entity" => {
+                let (note_type, path) = if action == "create-record" {
+                    ("task", "roadmap.md")
+                } else {
+                    ("entity", "index.md")
+                };
+                create_mutable_note(
+                    &self.request,
+                    note_type,
+                    Path::new("recovery.md"),
+                    &fields,
+                    &projection(path),
+                )
+                .map(|_| ())
+                .map_err(|error| error.exit_code())
+            }
+            "update-record" => {
+                let before =
+                    fs::read_to_string(self.project.join("records/tasks/active.md")).unwrap();
+                let after = format!(
+                    "{}\r\n{body}",
+                    before
+                        .replace("status: active", "status: done")
+                        .replace('\n', "\r\n")
+                );
+                update_record(
+                    &self.request,
+                    "Projects/example/records/tasks/active.md",
+                    &before,
+                    &after,
+                    &projection("roadmap.md"),
+                )
+                .map(|_| ())
+                .map_err(|error| error.exit_code())
+            }
+            _ => panic!("unknown lifecycle operation"),
         }
     }
 

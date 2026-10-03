@@ -637,15 +637,21 @@ pub fn update_record(
             )
             .map_err(map_checked_replace)?;
             sync_replacement_directory(&path, "sync the canonical record replacement")?;
+            #[cfg(test)]
+            crash_tests::interrupt_at(crash_tests::Stage::PublishedNote);
         }
         if roadmap_changed {
             replace_file_if_unchanged(&roadmap_path, &roadmap_before, roadmap_source.as_bytes())
                 .map_err(map_checked_replace)?;
             sync_replacement_directory(&roadmap_path, "sync the roadmap replacement")?;
+            #[cfg(test)]
+            crash_tests::interrupt_at(crash_tests::Stage::PublishedProjection);
         }
         replace_file_if_unchanged(&state_path, &state_before, &state_after)
             .map_err(map_checked_replace)?;
         sync_replacement_directory(&state_path, "sync the project state replacement")?;
+        #[cfg(test)]
+        crash_tests::interrupt_at(crash_tests::Stage::PublishedState);
         validate_project(request)?;
         complete_note_mutation_journal(&journal_path, &journal_source, &resolved.project_dir)?;
         Ok(result_for(recovery))
@@ -1664,4 +1670,4 @@ fn map_checked_replace(error: CheckedReplaceError) -> NoteEditError {
 
 #[cfg(test)]
 #[path = "note_edit_crash_tests.rs"]
-mod crash_tests;
+pub(crate) mod crash_tests;
