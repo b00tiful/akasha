@@ -115,7 +115,40 @@ def check_screen_observer():
 
 
 def check(binary, root, agent_home, term, full=False, expect_restore=False,
-          keyboard=False, size=(32, 110), env_no_color=False, split_paste_start=False):
+          keyboard=False, size=(32, 110), env_no_color=False, split_paste_start=False,
+          recovery_start=False):
+    def snapshot():
+        return {p: p.read_bytes() for p in root.rglob('*') if p.is_file()}
+
+    def stage_recovery():
+        # Derive authentic note/state images through the checked product writer.
+        identity = 'Projects/example/entities/core.md'
+        note = root / identity
+        state = root / 'Projects/example/.akasha-state.toml'
+        before, state_before = note.read_bytes(), state.read_bytes()
+        after = before + '\nInterrupted recovery: Привет 世界  \n'.encode()
+        expected = root.parent / 'recovery-expected.md'
+        replacement = root.parent / 'recovery-replacement.md'
+        expected.write_bytes(before)
+        replacement.write_bytes(after)
+        subprocess.run([str(binary), '--root', str(root), '--project', 'example',
+                        'update-entity', identity, '--expected', str(expected),
+                        '--replacement', str(replacement), '--index',
+                        str(root / 'Projects/example/index.md')],
+                       check=True, stdout=subprocess.DEVNULL)
+        state_after = state.read_bytes()
+        state.write_bytes(state_before)
+        note.write_bytes('External editor: 世界  \r\n'.encode())
+        journal = root / 'Projects/example/.akasha-edit-journal.json'
+        journal.write_text(json.dumps(dict(schema_version=1, project='example', id=identity,
+                                          note_before=before.decode(), note_after=after.decode(),
+                                          state_before=state_before.decode(), state_after=state_after.decode())))
+        journal.chmod(0o600)
+        return note, journal, before, after
+
+    if recovery_start:
+        recovery_note, journal, recovery_before, recovery_after = stage_recovery()
+        interrupted = snapshot()
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', *size, 0, 0))
     before = termios.tcgetattr(slave)
@@ -171,6 +204,18 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             if process.poll() is not None:
                 break
         raise AssertionError(f'{term}: TUI did not finish startup; current screen:\n{screen.text()}')
+    def wait_for_refusal(seconds=8):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            drain(0.05)
+            lines = screen.text().splitlines()
+            if (len(lines) > 1 and 'AKASHA' in lines[1]
+                    and not lines[1].rstrip().endswith('working')
+                    and ('Operation failed' in screen.text() or 'external change' in lines[1])):
+                return
+            if process.poll() is not None:
+                break
+        raise AssertionError(f'{term}: stale apply did not finish refusing; current screen:\n{screen.text()}')
     def send(data):
         os.write(master, data)
         drain()
@@ -216,7 +261,22 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
         wait_for(b'REVIEW EXACT ' + label)
 
     try:
-        wait_for(b'Library loaded')
+        if recovery_start:
+            wait_for(b'RECOVERY INSPECTION')
+            wait_for(b'recovery')
+            assert snapshot() == interrupted, 'initial refusal must preserve all files'
+            for value in ['recovery', 'refresh']:
+                command(value)
+                wait_for(b'RECOVERY INSPECTION')
+                assert snapshot() == interrupted, 'inspection and retry must preserve conflict bytes'
+            # Only the fixture operator reconciles bytes. The TUI then runs core rollback.
+            recovery_note.write_bytes(recovery_after)
+            command('refresh')
+            wait_for(b'Core recovery completed: RolledBack')
+            wait_for_ready()
+            assert recovery_note.read_bytes() == recovery_before and not journal.exists()
+        else:
+            wait_for(b'Library loaded')
         if expect_restore:
             # The note path is visible in its selected list row before the
             # asynchronous source load completes. Wait for the reader frame.
@@ -589,7 +649,9 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
                                    check=True, stdout=subprocess.DEVNULL)
                     external = {p: p.read_bytes() for p in root.rglob('*') if p.is_file()}
                     send(b'\x13')
-                    wait_for(b'Operation failed')
+                    # A queued background check can replace the one-row error toast.
+                    # Require completed foreground work, retained exact review and bytes below.
+                    wait_for_refusal()
                     wait_for(b'REVIEW EXACT INDEX')
                     assert {p: p.read_bytes() for p in root.rglob('*') if p.is_file()} == external
                     command('discard')
@@ -682,6 +744,62 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
                                 f'---\n\n# Mutable {term}\n\n{body}\nRevised mutable field.\n')
                     assert destination.read_bytes() == expected.encode(), 'published note must match exact multiline review'
                     assert projection_path.read_bytes() == before_review[projection_path]
+            # Recovery inspection stays read-only even while a source draft is active.
+            command('open Projects/example/entities/core.md')
+            wait_for(b'READING')
+            command('edit')
+            wait_for(b'SOURCE')
+            send(b'\x1b[1;5F')
+            retained_draft = f'\nRetained recovery draft {term}: Привет 世界  \n'.encode()
+            send(b'\x1b[200~' + retained_draft + b'\x1b[201~')
+            before_inspection = snapshot()
+            command('recovery', from_editor=True)
+            wait_for(b'RECOVERY INSPECTION')
+            send(b'\x13')
+            assert snapshot() == before_inspection
+            command('refresh')
+            assert snapshot() == before_inspection and process.poll() is None
+            command('back')
+            wait_for(b'SOURCE')
+            command('discard', from_editor=True)
+            assert snapshot() == before_inspection, 'discard must preserve canonical files'
+
+            # A genuine refused save retains the editor and closes stale library rows.
+            command('edit')
+            wait_for(b'SOURCE')
+            send(b'\x1b[1;5F')
+            send(b'\x1b[200~' + retained_draft + b'\x1b[201~')
+            note, journal, recovery_source_before, recovery_source_after = stage_recovery()
+            interrupted = snapshot()
+            command('save', from_editor=True)
+            wait_for(b'RECOVERY INSPECTION')
+            assert snapshot() == interrupted
+            command('refresh')
+            command('quit')
+            assert snapshot() == interrupted and process.poll() is None
+            command('back')
+            wait_for(b'SOURCE')
+            # The original draft and undo stack remain usable after leaving inspection.
+            # Save was submitted from the prompt; returning restores that exact focus.
+            send(b'\x1b[Z')  # Prompt -> retained source editor.
+            send(b'\x1b[1;5F')
+            if size[1] <= 40:
+                # The one-row editor viewport shows the trailing blank line at Ctrl-End.
+                send(b'\x1b[A\x1b[H')  # Previous logical line, then its beginning.
+            wait_for(b'Retained recovery draft')
+            send(b'\x1b[200~\nAfter inspection.\x1b[201~')
+            send(b'\x1a')
+            command('discard', from_editor=True)
+            wait_for(b'RECOVERY INSPECTION')
+            assert snapshot() == interrupted
+            note.write_bytes(recovery_source_after)
+            command('refresh')
+            wait_for(b'Core recovery completed: RolledBack')
+            wait_for_ready()
+            assert note.read_bytes() == recovery_source_before and not journal.exists()
+            subprocess.run([str(binary), '--root', str(root), '--project', 'example',
+                            'validate'], check=True, stdout=subprocess.DEVNULL)
+
             # Preserve the established cross-launch task navigation checkpoint.
             command('open Projects/example/records/tasks/pty-created.md')
             wait_for(b'READING')
@@ -694,9 +812,9 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
         assert b'\x1b[?1006l' in output
         assert termios.tcgetattr(slave) == before, 'raw terminal attributes must be restored exactly'
         print(f'PASS TERM={term} {size[1]}x{size[0]}: startup, input, clean exit, terminal restoration' +
-              ('; animation, Unicode paste, dirty guard, checked save, search, create/lifecycle forms, integration inspection/cancel/confirm/apply/remove, resize' if full else
+              ('; animation, Unicode paste, dirty guard, checked save, search, create/lifecycle forms, recovery inspection/refusal/retry, integration inspection/cancel/confirm/apply/remove, resize' if full else
                '; keyboard-only, fragmented Unicode paste, dirty resize, save/discard, search, quiet refresh, Ctrl-C' if keyboard else
-               '; ASCII, no-color, reduced motion'))
+               '; ASCII, no-color, reduced motion' + ('; initial recovery refusal/retry' if recovery_start else '')))
     finally:
         if process.poll() is None:
             process.terminate()
@@ -739,6 +857,11 @@ def main():
                 check(args.binary.resolve(), root, agent_home, term, keyboard=True,
                       size=size, env_no_color=env_no_color,
                       split_paste_start=args.split_paste_start)
+        if args.profile == 'all' and not args.split_paste_start:
+            for term, size in [('xterm-256color', (32, 110)), ('screen-256color', (12, 40)),
+                               ('tmux-256color', (24, 80))]:
+                check(args.binary.resolve(), root, agent_home, term, size=size,
+                      recovery_start=True)
         state = temp / 'state/akasha/tui-navigation-v1.json'
         assert state.is_file(), 'clean exit must publish navigation state'
         assert state.stat().st_mode & 0o777 == 0o600, 'navigation state must be private'

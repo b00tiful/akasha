@@ -1,14 +1,20 @@
 # Recovering a refused project mutation
 
-Use this procedure when the desktop reports a pending `.akasha-edit-journal.json`
+Use this procedure when the desktop or TUI reports a pending `.akasha-edit-journal.json`
 and refuses to load the selected project because a journaled file has unexpected
 bytes. It covers shared journal versions 1, 2 and 3 on the tested Linux local
 filesystem. Root initialization and client instruction/hook journals have separate
 contracts.
 
-The desktop's load and retry actions can roll back or finalize a transaction.
-Inspection of journal presence only reports its location; it does not establish
-that the project is consistent. The named CLI currently has no recovery command.
+The desktop's load/retry and the TUI's F5/`refresh` actions can roll back or finalize
+a transaction. The TUI's `/recovery` inspects journal presence without writing or
+reading its contents and preserves unsaved buffers underneath the diagnostic view.
+Esc returns to retained drafts; `/discard` explicitly cancels them without writing.
+F5 refuses while a draft or unfinished form remains. Drafts are only in memory:
+preserve wanted text separately before closing the process or discarding.
+Inspection reports a point-in-time location/presence; it does not establish that
+the project is consistent or clear a refused load. The named CLI currently has no
+recovery command.
 
 ## 1. Stop writers and preserve the evidence
 
@@ -94,7 +100,8 @@ file and does not apply any restoration.
 ## 3. Retry recovery, validate, and reapply reviewed work
 
 1. With external writers still stopped, reopen Akasha, select the same root and
-   project, and submit the library load. The existing core recovery runs under
+   project, and submit the library load (F5/`refresh` in a clean TUI session).
+   The existing core recovery runs under
    the project lock. An entirely untouched transaction is discarded; a partial
    transaction rolls back in reverse publication order; a complete, valid
    after-image is finalized. Restoring a conflicting artifact to its before
@@ -128,6 +135,12 @@ projections/state. Onboarding also has child-process exit checks after synced
 journal creation, each of two notes, the note batch, index, roadmap and state.
 Recovery in the parent proves the crashed child's lock is released without
 destructors; a second recovery is a byte-preserving no-op.
+
+TUI acceptance additionally verifies metadata-only inspection over retained source/form drafts,
+repeated refusal with every fixture file preserved, explicit discard without writes, and core
+rollback/revalidation after operator reconciliation. Nine Linux PTY scenarios pass, including
+keyboard-only use and initial refused loads at 40x12, with exact terminal restoration. Background
+observations of active writers' transient journals retain the view and signal external change.
 
 These tests do not simulate physical power loss, a crash inside a filesystem
 write/sync, or concurrent external writers during manual reconciliation. They

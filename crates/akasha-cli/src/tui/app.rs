@@ -14,14 +14,15 @@ use akasha_core::{
     LibraryBook, LibraryDocument, LibraryProjection, LibraryScope, LibrarySearchResult,
     MutableNoteCreationForm, MutableNoteCreationPreview, MutableNoteCreationResult,
     MutableNoteLifecycleForm, MutableNoteLifecyclePreview, MutableNoteLifecycleResult, NoteClass,
-    ResolveRequest, SessionHookWiringPlan, apply_event_creation,
+    PendingNoteEditInspection, ResolveRequest, SessionHookWiringPlan, apply_event_creation,
     apply_mutable_note_creation_preview, apply_mutable_note_lifecycle_preview, assemble_context,
     assemble_session_breadcrumb, build_library_projection, capture_handoff, create_event,
-    load_library_document, prepare_agent_wiring, prepare_event_creation, prepare_handoff_creation,
-    prepare_mutable_note_creation, prepare_mutable_note_lifecycle, prepare_session_hook_wiring,
-    preview_event_creation, preview_mutable_note_creation, preview_mutable_note_lifecycle,
-    recover_pending_note_edit, render_context_markdown, render_session_breadcrumb,
-    replace_library_document, resolve_note_template, search_library, validate_project,
+    inspect_pending_note_edit, load_library_document, prepare_agent_wiring, prepare_event_creation,
+    prepare_handoff_creation, prepare_mutable_note_creation, prepare_mutable_note_lifecycle,
+    prepare_session_hook_wiring, preview_event_creation, preview_mutable_note_creation,
+    preview_mutable_note_lifecycle, recover_pending_note_edit, render_context_markdown,
+    render_session_breadcrumb, replace_library_document, resolve_note_template, search_library,
+    validate_project,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -44,6 +45,11 @@ pub(super) struct Suggestion {
 }
 
 const COMMANDS: &[Completion] = &[
+    Completion {
+        command: "recovery",
+        argument: "",
+        description: "Inspect pending recovery without writing",
+    },
     Completion {
         command: "integration",
         argument: "apply|remove instructions|hook codex|claude [HOME]",
@@ -202,7 +208,7 @@ fn prompt_area(text: String) -> TextArea<'static> {
     prompt_area_with_placeholder(text, PROMPT_PLACEHOLDER)
 }
 
-pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       edit and review the open record/entity and its projection\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff         guided multiline handoff authoring and exact review\nhandoff PATH | NAME=VALUE | ...\n                inline capture from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE      guided multiline event authoring and exact review\nevent TYPE PATH | NAME=VALUE | ...\n                inline configured immutable event creation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\nconfirm PLAN_ID authorize the displayed integration plan\nrefresh         reload data (or press F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and lifecycle forms show exact configured templates and\nmaintained projections. Creation and lifecycle use Ctrl-N to review the exact note and projection\nbefore Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. All guided template fields support multiline text;\nCtrl-N/Ctrl-P navigate and Ctrl-S publishes only after exact source review.\nIntegration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nOpen from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
+pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       edit and review the open record/entity and its projection\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff         guided multiline handoff authoring and exact review\nhandoff PATH | NAME=VALUE | ...\n                inline capture from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE      guided multiline event authoring and exact review\nevent TYPE PATH | NAME=VALUE | ...\n                inline configured immutable event creation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\nconfirm PLAN_ID authorize the displayed integration plan\nrecovery        inspect journal presence without writing; Esc returns\nrefresh         retry core recovery and reload validated data (F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and lifecycle forms show exact configured templates and\nmaintained projections. Creation and lifecycle use Ctrl-N to review the exact note and projection\nbefore Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. All guided template fields support multiline text;\nCtrl-N/Ctrl-P navigate and Ctrl-S publishes only after exact source review.\nIntegration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nOpen from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Focus {
@@ -305,6 +311,7 @@ pub(super) struct RefreshCheck {
 
 pub(super) enum Job {
     Load(ResolveRequest),
+    InspectRecovery(ResolveRequest),
     Check(ResolveRequest, Box<LibraryProjection>, Vec<WatchedSource>),
     Open(ResolveRequest, String),
     Search(ResolveRequest, String, Option<LibraryScope>),
@@ -339,7 +346,13 @@ pub(super) enum Job {
     CommitIntegration(IntegrationOperation, String),
 }
 pub(super) enum Response {
-    Loaded(ResolveRequest, Box<LibraryProjection>),
+    RecoveryInspected(Result<PendingNoteEditInspection, String>),
+    RecoveryRequired(RecoveryNotice),
+    Loaded(
+        ResolveRequest,
+        Box<LibraryProjection>,
+        akasha_core::NoteEditRecovery,
+    ),
     Checked(Result<RefreshCheck, String>),
     Opened(LibraryDocument),
     Found(LibrarySearchResult),
@@ -359,6 +372,31 @@ pub(super) enum Response {
 }
 pub(super) type WorkResult = Result<Response, String>;
 
+pub(super) struct RecoveryNotice {
+    inspection: Result<PendingNoteEditInspection, String>,
+    failure: Option<String>,
+}
+
+impl RecoveryNotice {
+    pub fn text(&self) -> String {
+        let details = match &self.inspection {
+            Ok(inspection) => format!(
+                "Project: {}\nJournal: {}\nPending: {}",
+                inspection.project,
+                inspection.journal_path.display(),
+                if inspection.pending { "yes" } else { "no" }
+            ),
+            Err(error) => format!("Journal inspection failed: {error}"),
+        };
+        let failure = self.failure.as_ref().map_or(String::new(), |error| {
+            format!("\n\nOperation failed: {error}")
+        });
+        format!(
+            "{details}\n\nInspection changes no files and does not read journal contents.\n\nIf recovery refused: stop other writers and make a private backup of the complete data root. Follow docs/recovery.md to inspect and reconcile exact bytes. Keep the journal; Akasha never chooses between conflicting versions.\n\nDrafts remain in memory. Esc returns to them; /discard explicitly cancels them. After reconciliation and resolving drafts, F5 or /refresh retries core recovery and reloads validated data.\n\n{failure}"
+        )
+    }
+}
+
 pub(super) fn worker() -> (Sender<Job>, Receiver<WorkResult>) {
     let (send, jobs) = mpsc::channel();
     let (results, receive) = mpsc::channel();
@@ -373,21 +411,76 @@ pub(super) fn worker() -> (Sender<Job>, Receiver<WorkResult>) {
 }
 
 fn execute_job(job: Job) -> WorkResult {
+    let request = match &job {
+        Job::Load(request)
+        | Job::Open(request, _)
+        | Job::Search(request, _, _)
+        | Job::Context(request)
+        | Job::Breadcrumb(request)
+        | Job::CaptureHandoff(request, _, _)
+        | Job::Template(request, _)
+        | Job::CreateEvent(request, _, _, _)
+        | Job::PrepareEvent(request, _)
+        | Job::ApplyEvent(request, _)
+        | Job::Validate(request)
+        | Job::Save(request, _, _, _)
+        | Job::PrepareCreate(request, _)
+        | Job::Create(request, _)
+        | Job::PrepareLifecycle(request, _)
+        | Job::PreviewLifecycle(request, _, _, _)
+        | Job::UpdateLifecycle(request, _)
+        | Job::Check(request, _, _) => Some(request.clone()),
+        _ => None,
+    };
+    let checking = matches!(&job, Job::Check(..));
+    let result = execute_job_inner(job);
+    // Journal presence is a point-in-time observation; a live writer may remove it
+    // before this response arrives. Background checks signal change, not refused recovery.
+    if checking {
+        return result;
+    }
+    let failure = result.as_ref().err();
+    if let (Some(request), Some(error)) = (request, failure) {
+        let inspection = match inspect_pending_note_edit(&request) {
+            Err(akasha_core::NoteEditError::Resolve(_)) => return result,
+            inspection => inspection.map_err(|error| error.to_string()),
+        };
+        if !inspection
+            .as_ref()
+            .is_ok_and(|inspection| !inspection.pending)
+        {
+            return Ok(Response::RecoveryRequired(RecoveryNotice {
+                inspection,
+                failure: Some(error.clone()),
+            }));
+        }
+    }
+    result
+}
+
+fn execute_job_inner(job: Job) -> WorkResult {
     let err = |error: &dyn std::fmt::Display| error.to_string();
     match job {
+        Job::InspectRecovery(request) => Ok(Response::RecoveryInspected(
+            inspect_pending_note_edit(&request).map_err(|error| err(&error)),
+        )),
         Job::PrepareIntegration(operation) => operation.prepare()
             .map(|review| Response::IntegrationPrepared(Box::new(review))),
         Job::CommitIntegration(operation, plan_id) =>
             Ok(Response::IntegrationCommitted(operation.commit(&plan_id))),
         Job::Load(mut request) => {
-            recover_pending_note_edit(&request).map_err(|e| err(&e))?;
+            let recovery = recover_pending_note_edit(&request).map_err(|e| err(&e))?;
             let projection = build_library_projection(&request).map_err(|e| err(&e))?;
             request.root_override = Some(projection.root.clone());
             request.project_override = Some(projection.selected_project.clone());
-            Ok(Response::Loaded(request, Box::new(projection)))
+            Ok(Response::Loaded(request, Box::new(projection), recovery))
         }
         Job::Check(mut request, previous, watched) => {
             let checked = (|| {
+                let inspection = inspect_pending_note_edit(&request).map_err(|e| err(&e))?;
+                if inspection.pending {
+                    return Err("A pending journal was observed. Let active writers finish, then inspect /recovery or press F5 after resolving drafts.".into());
+                }
                 let projection = build_library_projection(&request).map_err(|e| err(&e))?;
                 request.root_override = Some(projection.root.clone());
                 request.project_override = Some(projection.selected_project.clone());
@@ -629,6 +722,9 @@ pub(super) struct App {
     pub busy: bool,
     pub checking: bool,
     pub external_change_pending: bool,
+    pub recovery: Option<RecoveryNotice>,
+    pub recovery_visible: bool,
+    pub recovery_blocked: bool,
     pub quit: bool,
     pub no_motion: bool,
     pub ascii: bool,
@@ -648,6 +744,7 @@ pub(super) struct App {
     workflow: Option<Workflow>,
     integration_review: Option<IntegrationReview>,
     pending_open: Option<String>,
+    recovery_return: Option<(Focus, u16, TextArea<'static>)>,
     jobs: Sender<Job>,
 }
 
@@ -683,6 +780,9 @@ impl App {
             busy: false,
             checking: false,
             external_change_pending: false,
+            recovery: None,
+            recovery_visible: false,
+            recovery_blocked: false,
             quit: false,
             no_motion,
             ascii,
@@ -702,12 +802,55 @@ impl App {
             workflow: None,
             integration_review: None,
             pending_open: None,
+            recovery_return: None,
             jobs,
         }
     }
 
     pub fn load(&mut self) {
         self.submit(Job::Load(self.request.clone()));
+    }
+    fn show_recovery(&mut self) {
+        if !self.recovery_visible {
+            let prompt = std::mem::replace(&mut self.prompt, prompt_area(String::new()));
+            self.recovery_return = Some((self.focus, self.scroll, prompt));
+            self.prompt_changed();
+        }
+        self.recovery_visible = true;
+        self.scroll = 0;
+        self.focus = Focus::Reader;
+    }
+    fn hide_recovery(&mut self) {
+        self.recovery_visible = false;
+        if let Some((focus, scroll, prompt)) = self.recovery_return.take() {
+            self.focus = focus;
+            self.scroll = scroll;
+            self.prompt = prompt;
+            self.prompt_changed();
+        }
+    }
+    fn finish_recovery_discard(&mut self) {
+        if self.recovery_blocked {
+            self.close_reader();
+            self.show_recovery();
+        }
+    }
+    fn require_recovery(&mut self, notice: RecoveryNotice) {
+        self.recovery = Some(notice);
+        self.recovery_blocked = true;
+        self.external_change_pending = true;
+        self.projection = None;
+        self.rows.clear();
+        self.title = "LIBRARY CLOSED".into();
+        self.list.select(None);
+        self.navigation.clear();
+        self.pending_open = None;
+        self.restored_navigation = None;
+        if !self.dirty() {
+            self.close_reader();
+        }
+        self.show_recovery();
+        self.message("Recovery required. Library closed; drafts retained. Inspect /recovery, reconcile exact bytes, then resolve drafts and press F5.");
     }
     pub fn restore_navigation(&mut self, state: NavigationState) {
         self.restored_navigation = Some(state);
@@ -772,7 +915,12 @@ impl App {
         Some(NavigationState::new(&projection.root, location))
     }
     pub fn check_external_changes(&mut self) -> bool {
-        if self.busy || self.checking || self.external_change_pending {
+        if self.busy
+            || self.checking
+            || self.external_change_pending
+            || self.recovery_visible
+            || self.recovery_blocked
+        {
             return false;
         }
         let Some(projection) = self.projection.clone() else {
@@ -867,6 +1015,9 @@ impl App {
         self.integration_review.is_some()
     }
     pub fn creation_input_active(&self) -> bool {
+        if self.recovery_visible {
+            return false;
+        }
         matches!(
             self.workflow,
             Some(Workflow::Creation(ref form)) if form.stage == CreationStage::Path
@@ -910,6 +1061,9 @@ impl App {
         }
     }
     pub fn active_editor(&self) -> Option<&Editor> {
+        if self.recovery_visible {
+            return None;
+        }
         match &self.workflow {
             Some(Workflow::Event(form)) => match form.stage {
                 EventStage::Field(index) => Some(&form.fields[index].1),
@@ -927,6 +1081,9 @@ impl App {
         }
     }
     pub fn active_editor_mut(&mut self) -> Option<&mut Editor> {
+        if self.recovery_visible {
+            return None;
+        }
         match &mut self.workflow {
             Some(Workflow::Event(form)) => match form.stage {
                 EventStage::Field(index) => Some(&mut form.fields[index].1),
@@ -1623,6 +1780,10 @@ impl App {
     }
 
     fn edit(&mut self) {
+        if self.recovery_visible {
+            self.message("Recovery inspection is read-only; Esc returns to the retained draft.");
+            return;
+        }
         if self.busy {
             return;
         }
@@ -1652,6 +1813,10 @@ impl App {
         self.focus = Focus::Reader;
     }
     fn save(&mut self) {
+        if self.recovery_visible || self.recovery_blocked {
+            self.message("Resolve pending recovery first. Drafts are retained; Esc returns, /discard cancels, then F5 retries.");
+            return;
+        }
         if self.integration_review.is_some() {
             self.message(
                 "Review the integration patch, then use /confirm with its complete plan ID.",
@@ -1722,6 +1887,27 @@ impl App {
             self.busy = false;
         }
         match response {
+            Ok(Response::RecoveryInspected(inspection)) => {
+                let blocked = !inspection
+                    .as_ref()
+                    .is_ok_and(|inspection| !inspection.pending);
+                let notice = RecoveryNotice {
+                    inspection,
+                    failure: self
+                        .recovery
+                        .as_mut()
+                        .and_then(|notice| notice.failure.take()),
+                };
+                if blocked {
+                    self.require_recovery(notice);
+                } else {
+                    self.recovery = Some(notice);
+                    self.show_recovery();
+                }
+            }
+            Ok(Response::RecoveryRequired(notice)) => {
+                self.require_recovery(notice);
+            }
             Ok(Response::IntegrationPrepared(review)) => {
                 self.body_title = "INTEGRATION REVIEW".into();
                 self.body = review.body.clone();
@@ -1745,7 +1931,11 @@ impl App {
                 self.focus = Focus::Reader;
             }
             Err(error) => self.message(&format!("Operation failed: {error}")),
-            Ok(Response::Loaded(request, projection)) => {
+            Ok(Response::Loaded(request, projection, recovery)) => {
+                self.recovery = None;
+                self.recovery_visible = false;
+                self.recovery_blocked = false;
+                self.recovery_return = None;
                 self.external_change_pending = false;
                 self.request = request;
                 self.scope = LibraryScope::Project {
@@ -1767,6 +1957,11 @@ impl App {
                 } else {
                     "Library loaded."
                 });
+                if recovery != akasha_core::NoteEditRecovery::None {
+                    self.message(&format!(
+                        "Core recovery completed: {recovery:?}. Library revalidated."
+                    ));
+                }
                 if let Some(id) = self.pending_open.take() {
                     self.submit(Job::Open(self.request.clone(), id));
                 }
@@ -2048,6 +2243,13 @@ impl App {
         let argument = argument.trim();
         match command {
             "" => {}
+            "recovery" if !argument.is_empty() => self.message("Usage: /recovery"),
+            "recovery" => self.submit(Job::InspectRecovery(self.request.clone())),
+            "back" if self.recovery_visible && self.recovery_blocked && !self.dirty() =>
+                self.message("Library remains closed. Reconcile the source, then press F5 to retry."),
+            "back" if self.recovery_visible => self.hide_recovery(),
+            "refresh" if self.can_leave() => self.load(),
+            "refresh" => {},
             "confirm" => {
                 if self.busy {
                     self.message("An operation is running; please wait.");
@@ -2077,6 +2279,7 @@ impl App {
                 }
             }
             "edit" => self.edit(),
+            "read" if self.recovery_visible => self.hide_recovery(),
             "read" => {
                 self.editing = false;
                 self.focus = Focus::Reader;
@@ -2086,21 +2289,26 @@ impl App {
                     self.message("Wait for the operation to finish before discarding.");
                     return;
                 }
+                self.hide_recovery();
                 if self.integration_review.take().is_some() {
                     self.close_reader();
                     self.message("Integration review discarded; no files changed.");
+                    self.finish_recovery_discard();
                     return;
                 }
                 if self.workflow.is_some() {
                     self.cancel_workflow();
+                    self.finish_recovery_discard();
                     return;
                 }
                 self.editor = None;
                 self.editing = false;
                 self.message("Editor changes discarded; loaded source retained. Refresh to load external changes.");
+                self.finish_recovery_discard();
             }
-            "previous" => self.previous_workflow_step(),
-            "next" => self.next_workflow_step(),
+            "previous" if !self.recovery_visible => self.previous_workflow_step(),
+            "next" if !self.recovery_visible => self.next_workflow_step(),
+            _ if self.recovery_blocked => self.message("Library closed pending recovery. Use /recovery; after reconciliation and resolving drafts, press F5."),
             _ if !self.can_leave() => {}
             "home" => {
                 self.document = None;
@@ -2303,7 +2511,6 @@ impl App {
                     Err(error) => self.message(&error),
                 }
             }
-            "refresh" => self.load(),
             "help" => {
                 self.body_title = "HELP".into();
                 self.body = HELP.into();
@@ -2369,7 +2576,7 @@ impl App {
                         self.focus = Focus::List;
                         self.move_selection(if down { 3 } else { -3 });
                     }
-                    Action::Focus(Focus::Reader) if !self.editing => {
+                    Action::Focus(Focus::Reader) if !self.editing || self.recovery_visible => {
                         self.focus = Focus::Reader;
                         self.scroll = if down {
                             self.scroll.saturating_add(3).min(self.max_scroll)
@@ -2664,11 +2871,11 @@ impl App {
     pub fn key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Char('n') if ctrl && self.workflow.is_some() => {
+            KeyCode::Char('n') if ctrl && self.workflow.is_some() && !self.recovery_visible => {
                 self.next_workflow_step();
                 return;
             }
-            KeyCode::Char('p') if ctrl && self.workflow.is_some() => {
+            KeyCode::Char('p') if ctrl && self.workflow.is_some() && !self.recovery_visible => {
                 self.previous_workflow_step();
                 return;
             }
@@ -2723,7 +2930,7 @@ impl App {
             }
             KeyCode::Backspace
                 if self.focus != Focus::Prompt
-                    && !(self.focus == Focus::Reader && self.editing) =>
+                    && !(self.focus == Focus::Reader && self.editing && !self.recovery_visible) =>
             {
                 self.focus = Focus::Prompt;
                 return;
@@ -2743,7 +2950,9 @@ impl App {
                 self.complete(false);
                 return;
             }
-            KeyCode::Tab if !(self.focus == Focus::Reader && self.editing) => {
+            KeyCode::Tab
+                if !(self.focus == Focus::Reader && self.editing && !self.recovery_visible) =>
+            {
                 self.focus = match self.focus {
                     Focus::Prompt => Focus::List,
                     Focus::List => Focus::Reader,
@@ -2778,7 +2987,7 @@ impl App {
                 KeyCode::Left => self.command("back"),
                 _ => {}
             },
-            Focus::Reader if self.editing => {
+            Focus::Reader if self.editing && !self.recovery_visible => {
                 if !self.busy
                     && let Some(editor) = self.active_editor_mut()
                 {
@@ -3115,6 +3324,372 @@ mod tests {
         fixture.app.command("discard");
         assert_eq!(root_snapshot(&fixture.root()), before);
     }
+    fn stage_recovery(fixture: &Fixture, conflict: bool) -> (PathBuf, String, String) {
+        let before = fs::read_to_string(fixture.path()).unwrap();
+        let after = format!("{before}\nInterrupted Привет 世界  \r\n");
+        let state_path = fixture.root().join("Projects/example/.akasha-state.toml");
+        let state_before = fs::read_to_string(&state_path).unwrap();
+        replace_library_document(&fixture.app.request, ID, &before, &after).unwrap();
+        let state_after = fs::read_to_string(&state_path).unwrap();
+        fs::write(&state_path, &state_before).unwrap();
+        fs::write(
+            fixture.path(),
+            if conflict {
+                "External editor bytes\r\n世界  "
+            } else {
+                &after
+            },
+        )
+        .unwrap();
+        let journal_path = fixture
+            .root()
+            .join("Projects/example/.akasha-edit-journal.json");
+        fs::write(
+            &journal_path,
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1, "project": "example", "id": ID,
+                "note_before": before, "note_after": after,
+                "state_before": state_before, "state_after": state_after,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        (journal_path, before, after)
+    }
+
+    #[test]
+    fn recovery_inspection_keeps_exact_editor_undo_and_blocks_publication() {
+        let mut fixture = Fixture::new();
+        fixture.open_editor();
+        fixture.app.paste("Привет 世界  \n\n{{literal}}");
+        fixture.app.scroll = 7;
+        let draft = fixture.app.editor.as_ref().unwrap().source();
+        let body = fixture.app.body.clone();
+        let before = root_snapshot(&fixture.root());
+        fixture.app.command("recovery");
+        fixture.finish();
+        assert!(fixture.app.recovery_visible);
+        assert!(!fixture.app.recovery_blocked);
+        assert!(
+            fixture
+                .app
+                .recovery
+                .as_ref()
+                .unwrap()
+                .text()
+                .contains("Pending: no")
+        );
+        assert!(fixture.app.active_editor().is_none());
+        fixture.app.paste("must remain inert");
+        fixture
+            .app
+            .key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        fixture.app.command("refresh");
+        fixture.app.command("quit");
+        assert!(!fixture.app.quit);
+        assert!(fixture.jobs.try_recv().is_err());
+        assert_eq!(root_snapshot(&fixture.root()), before);
+        fixture.app.command("back");
+        assert!(fixture.app.editing);
+        assert_eq!(fixture.app.scroll, 7);
+        assert_eq!(fixture.app.body, body);
+        assert_eq!(fixture.app.editor.as_ref().unwrap().source(), draft);
+        fixture
+            .app
+            .key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        assert_eq!(fixture.app.editor.as_ref().unwrap().source(), body);
+    }
+
+    #[test]
+    fn refused_recovery_closes_stale_library_preserves_bytes_and_retries_after_reconciliation() {
+        for opening in [false, true] {
+            let mut fixture = Fixture::new();
+            let (journal, before, after) = stage_recovery(&fixture, true);
+            let interrupted = root_snapshot(&fixture.root());
+            if opening {
+                fixture.app.open(ID);
+            } else {
+                fixture.app.command("refresh");
+            }
+            fixture.finish();
+            assert!(fixture.app.recovery_blocked && fixture.app.recovery_visible);
+            assert!(fixture.app.projection.is_none());
+            assert!(fixture.app.rows.is_empty());
+            assert!(fixture.app.document.is_none());
+            assert!(fixture.app.navigation_state().is_none());
+            let notice = fixture.app.recovery.as_ref().unwrap().text();
+            assert!(notice.contains(&journal.display().to_string()));
+            assert!(notice.contains("Operation failed:"));
+            assert!(notice.contains("private backup"));
+            assert_eq!(root_snapshot(&fixture.root()), interrupted);
+            fixture.app.command("back");
+            for command in [
+                "open 1",
+                "projects",
+                "global",
+                "create task",
+                "search core",
+                "context",
+            ] {
+                fixture.app.command(command);
+                assert!(fixture.jobs.try_recv().is_err(), "blocked: {command}");
+            }
+            fixture.app.command("recovery");
+            fixture.finish();
+            fixture.app.command("refresh");
+            fixture.finish();
+            assert_eq!(root_snapshot(&fixture.root()), interrupted);
+            assert!(fixture.app.recovery_blocked);
+            // Operator reconciles to a journal-recognized image; core alone rolls it back.
+            fs::write(fixture.path(), after).unwrap();
+            fixture
+                .app
+                .key(KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE));
+            fixture.finish();
+            assert!(!fixture.app.recovery_blocked && !fixture.app.recovery_visible);
+            assert!(fixture.app.projection.is_some());
+            assert!(!journal.exists());
+            assert_eq!(fs::read_to_string(fixture.path()).unwrap(), before);
+            validate_project(&fixture.app.request).unwrap();
+        }
+    }
+
+    #[test]
+    fn background_journal_detection_preserves_creation_path_and_never_recovers() {
+        let mut fixture = Fixture::new();
+        fixture.app.command("create task");
+        fixture.finish();
+        fixture.app.paste("draft-Привет.md");
+        let prompt = fixture.app.prompt.lines().to_vec();
+        let (_, before, _) = stage_recovery(&fixture, false);
+        fs::write(fixture.path(), before).unwrap(); // An unused journal and valid project.
+        let snapshot = root_snapshot(&fixture.root());
+        fixture.check_external_changes();
+        assert!(!fixture.app.checking);
+        assert!(fixture.app.external_change_pending);
+        assert!(!fixture.app.recovery_blocked && !fixture.app.recovery_visible);
+        assert!(!fixture.app.check_external_changes());
+        assert_eq!(root_snapshot(&fixture.root()), snapshot);
+        assert_eq!(fixture.app.prompt.lines(), prompt);
+        fixture.app.command("recovery");
+        fixture.finish();
+        assert!(fixture.app.recovery_blocked);
+        fixture.app.command("refresh");
+        fixture
+            .app
+            .key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        assert!(fixture.jobs.try_recv().is_err());
+        fixture.app.command("back");
+        assert_eq!(fixture.app.prompt.lines(), prompt);
+        assert!(fixture.app.creation_input_active());
+        fixture.app.command("discard");
+        assert_eq!(root_snapshot(&fixture.root()), snapshot);
+        fixture.app.command("refresh");
+        fixture.finish();
+        assert!(!fixture.app.recovery_blocked);
+        validate_project(&fixture.app.request).unwrap();
+    }
+
+    #[test]
+    fn background_observation_of_a_transient_writer_journal_does_not_claim_refused_recovery() {
+        let mut fixture = Fixture::new();
+        fixture.app.open(ID);
+        fixture.finish();
+        fixture.app.command("lifecycle");
+        fixture.finish();
+        review_lifecycle(&mut fixture);
+        let sources = workflow_sources(&fixture.app);
+        let journal = fixture
+            .root()
+            .join("Projects/example/.akasha-edit-journal.json");
+        fs::write(&journal, "in-flight writer journal").unwrap();
+        assert!(fixture.app.check_external_changes());
+        let response = execute_job(fixture.jobs.try_recv().unwrap());
+        fs::remove_file(&journal).unwrap(); // The serialized writer completed before delivery.
+        fixture.app.receive(response);
+        assert!(fixture.app.external_change_pending);
+        assert!(!fixture.app.recovery_blocked && !fixture.app.recovery_visible);
+        assert!(fixture.app.projection.is_some());
+        assert_eq!(workflow_sources(&fixture.app), sources);
+        assert_eq!(
+            fixture.app.lifecycle_review(),
+            Some(LifecyclePane::Projection)
+        );
+        fixture.app.command("recovery");
+        fixture.finish();
+        assert!(!fixture.app.recovery_blocked);
+        assert!(
+            fixture
+                .app
+                .recovery
+                .as_ref()
+                .unwrap()
+                .text()
+                .contains("Pending: no")
+        );
+    }
+
+    #[test]
+    fn recovery_view_retains_paired_lifecycle_and_multiline_creation_reviews() {
+        for creation in [false, true] {
+            let mut fixture = Fixture::new();
+            if creation {
+                author_mutable(&mut fixture, "entity", true);
+                review_creation(&mut fixture);
+            } else {
+                fixture.app.open(ID);
+                fixture.finish();
+                fixture.app.command("lifecycle");
+                fixture.finish();
+                let editor = fixture.app.active_editor_mut().unwrap();
+                editor.area.move_cursor(CursorMove::Bottom);
+                editor.area.move_cursor(CursorMove::End);
+                fixture.app.paste("\nLocal Привет 世界  ");
+                review_lifecycle(&mut fixture);
+            }
+            let body = fixture.app.body.clone();
+            let title = fixture.app.workflow_title();
+            let sources = workflow_sources(&fixture.app);
+            let (journal, _, _) = stage_recovery(&fixture, true);
+            let snapshot = root_snapshot(&fixture.root());
+            fixture.app.save();
+            fixture.finish();
+            assert!(fixture.app.recovery_blocked);
+            assert!(fixture.app.in_workflow());
+            fixture.app.command("recovery");
+            fixture.finish();
+            fixture.app.command("back");
+            assert_eq!(fixture.app.body, body);
+            assert_eq!(fixture.app.workflow_title(), title);
+            assert_eq!(workflow_sources(&fixture.app), sources);
+            fixture.app.command("discard");
+            assert!(!fixture.app.in_workflow());
+            assert_eq!(root_snapshot(&fixture.root()), snapshot);
+            assert!(journal.exists());
+            assert!(body.contains("#"));
+            assert!(title.unwrap().contains("REVIEW EXACT"));
+        }
+    }
+
+    fn workflow_sources(app: &App) -> Vec<String> {
+        match app.workflow.as_ref().unwrap() {
+            Workflow::Lifecycle(form) => vec![form.note.source(), form.projection.source()],
+            Workflow::Creation(form) => std::iter::once(form.path.clone())
+                .chain(form.fields.iter().map(|(_, editor)| editor.source()))
+                .chain(std::iter::once(form.projection.source()))
+                .collect(),
+            Workflow::Event(form) => std::iter::once(form.path.clone())
+                .chain(form.fields.iter().map(|(_, editor)| editor.source()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn recovery_refusal_keeps_guided_event_review_and_dirty_source_draft() {
+        for event in [false, true] {
+            let mut fixture = Fixture::new();
+            if event {
+                guided_event(&mut fixture, true, true);
+            } else {
+                fixture.open_editor();
+                fixture.app.paste("\nLocal Привет 世界  ");
+            }
+            let sources = if event {
+                workflow_sources(&fixture.app)
+            } else {
+                vec![fixture.app.editor.as_ref().unwrap().source()]
+            };
+            let body = fixture.app.body.clone();
+            stage_recovery(&fixture, true);
+            let snapshot = root_snapshot(&fixture.root());
+            fixture.app.save();
+            fixture.finish();
+            assert!(fixture.app.recovery_visible && fixture.app.dirty());
+            fixture.app.command("quit");
+            fixture.app.command("refresh");
+            assert!(!fixture.app.quit && fixture.jobs.try_recv().is_err());
+            fixture.app.command("back");
+            assert_eq!(fixture.app.body, body);
+            assert_eq!(
+                if event {
+                    workflow_sources(&fixture.app)
+                } else {
+                    vec![fixture.app.editor.as_ref().unwrap().source()]
+                },
+                sources
+            );
+            fixture.app.command("discard");
+            assert!(!fixture.app.dirty());
+            assert!(fixture.app.document.is_none());
+            assert!(fixture.app.recovery_visible);
+            assert_eq!(root_snapshot(&fixture.root()), snapshot);
+        }
+    }
+
+    #[test]
+    fn metadata_only_recovery_view_never_parses_malformed_or_nonregular_journals() {
+        let mut fixture = Fixture::new();
+        let journal = fixture
+            .root()
+            .join("Projects/example/.akasha-edit-journal.json");
+        fs::write(&journal, b"SECRET JOURNAL BODY\xff").unwrap();
+        let snapshot = root_snapshot(&fixture.root());
+        fixture.app.command("recovery");
+        fixture.finish();
+        assert!(fixture.app.recovery_blocked);
+        assert!(
+            !fixture
+                .app
+                .recovery
+                .as_ref()
+                .unwrap()
+                .text()
+                .contains("SECRET JOURNAL")
+        );
+        assert_eq!(root_snapshot(&fixture.root()), snapshot);
+        fs::remove_file(&journal).unwrap();
+        fs::create_dir(&journal).unwrap();
+        fixture.app.command("recovery");
+        fixture.finish();
+        assert!(
+            fixture
+                .app
+                .recovery
+                .as_ref()
+                .unwrap()
+                .text()
+                .contains("not a regular file")
+        );
+        assert!(journal.is_dir());
+        fs::remove_dir(&journal).unwrap();
+        fixture.app.command("recovery");
+        fixture.finish();
+        assert!(
+            fixture.app.recovery_blocked,
+            "inspection alone cannot reopen the library"
+        );
+        fixture.app.command("refresh");
+        fixture.finish();
+        assert!(!fixture.app.recovery_blocked);
+    }
+
+    #[test]
+    fn ordinary_load_errors_do_not_claim_pending_recovery() {
+        let mut fixture = Fixture::new();
+        fs::remove_file(fixture.root().join("akasha.toml")).unwrap();
+        fixture.app.command("refresh");
+        fixture.finish();
+        assert!(!fixture.app.recovery_blocked && fixture.app.recovery.is_none());
+        assert!(
+            fixture
+                .app
+                .messages
+                .back()
+                .unwrap()
+                .starts_with("Operation failed:")
+        );
+    }
+
     struct Fixture {
         temp: PathBuf,
         app: App,

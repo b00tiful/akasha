@@ -80,7 +80,7 @@ fn panel(title: &str, focused: bool, app: &App) -> Block<'static> {
         .padding(Padding::new(1, 1, 1, 0))
 }
 fn home(app: &App) -> bool {
-    app.document.is_none() && app.body_title == "WELCOME TO AKASHA"
+    !app.recovery_visible && app.document.is_none() && app.body_title == "WELCOME TO AKASHA"
 }
 
 pub(super) fn draw(frame: &mut Frame, app: &mut App) {
@@ -112,7 +112,9 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     ])
     .areas(content);
     draw_header(frame, app, header);
-    if main.width >= 84 {
+    if app.recovery_visible {
+        draw_reader(frame, app, main);
+    } else if main.width >= 84 {
         let [list, gap, reader] = Layout::horizontal([
             Constraint::Length((main.width / 4).clamp(26, 32)),
             Constraint::Length(3),
@@ -171,14 +173,16 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         ])),
         name,
     );
-    let state = if app.external_change_pending && app.in_workflow() {
+    let state = if app.busy {
+        "working"
+    } else if app.recovery_blocked {
+        "recovery"
+    } else if app.external_change_pending && app.in_workflow() {
         "external change · form pending"
     } else if app.external_change_pending && app.dirty() {
         "external change · unsaved"
     } else if app.external_change_pending {
         "external change · F5"
-    } else if app.busy {
-        "working"
     } else if app.in_workflow() {
         "form pending"
     } else if app.dirty() {
@@ -305,6 +309,16 @@ fn button(frame: &mut Frame, app: &mut App, area: Rect, x: &mut u16, label: &str
 
 fn draw_navigation(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut x = area.x;
+    if app.recovery_visible || app.recovery_blocked {
+        for (label, action) in [
+            ("Inspect", Action::Command("recovery")),
+            ("Bksp Prompt", Action::Focus(Focus::Prompt)),
+            ("Ctrl-Q quit", Action::Command("quit")),
+        ] {
+            button(frame, app, area, &mut x, label, action);
+        }
+        return;
+    }
     for (label, action) in [
         ("F4 Projects", Action::Command("projects")),
         ("F3 Search", Action::Search),
@@ -337,6 +351,35 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     let mut x = area.x;
+    if app.recovery_visible || app.recovery_blocked {
+        button(
+            frame,
+            app,
+            area,
+            &mut x,
+            "F5 Retry",
+            Action::Command("refresh"),
+        );
+        button(
+            frame,
+            app,
+            area,
+            &mut x,
+            "Esc Return",
+            Action::Command("back"),
+        );
+        if app.dirty() {
+            button(
+                frame,
+                app,
+                area,
+                &mut x,
+                "Discard",
+                Action::Command("discard"),
+            );
+        }
+        return;
+    }
     if app.reviewing_integration() {
         button(
             frame,
@@ -726,7 +769,9 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
         draw_dashboard(frame, app, area);
         return;
     }
-    let title = if let Some(title) = app.workflow_title() {
+    let title = if app.recovery_visible {
+        "RECOVERY INSPECTION".into()
+    } else if let Some(title) = app.workflow_title() {
         title
     } else if app.editing {
         format!("SOURCE{}", if app.dirty() { " *" } else { "" })
@@ -745,7 +790,10 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
     let workflow_path = app.workflow_path();
     let [path, body, status] = Layout::vertical([
         Constraint::Length(
-            if (app.document.is_some() || workflow_path.is_some()) && inner.height >= 5 {
+            if !app.recovery_visible
+                && (app.document.is_some() || workflow_path.is_some())
+                && inner.height >= 5
+            {
                 2
             } else {
                 0
@@ -765,7 +813,7 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
         );
     }
     let style = ink(app);
-    if app.editing && app.active_editor().is_some() {
+    if !app.recovery_visible && app.editing && app.active_editor().is_some() {
         let cursor_style = style.add_modifier(Modifier::REVERSED);
         let line_style = subdued(app);
         let focused = app.focus == Focus::Reader;
@@ -807,12 +855,18 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
             );
         }
     } else {
-        let source = if let Some(editor) = app.active_editor() {
+        let source = if app.recovery_visible {
+            app.recovery
+                .as_ref()
+                .map(super::app::RecoveryNotice::text)
+                .unwrap_or_default()
+        } else if let Some(editor) = app.active_editor() {
             editor.source()
         } else {
             app.body.clone()
         };
-        let text = if app.event_stage() == Some(true)
+        let text = if app.recovery_visible
+            || app.event_stage() == Some(true)
             || app.creation_review().is_some()
             || app.lifecycle_review().is_some()
         {
@@ -1051,6 +1105,51 @@ mod tests {
             let text = screen(&terminal);
             assert!(!text.contains("Project memory"));
             assert!(!text.contains("A K A S H A"));
+        }
+    }
+
+    #[test]
+    fn recovery_inspection_is_literal_scrollable_and_has_compact_retry_controls() {
+        use super::super::app::Response;
+        use akasha_core::PendingNoteEditInspection;
+        for (width, height) in [(40, 12), (80, 24), (120, 38)] {
+            let mut app = test_app();
+            app.receive(Ok(Response::RecoveryInspected(Ok(
+                PendingNoteEditInspection {
+                    project: "example".into(),
+                    journal_path: "/tmp/Привет\n#literal\u{1b}[2J".into(),
+                    pending: true,
+                },
+            ))));
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let initial = screen(&terminal);
+            assert!(initial.contains("recovery"), "{initial}");
+            assert!(initial.contains("RECOVERY INSPECTION"), "{initial}");
+            for action in ["refresh", "back", "quit", "recovery"] {
+                assert!(
+                    app.hits.iter().any(
+                        |(_, hit)| matches!(hit, Action::Command(command) if *command == action)
+                    ),
+                    "missing {action}: {initial}"
+                );
+            }
+            if height <= 24 {
+                assert!(app.max_scroll > 0);
+            }
+            let mut visible = initial;
+            for scroll in 1..=app.max_scroll {
+                app.scroll = scroll;
+                terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                visible.push_str(&screen(&terminal));
+            }
+            assert!(
+                visible.contains("#literal"),
+                "diagnostics must omit Markdown decoration: {visible}"
+            );
+            assert!(!visible.contains('\u{1b}'));
+            assert!(visible.contains("private backup"));
+            assert!(!visible.contains("Project memory"));
         }
     }
 }
