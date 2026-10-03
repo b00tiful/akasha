@@ -10,6 +10,22 @@ const MAX_STAGING_ATTEMPTS: u64 = 128;
 static NEXT_STAGING_ID: AtomicU64 = AtomicU64::new(0);
 pub(crate) const PROJECT_WRITE_LOCK_FILE: &str = ".akasha-write.lock";
 
+// Keep fault selection out of product builds while exercising the real error mappings.
+macro_rules! io_call {
+    ($path:expr, $stage:ident, $operation:expr) => {{
+        #[cfg(test)]
+        {
+            $crate::writes::error_tests::check($path, $crate::writes::error_tests::Stage::$stage)
+                .and_then(|()| $operation)
+        }
+        #[cfg(not(test))]
+        {
+            $operation
+        }
+    }};
+}
+pub(crate) use io_call;
+
 /// An exclusive-creation conflict or operational filesystem failure.
 #[derive(Debug)]
 pub enum AtomicCreateError {
@@ -127,9 +143,7 @@ pub fn create_file_atomically(
     contents: &[u8],
 ) -> Result<(), AtomicCreateError> {
     create_file_atomically_with(destination.as_ref(), |file| {
-        #[cfg(test)]
-        crash_tests::partial_write(file, destination.as_ref(), contents)?;
-        file.write_all(contents)
+        write_staged_contents(file, destination.as_ref(), contents)
     })
 }
 
@@ -170,29 +184,32 @@ pub(crate) fn replace_file_if_unchanged(
     let (mut file, staging) = create_staging_file(&path).map_err(map_create_error)?;
     #[cfg(test)]
     crash_tests::interrupt_at(&path, crash_tests::Stage::Created);
-    #[cfg(test)]
-    crash_tests::partial_write(&mut file, &path, replacement)
-        .expect("write the selected crash fixture prefix");
-    file.write_all(replacement)
-        .map_err(|source| CheckedReplaceError::FileSystem {
+    write_staged_contents(&mut file, &path, replacement).map_err(|source| {
+        CheckedReplaceError::FileSystem {
             operation: "write a checked replacement stage",
             path: staging.path.clone(),
             source,
-        })?;
-    file.set_permissions(metadata.permissions())
-        .map_err(|source| CheckedReplaceError::FileSystem {
-            operation: "preserve checked replacement permissions",
-            path: staging.path.clone(),
-            source,
-        })?;
+        }
+    })?;
+    io_call!(
+        &path,
+        Permissions,
+        file.set_permissions(metadata.permissions())
+    )
+    .map_err(|source| CheckedReplaceError::FileSystem {
+        operation: "preserve checked replacement permissions",
+        path: staging.path.clone(),
+        source,
+    })?;
     #[cfg(test)]
     crash_tests::interrupt_at(&path, crash_tests::Stage::BeforeFileSync);
-    file.sync_all()
-        .map_err(|source| CheckedReplaceError::FileSystem {
+    io_call!(&path, FileSync, file.sync_all()).map_err(|source| {
+        CheckedReplaceError::FileSystem {
             operation: "sync a checked replacement stage",
             path: staging.path.clone(),
             source,
-        })?;
+        }
+    })?;
     #[cfg(test)]
     crash_tests::interrupt_at(&path, crash_tests::Stage::AfterFileSync);
     drop(file);
@@ -205,10 +222,12 @@ pub(crate) fn replace_file_if_unchanged(
     if current != expected {
         return Err(changed_replacement(&path));
     }
-    fs::rename(&staging.path, &path).map_err(|source| CheckedReplaceError::FileSystem {
-        operation: "publish a checked replacement",
-        path: path.clone(),
-        source,
+    io_call!(&path, Publish, fs::rename(&staging.path, &path)).map_err(|source| {
+        CheckedReplaceError::FileSystem {
+            operation: "publish a checked replacement",
+            path: path.clone(),
+            source,
+        }
     })?;
     #[cfg(test)]
     crash_tests::interrupt_at(&path, crash_tests::Stage::Published);
@@ -218,10 +237,19 @@ pub(crate) fn replace_file_if_unchanged(
 pub(crate) fn sync_directory(directory: &Path) -> io::Result<()> {
     #[cfg(test)]
     crash_tests::directory_sync(directory, crash_tests::Stage::BeforeDirectorySync);
-    File::open(directory)?.sync_all()?;
+    io_call!(directory, DirectorySync, File::open(directory)?.sync_all())?;
     #[cfg(test)]
     crash_tests::directory_sync(directory, crash_tests::Stage::AfterDirectorySync);
     Ok(())
+}
+
+fn write_staged_contents(file: &mut File, _path: &Path, contents: &[u8]) -> io::Result<()> {
+    #[cfg(test)]
+    {
+        crash_tests::partial_write(file, _path, contents)?;
+        error_tests::partial_write(file, _path, contents)?;
+    }
+    file.write_all(contents)
 }
 
 /// One crash-released advisory lock shared by every project mutation path.
@@ -337,7 +365,7 @@ fn create_file_atomically_with(
     }
     #[cfg(test)]
     crash_tests::interrupt_at(&destination, crash_tests::Stage::BeforeFileSync);
-    if let Err(source) = file.sync_all() {
+    if let Err(source) = io_call!(&destination, FileSync, file.sync_all()) {
         let path = staging.path.clone();
         drop(file);
         drop(staging);
@@ -351,7 +379,11 @@ fn create_file_atomically_with(
     crash_tests::interrupt_at(&destination, crash_tests::Stage::AfterFileSync);
     drop(file);
 
-    match fs::hard_link(&staging.path, &destination) {
+    match io_call!(
+        &destination,
+        Publish,
+        fs::hard_link(&staging.path, &destination)
+    ) {
         Ok(()) => {
             #[cfg(test)]
             crash_tests::interrupt_at(&destination, crash_tests::Stage::Published);
@@ -375,6 +407,10 @@ fn create_file_atomically_with(
 #[cfg(test)]
 #[path = "writes_crash_tests.rs"]
 pub(crate) mod crash_tests;
+
+#[cfg(test)]
+#[path = "writes_error_tests.rs"]
+pub(crate) mod error_tests;
 
 fn canonical_destination(destination: &Path) -> Result<PathBuf, AtomicCreateError> {
     let file_name = destination
@@ -449,7 +485,7 @@ fn create_staging_file(destination: &Path) -> Result<(File, StagingFile), Atomic
             options.mode(0o600);
         }
 
-        match options.open(&path) {
+        match io_call!(destination, Create, options.open(&path)) {
             Ok(file) => return Ok((file, StagingFile { path })),
             Err(source) if source.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(source) => {

@@ -1255,25 +1255,74 @@ pub(crate) fn recover_note_mutation_locked(
             message: "the recovery journal does not match the resolved project".to_owned(),
         });
     }
-    let outcome = match journal {
-        NoteMutationJournal::Note(journal) => recover_note_journal(
-            request,
-            &resolved.root,
-            project_dir,
-            &journal_path,
-            &journal,
-        )?,
+    let outcome = match &journal {
+        NoteMutationJournal::Note(journal) => {
+            recover_note_journal(request, &resolved.root, project_dir, &journal_path, journal)?
+        }
         NoteMutationJournal::Onboarding(journal) => recover_onboarding_journal(
             request,
             &resolved.root,
             project_dir,
             &journal_path,
-            &journal,
+            journal,
         )?,
     };
 
+    // Matching bytes do not prove that a prior publication/rollback directory sync succeeded.
+    // Retry every affected directory before deleting the authority needed for another recovery.
+    sync_recovered_directories(&resolved.root, project_dir, &journal_path, &journal)?;
     complete_note_mutation_journal(&journal_path, &journal_source, project_dir)?;
     Ok(outcome)
+}
+
+fn sync_recovered_directories(
+    root: &Path,
+    project_dir: &Path,
+    journal_path: &Path,
+    journal: &NoteMutationJournal,
+) -> Result<(), NoteEditError> {
+    let (notes, projections): (Vec<&str>, Vec<&str>) = match journal {
+        NoteMutationJournal::Note(journal) => (
+            vec![&journal.id],
+            journal
+                .projection
+                .iter()
+                .map(|projection| projection.id.as_str())
+                .collect(),
+        ),
+        NoteMutationJournal::Onboarding(journal) => (
+            journal.notes.iter().map(|note| note.id.as_str()).collect(),
+            journal
+                .projections
+                .iter()
+                .map(|projection| projection.id.as_str())
+                .collect(),
+        ),
+    };
+    let mut directories = BTreeSet::from([project_dir.to_path_buf()]);
+    for id in notes {
+        let path = checked_journal_note_path(root, project_dir, id, journal_path)?;
+        directories.insert(
+            path.parent()
+                .expect("checked note has a parent")
+                .to_path_buf(),
+        );
+    }
+    for id in projections {
+        let path = checked_journal_projection_path(root, project_dir, id, journal_path)?;
+        directories.insert(
+            path.parent()
+                .expect("checked projection has a parent")
+                .to_path_buf(),
+        );
+    }
+    for directory in directories {
+        sync_project_directory(
+            &directory,
+            "sync recovered artifact directory before journal removal",
+        )?;
+    }
+    Ok(())
 }
 
 fn recover_note_journal(
@@ -1933,10 +1982,12 @@ pub(crate) fn complete_note_mutation_journal(
     }
     #[cfg(test)]
     crash_tests::interrupt_at(crash_tests::Stage::BeforeCleanup);
-    fs::remove_file(path).map_err(|source| NoteEditError::FileSystem {
-        operation: "remove the completed note edit journal",
-        path: path.to_path_buf(),
-        source,
+    crate::writes::io_call!(path, Remove, fs::remove_file(path)).map_err(|source| {
+        NoteEditError::FileSystem {
+            operation: "remove the completed note edit journal",
+            path: path.to_path_buf(),
+            source,
+        }
     })?;
     #[cfg(test)]
     crash_tests::interrupt_at(crash_tests::Stage::JournalRemoved);
@@ -1954,10 +2005,12 @@ fn remove_created_note_if_unchanged(path: &Path, expected: &[u8]) -> Result<(), 
             message: "journaled created note changed before recovery".to_owned(),
         });
     }
-    fs::remove_file(path).map_err(|source| NoteEditError::FileSystem {
-        operation: "remove the partially published canonical note",
-        path: path.to_path_buf(),
-        source,
+    crate::writes::io_call!(path, Remove, fs::remove_file(path)).map_err(|source| {
+        NoteEditError::FileSystem {
+            operation: "remove the partially published canonical note",
+            path: path.to_path_buf(),
+            source,
+        }
     })
 }
 

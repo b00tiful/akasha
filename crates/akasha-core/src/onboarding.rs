@@ -1488,7 +1488,9 @@ impl Transaction {
         for (path, expected) in self.created.iter().rev() {
             match fs::read(path) {
                 Ok(current) if current == *expected => {
-                    if let Err(source) = fs::remove_file(path) {
+                    if let Err(source) =
+                        crate::writes::io_call!(path, Remove, fs::remove_file(path))
+                    {
                         failures.push(format!("could not remove {}: {source}", path.display()));
                     } else if let Err(error) = sync_parent(path, "sync onboarding rollback") {
                         failures.push(format!(

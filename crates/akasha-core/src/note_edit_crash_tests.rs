@@ -3,6 +3,9 @@
 #[path = "note_edit_io_crash_tests.rs"]
 mod io_crash_tests;
 
+#[path = "note_edit_error_tests.rs"]
+mod error_tests;
+
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::process::Command;
@@ -469,21 +472,27 @@ impl Fixture {
     }
 
     fn publish(&self, schema: u32) {
+        self.try_publish(schema).unwrap();
+    }
+
+    fn try_publish(&self, schema: u32) -> Result<(), (u8, String)> {
         let before = fs::read_to_string(self.project.join(ENTITY)).unwrap();
         let after = format!(
             "{}\r\nExact Δ edit with trailing spaces  ",
             before.replace('\n', "\r\n")
         );
         match schema {
-            1 => {
-                replace_library_document(&self.request, ENTITY_ID, &before, &after).unwrap();
-            }
+            1 => replace_library_document(&self.request, ENTITY_ID, &before, &after)
+                .map(|_| ())
+                .map_err(|error| (error.exit_code(), error.to_string())),
             2 => {
                 let index = format!(
                     "{}\nReviewed Δ entity index.\n",
                     fs::read_to_string(self.project.join("index.md")).unwrap()
                 );
-                update_entity(&self.request, ENTITY_ID, &before, &after, &index).unwrap();
+                update_entity(&self.request, ENTITY_ID, &before, &after, &index)
+                    .map(|_| ())
+                    .map_err(|error| (error.exit_code(), error.to_string()))
             }
             3 => {
                 let notes = ["recovery-a", "recovery-b"].map(|name| ProposedNote {
@@ -504,7 +513,9 @@ impl Fixture {
                         "{}\nReviewed recovery fixture.\n",
                         fs::read_to_string(self.project.join("roadmap.md")).unwrap()
                     ),
-                }).unwrap();
+                })
+                .map(|_| ())
+                .map_err(|error| (error.exit_code(), error.to_string()))
             }
             _ => panic!("unsupported publication fixture"),
         }

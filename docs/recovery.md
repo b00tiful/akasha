@@ -16,6 +16,23 @@ Inspection reports a point-in-time location/presence; it does not establish that
 the project is consistent or clear a refused load. The named CLI currently has no
 recovery command.
 
+## When an operation reports an I/O failure
+
+A storage, permission, write or sync error does not guarantee that no files changed.
+Stop retrying while the filesystem problem persists; preserve the root and journal as
+below. Once the cause is corrected, use the existing recovery/reload path and validate
+the project before submitting a fresh reviewed creation or edit.
+
+Recovery retries every journaled artifact's parent-directory sync before deleting its
+journal, even if all bytes already look restored or committed. A failing completion
+sync retains the journal. A failure syncing the project directory **after** journal
+unlink is still reported as an error, but the complete transaction may already be
+visible without a journal. Inspect the intended note/projections and validate rather
+than assuming creation failed or deleting the existing note to make retry succeed.
+
+Returned-error fixtures verify these paths with synthetic I/O errors. They do not
+establish physical device or power-loss durability.
+
 ## 1. Stop writers and preserve the evidence
 
 1. Record the selected root, project, journal path and complete failure message.
