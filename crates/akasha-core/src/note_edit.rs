@@ -449,9 +449,13 @@ pub fn replace_library_document(
         )
         .map_err(map_checked_replace)?;
         sync_replacement_directory(&path, "sync the canonical note replacement")?;
+        #[cfg(test)]
+        crash_tests::interrupt_at(crash_tests::Stage::PublishedNote);
         replace_file_if_unchanged(&state_path, &state_before, &state_after)
             .map_err(map_checked_replace)?;
         sync_replacement_directory(&state_path, "sync the project state replacement")?;
+        #[cfg(test)]
+        crash_tests::interrupt_at(crash_tests::Stage::PublishedState);
         validate_project(request)?;
         complete_note_mutation_journal(&journal_path, &journal_source, &resolved.project_dir)?;
         Ok(NoteEditResult {
@@ -809,15 +813,21 @@ pub fn update_entity(
             )
             .map_err(map_checked_replace)?;
             sync_replacement_directory(&path, "sync the canonical entity replacement")?;
+            #[cfg(test)]
+            crash_tests::interrupt_at(crash_tests::Stage::PublishedNote);
         }
         if index_changed {
             replace_file_if_unchanged(&index_path, &index_before, index_source.as_bytes())
                 .map_err(map_checked_replace)?;
             sync_replacement_directory(&index_path, "sync the index replacement")?;
+            #[cfg(test)]
+            crash_tests::interrupt_at(crash_tests::Stage::PublishedProjection);
         }
         replace_file_if_unchanged(&state_path, &state_before, &state_after)
             .map_err(map_checked_replace)?;
         sync_replacement_directory(&state_path, "sync the project state replacement")?;
+        #[cfg(test)]
+        crash_tests::interrupt_at(crash_tests::Stage::PublishedState);
         validate_project(request)?;
         complete_note_mutation_journal(&journal_path, &journal_source, &resolved.project_dir)?;
         Ok(result_for(recovery))
@@ -993,6 +1003,8 @@ fn recover_note_journal(
             replace_file_if_unchanged(&state_path, state_after, state_before)
                 .map_err(map_checked_replace)?;
             sync_replacement_directory(&state_path, "sync recovery of project state")?;
+            #[cfg(test)]
+            crash_tests::interrupt_at(crash_tests::Stage::RecoveredState);
         }
         if !projection_matches_before {
             let expected = journal
@@ -1005,6 +1017,8 @@ fn recover_note_journal(
             replace_file_if_unchanged(path, expected.after.as_bytes(), expected.before.as_bytes())
                 .map_err(map_checked_replace)?;
             sync_replacement_directory(path, "sync recovery of the maintained projection")?;
+            #[cfg(test)]
+            crash_tests::interrupt_at(crash_tests::Stage::RecoveredProjection(0));
         }
         if !note_matches_before {
             if let Some(note_before) = note_before {
@@ -1014,6 +1028,8 @@ fn recover_note_journal(
                 remove_created_note_if_unchanged(&note_path, note_after)?;
             }
             sync_replacement_directory(&note_path, "sync recovery of the canonical note")?;
+            #[cfg(test)]
+            crash_tests::interrupt_at(crash_tests::Stage::RecoveredNote(0));
         }
         validate_project(request)?;
         NoteEditRecovery::RolledBack
@@ -1110,8 +1126,10 @@ fn recover_onboarding_journal(
         replace_file_if_unchanged(&state_path, state_after, state_before)
             .map_err(map_checked_replace)?;
         sync_replacement_directory(&state_path, "sync onboarding recovery of project state")?;
+        #[cfg(test)]
+        crash_tests::interrupt_at(crash_tests::Stage::RecoveredState);
     }
-    for (path, current, projection) in projections.iter().rev() {
+    for (_index, (path, current, projection)) in projections.iter().enumerate().rev() {
         if current != projection.before.as_bytes() {
             replace_file_if_unchanged(
                 path,
@@ -1123,12 +1141,16 @@ fn recover_onboarding_journal(
                 path,
                 "sync onboarding recovery of a maintained projection",
             )?;
+            #[cfg(test)]
+            crash_tests::interrupt_at(crash_tests::Stage::RecoveredProjection(_index));
         }
     }
-    for (path, current, note) in notes.iter().rev() {
+    for (_index, (path, current, note)) in notes.iter().enumerate().rev() {
         if current.is_some() {
             remove_created_note_if_unchanged(path, note.after.as_bytes())?;
             sync_replacement_directory(path, "sync onboarding recovery of a canonical note")?;
+            #[cfg(test)]
+            crash_tests::interrupt_at(crash_tests::Stage::RecoveredNote(_index));
         }
     }
     validate_project(request)?;
@@ -1504,6 +1526,8 @@ fn write_journal(
     let path = project_dir.join(NOTE_EDIT_JOURNAL_FILE);
     create_file_atomically(&path, &source)?;
     sync_project_directory(project_dir, "sync the note mutation journal")?;
+    #[cfg(test)]
+    crash_tests::interrupt_at(crash_tests::Stage::PublishedJournal);
     Ok((path, source))
 }
 
@@ -1568,12 +1592,19 @@ pub(crate) fn complete_note_mutation_journal(
             message: "the note edit journal changed before cleanup".to_owned(),
         });
     }
+    #[cfg(test)]
+    crash_tests::interrupt_at(crash_tests::Stage::BeforeCleanup);
     fs::remove_file(path).map_err(|source| NoteEditError::FileSystem {
         operation: "remove the completed note edit journal",
         path: path.to_path_buf(),
         source,
     })?;
-    sync_project_directory(project_dir, "sync removal of the note edit journal")
+    #[cfg(test)]
+    crash_tests::interrupt_at(crash_tests::Stage::JournalRemoved);
+    sync_project_directory(project_dir, "sync removal of the note edit journal")?;
+    #[cfg(test)]
+    crash_tests::interrupt_at(crash_tests::Stage::CleanupSynced);
+    Ok(())
 }
 
 fn remove_created_note_if_unchanged(path: &Path, expected: &[u8]) -> Result<(), NoteEditError> {
@@ -1630,3 +1661,7 @@ fn map_checked_replace(error: CheckedReplaceError) -> NoteEditError {
         },
     }
 }
+
+#[cfg(test)]
+#[path = "note_edit_crash_tests.rs"]
+mod crash_tests;
