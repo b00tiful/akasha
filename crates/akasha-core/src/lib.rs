@@ -42,7 +42,10 @@ pub use library::{
     LibrarySearchResult, LibraryShelf, build_library_projection, load_library_document,
     render_library_markdown, search_library,
 };
-pub use link::{LinkError, LinkRequest, LinkResult, link_project};
+pub use link::{
+    LinkError, LinkPlan, LinkRequest, LinkResult, apply_project_link, link_project,
+    prepare_project_link,
+};
 pub use note_creation::{
     MutableNoteCreationError, MutableNoteCreationForm, MutableNoteCreationPreview,
     MutableNoteCreationResult, apply_mutable_note_creation, apply_mutable_note_creation_preview,

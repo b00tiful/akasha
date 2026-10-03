@@ -6,13 +6,14 @@ use std::thread;
 
 use super::editor::{Editor, safe_text};
 use super::integration::{Operation as IntegrationOperation, Review as IntegrationReview};
+use super::link::{self, Review as LinkReview};
 use super::state::{NavigationLocation, NavigationState};
 use crate::discover_agent_home;
 use crate::render::{agent_wiring_action_name, session_hook_action_name};
 use akasha_core::{
     AgentClient, AgentWiringPlan, EventCreationForm, EventCreationPreview, EventCreationResult,
-    LibraryBook, LibraryDocument, LibraryProjection, LibraryScope, LibrarySearchResult,
-    MutableNoteCreationForm, MutableNoteCreationPreview, MutableNoteCreationResult,
+    LibraryBook, LibraryDocument, LibraryProjection, LibraryScope, LibrarySearchResult, LinkPlan,
+    LinkRequest, MutableNoteCreationForm, MutableNoteCreationPreview, MutableNoteCreationResult,
     MutableNoteLifecycleForm, MutableNoteLifecyclePreview, MutableNoteLifecycleResult, NoteClass,
     PendingNoteEditInspection, ResolveRequest, SessionHookWiringPlan, apply_event_creation,
     apply_mutable_note_creation_preview, apply_mutable_note_lifecycle_preview, assemble_context,
@@ -46,6 +47,11 @@ pub(super) struct Suggestion {
 
 const COMMANDS: &[Completion] = &[
     Completion {
+        command: "link",
+        argument: "PROJECT [REPOSITORY]",
+        description: "Review linking an already registered repository",
+    },
+    Completion {
         command: "recovery",
         argument: "",
         description: "Inspect pending recovery without writing",
@@ -58,7 +64,7 @@ const COMMANDS: &[Completion] = &[
     Completion {
         command: "confirm",
         argument: "PLAN_ID",
-        description: "Authorize the exact displayed integration plan",
+        description: "Authorize the exact displayed administration plan",
     },
     Completion {
         command: "home",
@@ -208,7 +214,7 @@ fn prompt_area(text: String) -> TextArea<'static> {
     prompt_area_with_placeholder(text, PROMPT_PLACEHOLDER)
 }
 
-pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       edit and review the open record/entity and its projection\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff         guided multiline handoff authoring and exact review\nhandoff PATH | NAME=VALUE | ...\n                inline capture from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE      guided multiline event authoring and exact review\nevent TYPE PATH | NAME=VALUE | ...\n                inline configured immutable event creation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\nconfirm PLAN_ID authorize the displayed integration plan\nrecovery        inspect journal presence without writing; Esc returns\nrefresh         retry core recovery and reload validated data (F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and lifecycle forms show exact configured templates and\nmaintained projections. Creation and lifecycle use Ctrl-N to review the exact note and projection\nbefore Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. All guided template fields support multiline text;\nCtrl-N/Ctrl-P navigate and Ctrl-S publishes only after exact source review.\nIntegration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nOpen from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
+pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       edit and review the open record/entity and its projection\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff         guided multiline handoff authoring and exact review\nhandoff PATH | NAME=VALUE | ...\n                inline capture from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE      guided multiline event authoring and exact review\nevent TYPE PATH | NAME=VALUE | ...\n                inline configured immutable event creation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\nlink PROJECT [REPOSITORY]\n                review an exclusive repository pointer creation\nconfirm PLAN_ID authorize the displayed administration plan\nrecovery        inspect journal presence without writing; Esc returns\nrefresh         retry core recovery and reload validated data (F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and lifecycle forms show exact configured templates and\nmaintained projections. Creation and lifecycle use Ctrl-N to review the exact note and projection\nbefore Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. All guided template fields support multiline text;\nCtrl-N/Ctrl-P navigate and Ctrl-S publishes only after exact source review.\nIntegration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nOpen from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Focus {
@@ -344,6 +350,8 @@ pub(super) enum Job {
     InspectIntegrations(ResolveRequest, AgentClient, PathBuf),
     PrepareIntegration(IntegrationOperation),
     CommitIntegration(IntegrationOperation, String),
+    PrepareLink(LinkRequest),
+    CommitLink(LinkRequest, LinkPlan),
 }
 pub(super) enum Response {
     RecoveryInspected(Result<PendingNoteEditInspection, String>),
@@ -369,6 +377,8 @@ pub(super) enum Response {
     LifecycleUpdated(MutableNoteLifecycleResult),
     IntegrationPrepared(Box<IntegrationReview>),
     IntegrationCommitted(Result<String, String>),
+    LinkPrepared(Box<LinkReview>),
+    LinkCommitted(Result<String, String>),
 }
 pub(super) type WorkResult = Result<Response, String>;
 
@@ -461,6 +471,10 @@ fn execute_job(job: Job) -> WorkResult {
 fn execute_job_inner(job: Job) -> WorkResult {
     let err = |error: &dyn std::fmt::Display| error.to_string();
     match job {
+        Job::PrepareLink(request) => LinkReview::prepare(request)
+            .map(|review| Response::LinkPrepared(Box::new(review))),
+        Job::CommitLink(request, plan) =>
+            Ok(Response::LinkCommitted(LinkReview::commit(&request, &plan))),
         Job::InspectRecovery(request) => Ok(Response::RecoveryInspected(
             inspect_pending_note_edit(&request).map_err(|error| err(&error)),
         )),
@@ -743,6 +757,7 @@ pub(super) struct App {
     pinned_project: Option<String>,
     workflow: Option<Workflow>,
     integration_review: Option<IntegrationReview>,
+    link_review: Option<LinkReview>,
     pending_open: Option<String>,
     recovery_return: Option<(Focus, u16, TextArea<'static>)>,
     jobs: Sender<Job>,
@@ -801,6 +816,7 @@ impl App {
             pinned_project,
             workflow: None,
             integration_review: None,
+            link_review: None,
             pending_open: None,
             recovery_return: None,
             jobs,
@@ -1004,15 +1020,15 @@ impl App {
         }
     }
     pub fn dirty(&self) -> bool {
-        self.integration_review.is_some()
+        self.reviewing_administration()
             || self.workflow.is_some()
             || self.editor.as_ref().is_some_and(Editor::dirty)
     }
     pub fn in_workflow(&self) -> bool {
         self.workflow.is_some()
     }
-    pub fn reviewing_integration(&self) -> bool {
-        self.integration_review.is_some()
+    pub fn reviewing_administration(&self) -> bool {
+        self.integration_review.is_some() || self.link_review.is_some()
     }
     pub fn creation_input_active(&self) -> bool {
         if self.recovery_visible {
@@ -1192,9 +1208,9 @@ impl App {
         if self.busy {
             self.message("An operation is running; please wait.");
             false
-        } else if self.integration_review.is_some() {
+        } else if self.reviewing_administration() {
             self.message(
-                "Integration review pending: /confirm PLAN_ID or /discard before leaving.",
+                "Administration review pending: /confirm PLAN_ID or /discard before leaving.",
             );
             false
         } else if self.workflow.is_some() {
@@ -1817,10 +1833,8 @@ impl App {
             self.message("Resolve pending recovery first. Drafts are retained; Esc returns, /discard cancels, then F5 retries.");
             return;
         }
-        if self.integration_review.is_some() {
-            self.message(
-                "Review the integration patch, then use /confirm with its complete plan ID.",
-            );
+        if self.reviewing_administration() {
+            self.message("Review the exact change, then use /confirm with its complete plan ID.");
             return;
         }
         if self.busy {
@@ -1915,6 +1929,25 @@ impl App {
                 self.document = None;
                 self.editor = None;
                 self.editing = false;
+                self.scroll = 0;
+                self.focus = Focus::Reader;
+            }
+            Ok(Response::LinkPrepared(review)) => {
+                self.body_title = "REPOSITORY LINK REVIEW".into();
+                self.body = review.body.clone();
+                self.link_review = Some(*review);
+                self.document = None;
+                self.editor = None;
+                self.editing = false;
+                self.scroll = 0;
+                self.focus = Focus::Reader;
+            }
+            Ok(Response::LinkCommitted(result)) => {
+                self.link_review = None;
+                self.body_title = "REPOSITORY LINK RESULT".into();
+                self.body = result.unwrap_or_else(|error| format!(
+                    "Operation failed: {error}\n\nInspect the destination, then prepare a fresh /link review before retrying."
+                ));
                 self.scroll = 0;
                 self.focus = Focus::Reader;
             }
@@ -2262,8 +2295,14 @@ impl App {
                     } else {
                         self.message("Confirmation must match the complete displayed plan ID.");
                     }
+                } else if let Some(review) = &self.link_review {
+                    if argument == review.plan.plan_id {
+                        self.submit(Job::CommitLink(review.request.clone(), review.plan.clone()));
+                    } else {
+                        self.message("Confirmation must match the complete displayed plan ID.");
+                    }
                 } else {
-                    self.message("No integration plan is awaiting confirmation.");
+                    self.message("No administration plan is awaiting confirmation.");
                 }
             }
             "save" => self.save(),
@@ -2290,6 +2329,12 @@ impl App {
                     return;
                 }
                 self.hide_recovery();
+                if self.link_review.take().is_some() {
+                    self.close_reader();
+                    self.message("Repository link review discarded; no files changed.");
+                    self.finish_recovery_discard();
+                    return;
+                }
                 if self.integration_review.take().is_some() {
                     self.close_reader();
                     self.message("Integration review discarded; no files changed.");
@@ -2320,6 +2365,10 @@ impl App {
                 self.focus = Focus::Prompt;
             }
             "projects" => self.projects(),
+            "link" => match link::arguments(&self.request, argument) {
+                Ok(request) => self.submit(Job::PrepareLink(request)),
+                Err(error) => self.message(&error),
+            },
             "project" => self.categories(LibraryScope::Project {
                 project: argument.to_owned(),
             }),
@@ -2605,6 +2654,25 @@ impl App {
         let Some(prefix) = self.prompt.lines()[0].strip_prefix('/') else {
             return vec![];
         };
+        if let Some(query) = prefix.strip_prefix("link ") {
+            if query.chars().any(char::is_whitespace) {
+                return vec![];
+            }
+            return self
+                .projection
+                .as_ref()
+                .into_iter()
+                .flat_map(|projection| &projection.projects)
+                .filter(|project| project.project.contains(query))
+                .take(100)
+                .map(|project| Suggestion {
+                    command: format!("link {}", project.project),
+                    argument: "[REPOSITORY]".into(),
+                    description: "Registered project; repository defaults to launch directory"
+                        .into(),
+                })
+                .collect();
+        }
         if let Some(query) = prefix.strip_prefix("open ") {
             let query = query.trim().to_lowercase();
             if query.parse::<usize>().is_ok() {
@@ -4137,6 +4205,164 @@ mod tests {
         assert_eq!(fs::read(home.join("AGENTS.md")).unwrap(), instructions);
         assert_eq!(fs::read(home.join("hooks.json")).unwrap(), hooks);
         assert_eq!(fs::read_dir(&home).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn repository_link_review_guards_discard_and_confirm_exact_pointer() {
+        let mut f = Fixture::new();
+        let repository = f.temp.join("repository");
+        let pointer = repository.join(".akasha.toml");
+        let before = root_snapshot(&f.root());
+        f.app.command("link example repository");
+        f.finish();
+        let plan = f.app.link_review.as_ref().unwrap().plan.clone();
+        assert!(f.app.body.contains("Exact source (JSON-escaped UTF-8)"));
+        assert!(f.app.navigation_state().is_none());
+        for command in [
+            "confirm wrong",
+            "save",
+            "quit",
+            "refresh",
+            "back",
+            "home",
+            "global",
+            "link example repository",
+            "integration apply hook codex",
+        ] {
+            f.app.command(command);
+        }
+        assert!(!f.app.quit && !f.app.busy);
+        assert!(f.jobs.try_recv().is_err());
+        assert!(!pointer.exists());
+        f.app.command("discard");
+        f.app.command(&format!("confirm {}", plan.plan_id));
+        assert!(f.jobs.try_recv().is_err());
+        assert!(f.app.link_review.is_none());
+        assert_eq!(root_snapshot(&f.root()), before);
+
+        f.app.command("link example repository");
+        f.finish();
+        f.app.command(&format!("confirm {}", plan.plan_id));
+        f.app.command(&format!("confirm {}", plan.plan_id));
+        f.app.command("discard");
+        f.finish();
+        assert!(f.jobs.try_recv().is_err());
+        assert!(f.app.link_review.is_none());
+        assert!(f.app.body.contains("Repository linked."));
+        assert_eq!(fs::read_to_string(pointer).unwrap(), plan.source);
+        assert_eq!(root_snapshot(&f.root()), before);
+        let mut request = f.app.request.clone();
+        request.project_override = None;
+        request.cwd = repository;
+        assert_eq!(
+            akasha_core::resolve_project(&request).unwrap().project,
+            "example"
+        );
+    }
+
+    #[test]
+    fn repository_link_refusal_consumes_review_and_preserves_external_bytes() {
+        let mut f = Fixture::new();
+        f.app.command("link example repository");
+        f.finish();
+        let plan = f.app.link_review.as_ref().unwrap().plan.clone();
+        fs::write(&plan.destination.pointer, b"human-owned\r\n").unwrap();
+        f.app.command(&format!("confirm {}", plan.plan_id));
+        f.finish();
+        assert!(f.app.link_review.is_none());
+        assert!(f.app.body.contains("Operation failed:") && f.app.body.contains("fresh /link"));
+        assert_eq!(
+            fs::read(&plan.destination.pointer).unwrap(),
+            b"human-owned\r\n"
+        );
+        f.app.command(&format!("confirm {}", plan.plan_id));
+        assert!(f.jobs.try_recv().is_err());
+        fs::remove_file(&plan.destination.pointer).unwrap();
+        f.app.command("link example repository");
+        f.finish();
+        f.app.command(&format!("confirm {}", plan.plan_id));
+        f.finish();
+        assert_eq!(
+            fs::read_to_string(&plan.destination.pointer).unwrap(),
+            plan.source
+        );
+    }
+
+    #[test]
+    fn repository_link_preserves_drafts_and_review_during_background_changes() {
+        let mut f = Fixture::new();
+        f.open_editor();
+        f.app.paste("\nDraft 世界\n");
+        let draft = f.app.editor.as_ref().unwrap().source();
+        f.app.command("link example repository");
+        assert!(f.jobs.try_recv().is_err());
+        assert_eq!(f.app.editor.as_ref().unwrap().source(), draft);
+        f.app.command("discard");
+        f.app.command("link example repository");
+        f.finish();
+        let plan_id = f.app.link_review.as_ref().unwrap().plan.plan_id.clone();
+        fs::write(
+            f.root().join("Meta/projects.yaml"),
+            "example:\n  path: ../../repository\n  status: archived\n",
+        )
+        .unwrap();
+        assert!(f.check_external_changes());
+        assert!(f.app.external_change_pending);
+        assert_eq!(f.app.link_review.as_ref().unwrap().plan.plan_id, plan_id);
+        // Status-only changes do not alter the pointer's reviewed identities or bytes.
+        f.app.command(&format!("confirm {plan_id}"));
+        f.finish();
+        assert!(f.app.body.contains("Repository linked."));
+    }
+
+    #[test]
+    fn repository_link_arguments_completion_and_literal_compact_review() {
+        let mut f = Fixture::new();
+        f.app.command("link");
+        assert!(f.jobs.try_recv().is_err());
+        assert!(f.app.messages.back().unwrap().contains("Usage:"));
+        f.app.focus = Focus::Prompt;
+        f.app.paste("/link ex");
+        assert_eq!(f.app.completions()[0].command, "link example");
+        let directory = f.temp.join("repository space-猫");
+        fs::rename(f.temp.join("repository"), &directory).unwrap();
+        fs::write(
+            f.root().join("Meta/projects.yaml"),
+            "example:\n  path: ../../repository space-猫\n  status: active\n",
+        )
+        .unwrap();
+        f.app
+            .command(&format!("link example {}", directory.display()));
+        f.finish();
+        let plan = f.app.link_review.as_ref().unwrap().plan.clone();
+        assert_eq!(plan.destination.repository_dir, directory);
+        assert!(f.app.body.contains(&format!("Repository: {directory:?}")));
+        for (width, height) in [(40, 12), (80, 24), (120, 38)] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| super::super::view::draw(frame, &mut f.app))
+                .unwrap();
+            if height <= 24 {
+                assert!(f.app.max_scroll > 0);
+            }
+            f.app.scroll = f.app.max_scroll;
+            terminal
+                .draw(|frame| super::super::view::draw(frame, &mut f.app))
+                .unwrap();
+            f.app.scroll = 0;
+        }
+        f.app.command("discard");
+        f.app.request.cwd = directory.clone();
+        f.app.command("link example");
+        f.finish();
+        assert_eq!(f.app.link_review.as_ref().unwrap().plan, plan);
+        f.app.command(&format!("confirm {}", plan.plan_id));
+        f.finish();
+        assert_eq!(
+            fs::read_to_string(directory.join(".akasha.toml")).unwrap(),
+            plan.source
+        );
     }
 
     #[test]

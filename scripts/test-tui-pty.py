@@ -260,6 +260,62 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
         send(b'\x0e')
         wait_for(b'REVIEW EXACT ' + label)
 
+    def repository_link_review():
+        repository = root.parent / 'repository'
+        pointer = repository / '.akasha.toml'
+        expected = b'schema_version = 1\nproject = "example"\n'
+        if pointer.exists():
+            assert pointer.read_bytes() == expected
+            pointer.unlink()  # Reset only this disposable fixture between profiles.
+        before_link = snapshot()
+        prepare = f'link example {repository}'
+        command(prepare)
+        wait_for(b'REPOSITORY LINK REVIEW')
+        command('discard')
+        assert not pointer.exists() and snapshot() == before_link
+        command(prepare)
+        wait_for(b'REPOSITORY LINK REVIEW')
+
+        def displayed_plan_id():
+            # Read the actual review one wrapped screen line at a time, including
+            # the single-row reader at 40x12; do not regenerate the core plan hash.
+            rows, _, _, _ = struct.unpack('HHHH', fcntl.ioctl(slave, termios.TIOCGWINSZ, b'\0' * 8))
+            first_body = 5 if rows >= 13 else 4
+            collected = ''
+            send(b'\x1b[H')
+            for _ in range(100):
+                visible = re.search(r'PlanID:(sha256:[0-9a-f]{64})',
+                                    re.sub(r'\s+', '', screen.text()))
+                if visible:
+                    return visible.group(1)
+                collected += screen.text().splitlines()[first_body].strip()
+                match = re.search(r'Plan ID: ?(sha256:[0-9a-f]{64})', collected)
+                if match:
+                    return match.group(1)
+                send(b'\x1b[B')
+            raise AssertionError(f'{term}: plan ID not reachable through reader scrolling: {collected}')
+
+        plan_id = displayed_plan_id()
+        command('confirm incorrect')
+        command('save')
+        command('quit')
+        assert process.poll() is None and not pointer.exists() and snapshot() == before_link
+        # A concurrent human pointer must survive confirmation unchanged.
+        pointer.write_bytes(b'Human pointer\r\n')
+        command(f'confirm {plan_id}')
+        wait_for(b'REPOSITORY LINK RESULT')
+        assert pointer.read_bytes() == b'Human pointer\r\n' and snapshot() == before_link
+        pointer.unlink()
+        command(prepare)
+        wait_for(b'REPOSITORY LINK REVIEW')
+        assert displayed_plan_id() == plan_id
+        command(f'confirm {plan_id}')
+        wait_for(b'REPOSITORY LINK RESULT')
+        assert pointer.read_bytes() == expected and snapshot() == before_link
+        resolved = json.loads(subprocess.check_output(
+            [str(binary), '--root', str(root), '--json', 'resolve'], cwd=repository))
+        assert resolved['project'] == 'example' and resolved['pointer'] == str(pointer)
+
     try:
         if recovery_start:
             wait_for(b'RECOVERY INSPECTION')
@@ -490,6 +546,7 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
                 wait_for(b'INTEGRATION RESULT')
                 wait_for(b'Changed: true')
                 assert (agent_home / 'hooks.json').exists() == (operation == 'apply')
+            repository_link_review()
             # Resizing must not lose state or crash. Restore usable dimensions afterward.
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 5, 20, 0, 0))
             drain(0.2)
@@ -800,6 +857,7 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             subprocess.run([str(binary), '--root', str(root), '--project', 'example',
                             'validate'], check=True, stdout=subprocess.DEVNULL)
 
+            repository_link_review()
             # Preserve the established cross-launch task navigation checkpoint.
             command('open Projects/example/records/tasks/pty-created.md')
             wait_for(b'READING')
@@ -814,7 +872,8 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
         print(f'PASS TERM={term} {size[1]}x{size[0]}: startup, input, clean exit, terminal restoration' +
               ('; animation, Unicode paste, dirty guard, checked save, search, create/lifecycle forms, recovery inspection/refusal/retry, integration inspection/cancel/confirm/apply/remove, resize' if full else
                '; keyboard-only, fragmented Unicode paste, dirty resize, save/discard, search, quiet refresh, Ctrl-C' if keyboard else
-               '; ASCII, no-color, reduced motion' + ('; initial recovery refusal/retry' if recovery_start else '')))
+               '; ASCII, no-color, reduced motion' + ('; initial recovery refusal/retry' if recovery_start else '')) +
+              ('; repository-link review/cancel/conflict/confirm/resolve' if full or keyboard else ''))
     finally:
         if process.poll() is None:
             process.terminate()

@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use akasha_core::{
-    LinkRequest, ResolutionEnvironment, ResolveRequest, link_project, resolve_project,
+    LinkRequest, ResolutionEnvironment, ResolveRequest, apply_project_link, link_project,
+    prepare_project_link, resolve_project,
 };
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -113,6 +114,207 @@ fn preserves_registry_validation_exit_class() {
 
     assert_eq!(error.exit_code(), 4);
     assert!(!repository.join(".akasha.toml").exists());
+}
+
+#[test]
+fn reviewed_link_is_read_only_until_apply_and_round_trips_exact_source() {
+    let temp = TempDir::new("review space-猫");
+    let (root, repository) = setup_registered_project(temp.path());
+    let request = request(&root, &repository, None);
+    let before = snapshot(temp.path());
+    let plan = prepare_project_link(&request).unwrap();
+    assert_eq!(prepare_project_link(&request).unwrap(), plan);
+    assert_eq!(snapshot(temp.path()), before);
+    assert!(plan.plan_id.starts_with("sha256:"));
+    assert_eq!(plan.plan_id.len(), 71);
+    assert_eq!(plan.source, "schema_version = 1\nproject = \"example\"\n");
+    let result = apply_project_link(&request, &plan).unwrap();
+    assert_eq!(result, plan.destination);
+    assert_eq!(fs::read_to_string(&result.pointer).unwrap(), plan.source);
+    let resolve = ResolveRequest {
+        root_override: Some(root),
+        project_override: None,
+        cwd: repository.join("nested"),
+        environment: ResolutionEnvironment::default(),
+    };
+    assert_eq!(
+        resolve_project(&resolve).unwrap().pointer,
+        Some(result.pointer)
+    );
+    let published = snapshot(temp.path());
+    assert_eq!(
+        apply_project_link(&request, &plan).unwrap_err().exit_code(),
+        5
+    );
+    assert_eq!(snapshot(temp.path()), published);
+}
+
+#[test]
+fn reviewed_link_binds_every_identity_source_and_plan_id() {
+    let temp = TempDir::new("review-tamper");
+    let (root, repository) = setup_registered_project(temp.path());
+    let request = request(&root, &repository, None);
+    let plan = prepare_project_link(&request).unwrap();
+    let before = snapshot(temp.path());
+    for field in 0..8 {
+        let mut changed = plan.clone();
+        match field {
+            0 => changed.destination.root.push("other"),
+            1 => changed.destination.registry.push("other"),
+            2 => changed.destination.repository_dir.push("other"),
+            3 => changed.destination.project_dir.push("other"),
+            4 => changed.destination.pointer.push("other"),
+            5 => changed.destination.project.push_str("-other"),
+            6 => changed.source.push_str("# injected\n"),
+            _ => changed.plan_id.push('0'),
+        }
+        assert_eq!(
+            apply_project_link(&request, &changed)
+                .unwrap_err()
+                .exit_code(),
+            5
+        );
+        assert_eq!(snapshot(temp.path()), before);
+    }
+}
+
+#[test]
+fn reviewed_link_refuses_changed_registry_and_configured_project_identity() {
+    for config_drift in [false, true] {
+        let temp = TempDir::new("review-drift");
+        let (root, repository) = setup_registered_project(temp.path());
+        let request = request(&root, &repository, None);
+        let plan = prepare_project_link(&request).unwrap();
+        if config_drift {
+            fs::create_dir_all(root.join("Renamed/example")).unwrap();
+            let config = root.join("akasha.toml");
+            fs::write(
+                &config,
+                fs::read_to_string(&config)
+                    .unwrap()
+                    .replace("projects = \"Projects\"", "projects = \"Renamed\""),
+            )
+            .unwrap();
+        } else {
+            fs::create_dir(temp.path().join("other")).unwrap();
+            fs::write(
+                root.join("Meta/projects.yaml"),
+                "example:\n  path: ../../other\n  status: active\n",
+            )
+            .unwrap();
+        }
+        let before = snapshot(temp.path());
+        assert_eq!(
+            apply_project_link(&request, &plan).unwrap_err().exit_code(),
+            if config_drift { 5 } else { 3 }
+        );
+        assert_eq!(snapshot(temp.path()), before);
+    }
+}
+
+#[test]
+fn reviewed_link_refuses_late_files_directories_and_dangling_symlinks() {
+    for kind in 0..3 {
+        let temp = TempDir::new("review-occupied");
+        let (root, repository) = setup_registered_project(temp.path());
+        let request = request(&root, &repository, None);
+        let plan = prepare_project_link(&request).unwrap();
+        let pointer = &plan.destination.pointer;
+        match kind {
+            0 => fs::write(pointer, b"human bytes\r\n").unwrap(),
+            1 => fs::create_dir(pointer).unwrap(),
+            _ => {
+                #[cfg(unix)]
+                std::os::unix::fs::symlink("missing-target", pointer).unwrap();
+                #[cfg(not(unix))]
+                continue;
+            }
+        }
+        let before = snapshot(temp.path());
+        assert_eq!(prepare_project_link(&request).unwrap_err().exit_code(), 5);
+        assert_eq!(
+            apply_project_link(&request, &plan).unwrap_err().exit_code(),
+            5
+        );
+        assert_eq!(snapshot(temp.path()), before);
+    }
+}
+
+#[test]
+fn concurrent_reviewed_links_publish_exactly_once() {
+    let temp = TempDir::new("review-race");
+    let (root, repository) = setup_registered_project(temp.path());
+    let request = request(&root, &repository, None);
+    let plan = prepare_project_link(&request).unwrap();
+    let barrier = std::sync::Barrier::new(2);
+    let results = std::thread::scope(|scope| {
+        let run = || {
+            barrier.wait();
+            apply_project_link(&request, &plan)
+        };
+        let first = scope.spawn(run);
+        let second = scope.spawn(run);
+        [first.join().unwrap(), second.join().unwrap()]
+    });
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .find_map(|result| result.as_ref().err())
+            .unwrap()
+            .exit_code(),
+        5
+    );
+    assert_eq!(
+        fs::read_to_string(&plan.destination.pointer).unwrap(),
+        plan.source
+    );
+    assert_eq!(fs::read_dir(repository).unwrap().count(), 2); // nested directory + pointer
+}
+
+#[cfg(unix)]
+#[test]
+fn reviewed_link_refuses_non_utf8_identity_without_writing() {
+    use std::os::unix::ffi::OsStringExt;
+    let temp = TempDir::new("review-utf8");
+    let base = temp
+        .path()
+        .join(std::ffi::OsString::from_vec(b"invalid-\xff".to_vec()));
+    let (root, repository) = setup_registered_project(&base);
+    let before = snapshot(temp.path());
+    assert_eq!(
+        prepare_project_link(&request(&root, &repository, None))
+            .unwrap_err()
+            .exit_code(),
+        4
+    );
+    assert_eq!(snapshot(temp.path()), before);
+}
+
+fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    fn walk(root: &Path, path: &Path, entries: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>) {
+        let metadata = fs::symlink_metadata(path).unwrap();
+        let bytes = if metadata.is_symlink() {
+            fs::read_link(path)
+                .unwrap()
+                .as_os_str()
+                .as_encoded_bytes()
+                .to_vec()
+        } else if metadata.is_file() {
+            fs::read(path).unwrap()
+        } else {
+            Vec::new()
+        };
+        entries.insert(path.strip_prefix(root).unwrap().to_owned(), bytes);
+        if metadata.is_dir() {
+            for entry in fs::read_dir(path).unwrap() {
+                walk(root, &entry.unwrap().path(), entries);
+            }
+        }
+    }
+    let mut entries = std::collections::BTreeMap::new();
+    walk(root, root, &mut entries);
+    entries
 }
 
 fn request(root: &Path, repository: &Path, selected: Option<PathBuf>) -> LinkRequest {

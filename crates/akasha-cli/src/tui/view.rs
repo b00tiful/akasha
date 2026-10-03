@@ -112,7 +112,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     ])
     .areas(content);
     draw_header(frame, app, header);
-    if app.recovery_visible {
+    if app.recovery_visible || app.reviewing_administration() {
         draw_reader(frame, app, main);
     } else if main.width >= 84 {
         let [list, gap, reader] = Layout::horizontal([
@@ -380,7 +380,7 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
         }
         return;
     }
-    if app.reviewing_integration() {
+    if app.reviewing_administration() {
         button(
             frame,
             app,
@@ -866,6 +866,7 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
             app.body.clone()
         };
         let text = if app.recovery_visible
+            || app.reviewing_administration()
             || app.event_stage() == Some(true)
             || app.creation_review().is_some()
             || app.lifecycle_review().is_some()
