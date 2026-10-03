@@ -39,7 +39,7 @@ describe("local scene and shared editor integration", () => {
       },
     };
     const loads: Array<{ id: string; resolve(value: LibraryDocument): void }> = [];
-    const loadDocument = vi.fn((_root: string, _project: string, id: string) =>
+    const loadDocumentWithRecovery = vi.fn((_root: string, _project: string, id: string) =>
       new Promise<LibraryDocument>((resolve) => loads.push({ id, resolve })));
     const saveDocument = vi.fn(async () => ({ changed: true }));
     const loadLocalNavigation = vi.fn(async () => null);
@@ -50,7 +50,7 @@ describe("local scene and shared editor integration", () => {
         scope: books[1]!.scope, line: 2, snippet: "Second matching line" }],
     }));
     vi.doMock("./api", () => ({
-      loadLibrary: vi.fn(async () => library), loadDocument, saveDocument, searchProject,
+      loadLibraryWithRecovery: vi.fn(async () => library), loadDocumentWithRecovery, saveDocument, searchProject,
       loadLocalNavigation, saveLocalNavigation,
     }));
     vi.doMock("./scene", () => ({ mountLibraryScene: vi.fn(async () => ({

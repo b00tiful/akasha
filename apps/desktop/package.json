@@ -9,6 +9,7 @@
     "test": "vitest run",
     "check": "npm run build && npm test",
     "runtime:check": "node ../../scripts/test-desktop-runtime.mjs",
+    "recovery:check": "node ../../scripts/test-desktop-recovery.mjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev --features desktop",
     "tauri:build": "tauri build --features desktop"

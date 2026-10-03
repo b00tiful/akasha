@@ -225,7 +225,9 @@ fn state_io_error(action: &str, path: &Path, error: std::io::Error) -> DesktopEr
     }
 }
 
-pub fn library_projection(
+/// Recover the selected project's pending mutation, then build the validated library.
+/// This may replace project files and remove an exact-byte journal before returning data.
+pub fn library_projection_with_recovery(
     root: Option<PathBuf>,
     project: Option<String>,
 ) -> Result<DesktopLibrary, DesktopError> {
@@ -258,7 +260,9 @@ pub fn recovery_inspection(
     })
 }
 
-pub fn library_document(
+/// Recover the selected project's pending mutation, then load one projected document.
+/// This may replace project files and remove an exact-byte journal before returning source.
+pub fn library_document_with_recovery(
     root: Option<PathBuf>,
     project: Option<String>,
     id: &str,
@@ -317,11 +321,11 @@ fn request(root: Option<PathBuf>, project: Option<String>) -> Result<ResolveRequ
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
-fn load_library(
+fn load_library_with_recovery(
     root: Option<PathBuf>,
     project: Option<String>,
 ) -> Result<DesktopLibrary, DesktopError> {
-    library_projection(root, project)
+    library_projection_with_recovery(root, project)
 }
 
 #[cfg(feature = "desktop")]
@@ -335,12 +339,12 @@ fn inspect_recovery(
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
-fn load_document(
+fn load_document_with_recovery(
     root: Option<PathBuf>,
     project: Option<String>,
     id: String,
 ) -> Result<LibraryDocument, DesktopError> {
-    library_document(root, project, &id)
+    library_document_with_recovery(root, project, &id)
 }
 
 #[cfg(feature = "desktop")]
@@ -445,9 +449,9 @@ pub fn run() {
     });
     #[cfg(feature = "runtime-probe")]
     let builder = builder.invoke_handler(tauri::generate_handler![
-        load_library,
+        load_library_with_recovery,
         inspect_recovery,
-        load_document,
+        load_document_with_recovery,
         search_project,
         save_document,
         load_local_navigation,
@@ -456,9 +460,9 @@ pub fn run() {
     ]);
     #[cfg(not(feature = "runtime-probe"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
-        load_library,
+        load_library_with_recovery,
         inspect_recovery,
-        load_document,
+        load_document_with_recovery,
         search_project,
         save_document,
         load_local_navigation,

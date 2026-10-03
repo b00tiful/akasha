@@ -70,11 +70,11 @@ it("restores one revalidated local note without changing the global startup defa
     page_anchors: { entity: book.id },
     note: book.id,
   };
-  const loadDocument = vi.fn(async () => ({ id: book.id, source: "# Restored fresh source\n" }));
+  const loadDocumentWithRecovery = vi.fn(async () => ({ id: book.id, source: "# Restored fresh source\n" }));
   const saveLocalNavigation = vi.fn(async (_state: LocalNavigationState) => undefined);
   vi.doMock("./api", () => ({
-    loadLibrary: vi.fn(async () => library),
-    loadDocument,
+    loadLibraryWithRecovery: vi.fn(async () => library),
+    loadDocumentWithRecovery,
     saveDocument: vi.fn(),
     searchProject: vi.fn(),
     loadLocalNavigation: vi.fn(async () => persisted),
@@ -90,10 +90,10 @@ it("restores one revalidated local note without changing the global startup defa
 
   await import("./main");
   await vi.waitFor(() => expect(document.querySelector(".brand-name")!.textContent).toBe("AKASHA LIBRARY"));
-  expect(loadDocument).not.toHaveBeenCalled();
+  expect(loadDocumentWithRecovery).not.toHaveBeenCalled();
 
   document.querySelector<HTMLButtonElement>("#scope-toggle")!.click();
-  await vi.waitFor(() => expect(loadDocument).toHaveBeenCalledWith(
+  await vi.waitFor(() => expect(loadDocumentWithRecovery).toHaveBeenCalledWith(
     "/resolved/root", "example", book.id,
   ));
   await vi.waitFor(() => expect(document.querySelector<HTMLElement>("#note-overlay")!.hidden).toBe(false));

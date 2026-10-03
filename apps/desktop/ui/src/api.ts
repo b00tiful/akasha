@@ -14,8 +14,9 @@ function optional(value: string): string | null {
   return trimmed.length === 0 ? null : trimmed;
 }
 
-export function loadLibrary(root: string, project: string): Promise<DesktopLibrary> {
-  return invoke<DesktopLibrary>("load_library", {
+/** May roll back or finalize a pending project mutation before loading the library. */
+export function loadLibraryWithRecovery(root: string, project: string): Promise<DesktopLibrary> {
+  return invoke<DesktopLibrary>("load_library_with_recovery", {
     root: optional(root),
     project: optional(project),
   });
@@ -28,12 +29,13 @@ export function inspectRecovery(root: string, project: string): Promise<PendingN
   });
 }
 
-export function loadDocument(
+/** May roll back or finalize a pending project mutation before loading exact source. */
+export function loadDocumentWithRecovery(
   root: string,
   project: string,
   id: string,
 ): Promise<LibraryDocument> {
-  return invoke<LibraryDocument>("load_document", {
+  return invoke<LibraryDocument>("load_document_with_recovery", {
     root: optional(root),
     project: optional(project),
     id,

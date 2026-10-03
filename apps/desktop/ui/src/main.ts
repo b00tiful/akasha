@@ -2,8 +2,8 @@ import "./styles.css";
 
 import {
   inspectRecovery,
-  loadDocument,
-  loadLibrary,
+  loadDocumentWithRecovery,
+  loadLibraryWithRecovery,
   loadLocalNavigation,
   saveDocument,
   saveLocalNavigation,
@@ -30,6 +30,7 @@ import { mountLibraryScene, type SceneHandle } from "./scene";
 import type { SpatialDirection } from "./scene-model";
 import { runtimeProbeEnabled } from "./runtime-metrics";
 import { scheduleRuntimeProbe } from "./runtime-probe";
+import { recoveryProbeEnabled, recoveryProbeRoot, scheduleRecoveryProbe } from "./recovery-probe";
 import type { CommandError, DesktopLibrary, LibraryBook, LibrarySearchResult } from "./types";
 
 const form = required<HTMLFormElement>("library-form");
@@ -220,6 +221,7 @@ window.addEventListener("keydown", (event) => {
   }
 });
 
+if (recoveryProbeEnabled) rootInput.value = recoveryProbeRoot;
 void openLibrary();
 
 async function openLibrary(
@@ -231,7 +233,7 @@ async function openLibrary(
   clearSearch();
   form.classList.add("is-loading");
   try {
-    library = await loadLibrary(requestedResolution.root, requestedResolution.project);
+    library = await loadLibraryWithRecovery(requestedResolution.root, requestedResolution.project);
     activeResolution = { root: library.projection.root, project: library.projection.selected_project };
     const navigationWarning = await hydrateLocalNavigation(library);
     rootInput.value = requestedResolution.root;
@@ -317,6 +319,7 @@ async function openLibrary(
     }
   } finally {
     form.classList.remove("is-loading");
+    scheduleRecoveryProbe();
   }
 }
 
@@ -571,7 +574,7 @@ async function selectBook(book: LibraryBook): Promise<void> {
     if (!resolution) {
       throw new Error("the active library resolution is unavailable");
     }
-    const document = await loadDocument(resolution.root, resolution.project, requestedId);
+    const document = await loadDocumentWithRecovery(resolution.root, resolution.project, requestedId);
     if (selectedId === requestedId && request === documentRequest) {
       viewer.setDocument(document.source, isEditable(book));
       if (localMode) noteClose.focus();

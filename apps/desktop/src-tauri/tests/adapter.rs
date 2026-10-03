@@ -9,8 +9,9 @@ use std::os::unix::fs::PermissionsExt;
 #[cfg(feature = "runtime-probe")]
 use akasha_desktop::write_runtime_probe_report_file;
 use akasha_desktop::{
-    LocalNavigationState, library_document, library_projection, load_local_navigation_file,
-    recovery_inspection, save_library_document, save_local_navigation_file, search_project_library,
+    LocalNavigationState, library_document_with_recovery, library_projection_with_recovery,
+    load_local_navigation_file, recovery_inspection, save_library_document,
+    save_local_navigation_file, search_project_library,
 };
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -21,8 +22,9 @@ fn fixture_root() -> PathBuf {
 
 #[test]
 fn adapter_returns_the_core_projection_and_exact_fallback() {
-    let library = library_projection(Some(fixture_root()), Some("example".to_owned()))
-        .expect("load fixture library");
+    let library =
+        library_projection_with_recovery(Some(fixture_root()), Some("example".to_owned()))
+            .expect("load fixture library");
 
     assert_eq!(library.projection.selected_project, "example");
     assert!(library.projection.total_books > 0);
@@ -36,7 +38,7 @@ fn adapter_returns_the_core_projection_and_exact_fallback() {
 
 #[test]
 fn adapter_loads_only_a_projected_exact_document() {
-    let document = library_document(
+    let document = library_document_with_recovery(
         Some(fixture_root()),
         Some("example".to_owned()),
         "Projects/example/entities/core.md",
@@ -45,7 +47,7 @@ fn adapter_loads_only_a_projected_exact_document() {
 
     assert!(document.source.contains("# Synthetic entity"));
 
-    let error = library_document(
+    let error = library_document_with_recovery(
         Some(fixture_root()),
         Some("example".to_owned()),
         "Projects/example/index.md",
@@ -89,8 +91,15 @@ fn recovery_inspection_remains_available_when_library_load_refuses() {
     .unwrap();
     fs::write(&journal, &bytes).expect("seed journal with an external writer conflict");
 
-    let error = library_projection(Some(root.clone()), Some("example".to_owned()))
+    let error = library_projection_with_recovery(Some(root.clone()), Some("example".to_owned()))
         .expect_err("loading must refuse unexpected external bytes");
+    assert_eq!(error.code, 5);
+    let error = library_document_with_recovery(
+        Some(root.clone()),
+        Some("example".to_owned()),
+        "Projects/example/entities/core.md",
+    )
+    .expect_err("document loading must also refuse unexpected external bytes");
     assert_eq!(error.code, 5);
     let inspection = recovery_inspection(Some(root.clone()), Some("example".to_owned()))
         .expect("read-only journal inspection");
@@ -103,6 +112,56 @@ fn recovery_inspection_remains_available_when_library_load_refuses() {
         "external editor bytes\n"
     );
     assert_eq!(fs::read_to_string(&state).unwrap(), state_before);
+}
+
+#[test]
+fn both_load_adapters_recover_a_partial_publication_before_returning_data() {
+    let temp = TempDir::new("load-recovery");
+    let root = temp.path().join("valid-root");
+    copy_tree(&fixture_root(), &root);
+    fs::create_dir_all(temp.path().join("repository")).unwrap();
+    let id = "Projects/example/entities/core.md";
+    let note = root.join(id);
+    let state = root.join("Projects/example/.akasha-state.toml");
+    let journal = root.join("Projects/example/.akasha-edit-journal.json");
+    let note_before = fs::read_to_string(&note).unwrap();
+    let state_before = fs::read_to_string(&state).unwrap();
+    let note_after = format!("{note_before}\nInterrupted replacement.\n");
+    save_library_document(
+        Some(root.clone()),
+        Some("example".to_owned()),
+        id,
+        &note_before,
+        &note_after,
+    )
+    .unwrap();
+    let state_after = fs::read_to_string(&state).unwrap();
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "schema_version": 1, "project": "example", "id": id,
+        "note_before": note_before, "note_after": note_after,
+        "state_before": state_before, "state_after": state_after,
+    }))
+    .unwrap();
+
+    for document_load in [false, true] {
+        fs::write(&note, &note_after).unwrap();
+        fs::write(&state, &state_before).unwrap();
+        fs::write(&journal, &bytes).unwrap();
+        if document_load {
+            let document =
+                library_document_with_recovery(Some(root.clone()), Some("example".to_owned()), id)
+                    .unwrap();
+            assert_eq!(document.source, note_before);
+        } else {
+            let library =
+                library_projection_with_recovery(Some(root.clone()), Some("example".to_owned()))
+                    .unwrap();
+            assert_eq!(library.recovery, akasha_core::NoteEditRecovery::RolledBack);
+        }
+        assert_eq!(fs::read_to_string(&note).unwrap(), note_before);
+        assert_eq!(fs::read_to_string(&state).unwrap(), state_before);
+        assert!(!journal.exists());
+    }
 }
 
 #[test]
@@ -130,8 +189,9 @@ fn adapter_saves_through_the_checked_core_boundary() {
     copy_tree(&fixture_root(), &root);
     fs::create_dir_all(temp.path().join("repository")).expect("create registered repository");
     let id = "Projects/example/entities/core.md";
-    let document = library_document(Some(root.clone()), Some("example".to_owned()), id)
-        .expect("load editable document");
+    let document =
+        library_document_with_recovery(Some(root.clone()), Some("example".to_owned()), id)
+            .expect("load editable document");
     let replacement = format!("{}\nSaved through Tauri.\n", document.source);
 
     let result = save_library_document(
