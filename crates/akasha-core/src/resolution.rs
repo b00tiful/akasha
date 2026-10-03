@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::validation::{ProjectRegistry, ValidationError, parse_project_registry};
 
 pub(crate) const CONFIG_SCHEMA_VERSION: u32 = 1;
-const ROOT_CONFIG_FILE: &str = "akasha.toml";
+pub(crate) const ROOT_CONFIG_FILE: &str = "akasha.toml";
 pub(crate) const POINTER_FILE: &str = ".akasha.toml";
 
 /// Environment values used by project resolution.

@@ -11,9 +11,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 
 use crate::resolution::{
-    CONFIG_SCHEMA_VERSION, POINTER_FILE, ResolutionEnvironment, ResolveError, ResolveRequest,
-    RootConfig, canonicalize_directory, load_project_registry, load_root_config, resolve_root,
-    validate_slug,
+    CONFIG_SCHEMA_VERSION, POINTER_FILE, ROOT_CONFIG_FILE, ResolutionEnvironment, ResolveError,
+    ResolveRequest, RootConfig, canonicalize_directory, load_project_registry, load_root_config,
+    resolve_root, validate_slug,
 };
 use crate::state::{PROJECT_STATE_FILE, content_fingerprint, render_empty_project_state};
 use crate::validation::{
@@ -64,6 +64,132 @@ pub struct InitResult {
     pub pointer: PathBuf,
     pub template_files: usize,
     pub recovery: InitRecovery,
+}
+
+/// Exact read-only initialization review. Paths within `directories` and `files`
+/// are relative to `destination.project_dir`; file bytes include binary templates.
+/// Every field is revalidated on apply, including the complete registry preimage.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct InitPlan {
+    pub destination: InitResult,
+    pub template_source: PathBuf,
+    pub configuration_fingerprint: String,
+    pub directories: Vec<PathBuf>,
+    pub files: Vec<(PathBuf, Vec<u8>)>,
+    pub pointer_source: Vec<u8>,
+    pub registry_before: Vec<u8>,
+    pub registry_after: Vec<u8>,
+    pub plan_id: String,
+}
+
+/// Preview without acquiring a lock, recovering a journal or creating any file.
+pub fn prepare_project_init(request: &InitRequest) -> Result<InitPlan, InitError> {
+    prepare_init_review(request).map(|(plan, _)| plan)
+}
+
+/// Apply only an unchanged review under the existing registry lock. Pending init
+/// journals refuse without recovery; use the explicit named init recovery path.
+/// Non-cooperating filesystem writers remain subject to the existing init boundary.
+pub fn apply_project_init(request: &InitRequest, plan: &InitPlan) -> Result<InitResult, InitError> {
+    let target = prepare_target(request)?;
+    reject_pending_init(&target.registry)?;
+    let _lock = InitLock::acquire(&target.registry)?;
+    let (current, prepared) = prepare_init_review(request)?;
+    if &current != plan || prepared.registry != target.registry {
+        return Err(InitError::Conflict {
+            path: target.registry,
+            message: "initialization plan changed; prepare and review a fresh plan".into(),
+        });
+    }
+    initialize_locked(
+        request,
+        &prepared,
+        InitRecovery::None,
+        Some(&plan.registry_before),
+        || {},
+        || {},
+        |_| {},
+    )
+}
+
+fn reject_pending_init(registry: &Path) -> Result<(), InitError> {
+    reject_existing_target(
+        &init_journal_path(registry),
+        "pending initialization journal; review/apply never recover it; use the named init command for checked recovery before a fresh review",
+    )
+}
+
+fn prepare_init_review(request: &InitRequest) -> Result<(InitPlan, PreparedInit), InitError> {
+    let resolution = ResolveRequest {
+        root_override: request.root_override.clone(),
+        project_override: Some(request.project.clone()),
+        cwd: request.cwd.clone(),
+        environment: request.environment.clone(),
+    };
+    let (root, _) = resolve_root(&resolution)?;
+    let config_path = root.join(ROOT_CONFIG_FILE);
+    let config_source = read_regular_init_file(&config_path, "read initialization configuration")?;
+    let target = prepare_target(request)?;
+    reject_pending_init(&target.registry)?;
+    let template_source = target.templates_dir.clone();
+    let prepared = prepare_scaffold(target)?;
+    let (registry_before, mut registry) = read_registry_snapshot(&prepared.registry)?;
+    reject_registered_slug(&registry, &request.project, &prepared.registry)?;
+    reject_existing_target(
+        &prepared.project_dir,
+        "configured project directory already exists",
+    )?;
+    reject_existing_target(&prepared.pointer, "repository pointer already exists")?;
+    if prepared.root != root
+        || read_regular_init_file(&config_path, "recheck initialization configuration")?
+            != config_source
+    {
+        return Err(InitError::Conflict {
+            path: config_path,
+            message: "configuration changed while preparing initialization".into(),
+        });
+    }
+    registry.projects.insert(
+        request.project.clone(),
+        ProjectRegistryEntry {
+            path: prepared.repository_dir.clone(),
+            status: "active".into(),
+        },
+    );
+    let mut plan = InitPlan {
+        destination: InitResult {
+            root: prepared.root.clone(),
+            project: request.project.clone(),
+            registry: prepared.registry.clone(),
+            repository_dir: prepared.repository_dir.clone(),
+            project_dir: prepared.project_dir.clone(),
+            state: prepared.project_dir.join(PROJECT_STATE_FILE),
+            pointer: prepared.pointer.clone(),
+            template_files: prepared.scaffold.template_files,
+            recovery: InitRecovery::None,
+        },
+        template_source,
+        configuration_fingerprint: content_fingerprint(&config_source),
+        directories: prepared.scaffold.directories.clone(),
+        files: prepared.scaffold.files.clone(),
+        pointer_source: format!(
+            "schema_version = {CONFIG_SCHEMA_VERSION}\nproject = \"{}\"\n",
+            request.project
+        )
+        .into_bytes(),
+        registry_after: render_registry(&registry, &prepared.registry)?,
+        registry_before,
+        plan_id: String::new(),
+    };
+    // Structured versioned hashing rejects non-UTF-8 paths instead of using lossy identities.
+    let identity = serde_json::to_vec(&("akasha-project-init-v1", &plan)).map_err(|error| {
+        InitError::Validation {
+            path: prepared.project_dir.clone(),
+            message: format!("cannot encode initialization plan: {error}"),
+        }
+    })?;
+    plan.plan_id = content_fingerprint(&identity);
+    Ok((plan, prepared))
 }
 
 /// Recovery work completed before a new initialization transaction.
@@ -225,6 +351,7 @@ fn initialize_project_with_hooks(
         request,
         &prepared,
         recovery,
+        None,
         after_scaffold,
         before_registry_commit,
         publication_hook,
@@ -293,11 +420,18 @@ fn initialize_locked(
     request: &InitRequest,
     prepared: &PreparedInit,
     recovery: InitRecovery,
+    expected_registry: Option<&[u8]>,
     after_scaffold: impl FnOnce(),
     before_registry_commit: impl FnOnce(),
     mut publication_hook: impl FnMut(InitPublicationStage),
 ) -> Result<InitResult, InitError> {
     let (registry_source, mut registry) = read_registry_snapshot(&prepared.registry)?;
+    if expected_registry.is_some_and(|expected| expected != registry_source) {
+        return Err(InitError::Conflict {
+            path: prepared.registry.clone(),
+            message: "registry changed after initialization review".into(),
+        });
+    }
     reject_registered_slug(&registry, &request.project, &prepared.registry)?;
     reject_existing_target(
         &prepared.project_dir,

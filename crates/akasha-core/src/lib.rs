@@ -35,7 +35,10 @@ pub use event::{
     apply_event_creation, capture_handoff, create_event, prepare_event_creation,
     prepare_handoff_creation, preview_event_creation,
 };
-pub use init::{InitError, InitRecovery, InitRequest, InitResult, initialize_project};
+pub use init::{
+    InitError, InitPlan, InitRecovery, InitRequest, InitResult, apply_project_init,
+    initialize_project, prepare_project_init,
+};
 pub use library::{
     LibraryBook, LibraryCategory, LibraryCollection, LibraryDashboard, LibraryDocument,
     LibraryProjectDashboard, LibraryProjection, LibraryScope, LibrarySearchHit,

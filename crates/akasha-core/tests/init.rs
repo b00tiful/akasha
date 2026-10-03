@@ -169,6 +169,278 @@ fn rejects_template_symlinks_before_writing() {
     assert!(!fixture.repository.join(".akasha.toml").exists());
 }
 
+#[test]
+fn reviewed_init_is_read_only_and_publishes_every_exact_reviewed_byte() {
+    let f = Fixture::new("review");
+    fs::create_dir_all(f.root.join("defaults/nested/empty")).unwrap();
+    fs::write(f.root.join("defaults/nested/raw.bin"), [0, 255, 1]).unwrap();
+    fs::write(f.root.join("defaults/text.md"), "# 世界\r\n  exact  ").unwrap();
+    let before = snapshot(f._temp.path());
+    let plan = akasha_core::prepare_project_init(&f.request()).unwrap();
+    assert_eq!(snapshot(f._temp.path()), before);
+    assert!(!f.root.join("Meta/.projects.yaml.akasha-init.lock").exists());
+    assert_eq!(
+        plan,
+        akasha_core::prepare_project_init(&f.request()).unwrap()
+    );
+    let result = akasha_core::apply_project_init(&f.request(), &plan).unwrap();
+    assert_eq!(result, plan.destination);
+    for (relative, bytes) in &plan.files {
+        assert_eq!(fs::read(result.project_dir.join(relative)).unwrap(), *bytes);
+    }
+    for relative in &plan.directories {
+        assert!(result.project_dir.join(relative).is_dir());
+    }
+    assert_eq!(fs::read(&result.registry).unwrap(), plan.registry_after);
+    assert_eq!(fs::read(&result.pointer).unwrap(), plan.pointer_source);
+    let request = ResolveRequest {
+        root_override: Some(f.root.clone()),
+        project_override: None,
+        cwd: f.repository.clone(),
+        environment: ResolutionEnvironment::default(),
+    };
+    assert_eq!(resolve_project(&request).unwrap().project, "example");
+    assert_eq!(validate_project(&request).unwrap().canonical_notes, 0);
+    let committed = snapshot(f._temp.path());
+    assert_eq!(
+        akasha_core::apply_project_init(&f.request(), &plan)
+            .unwrap_err()
+            .exit_code(),
+        5
+    );
+    assert_eq!(snapshot(f._temp.path()), committed);
+}
+
+#[test]
+fn reviewed_init_refuses_each_source_or_destination_change_without_publication() {
+    for mutation in [
+        "config",
+        "template",
+        "template-add",
+        "template-remove",
+        "empty-directory",
+        "registry",
+        "pointer",
+        "project-directory",
+        "request",
+    ] {
+        let f = Fixture::new(mutation);
+        fs::write(f.root.join("defaults/text.md"), b"before\r\n").unwrap();
+        let mut request = f.request();
+        let plan = akasha_core::prepare_project_init(&request).unwrap();
+        match mutation {
+            "config" => {
+                let path = f.root.join("akasha.toml");
+                let mut s = fs::read_to_string(&path).unwrap();
+                s.push_str("\n# human change\n");
+                fs::write(path, s).unwrap();
+            }
+            "template" => fs::write(f.root.join("defaults/text.md"), b"after\n").unwrap(),
+            "template-add" => fs::write(f.root.join("defaults/new.bin"), [255]).unwrap(),
+            "template-remove" => fs::remove_file(f.root.join("defaults/text.md")).unwrap(),
+            "empty-directory" => fs::create_dir(f.root.join("defaults/empty")).unwrap(),
+            "registry" => {
+                fs::write(&plan.destination.registry, b"# changed comment\n{}\n").unwrap()
+            }
+            "pointer" => fs::write(&plan.destination.pointer, b"human\r\n").unwrap(),
+            "project-directory" => fs::create_dir(&plan.destination.project_dir).unwrap(),
+            "request" => request.project = "another".into(),
+            _ => unreachable!(),
+        }
+        let before = snapshot(f._temp.path());
+        assert_eq!(
+            akasha_core::apply_project_init(&request, &plan)
+                .unwrap_err()
+                .exit_code(),
+            5,
+            "{mutation}"
+        );
+        assert_eq!(snapshot(f._temp.path()), before, "{mutation}");
+        assert!(
+            !f.root
+                .join("Meta/.projects.yaml.akasha-init-journal.json")
+                .exists()
+        );
+    }
+}
+
+#[test]
+fn reviewed_init_rejects_forged_plan_fields_and_id() {
+    let f = Fixture::new("tamper");
+    let plan = akasha_core::prepare_project_init(&f.request()).unwrap();
+    for field in 0..8 {
+        let mut forged = plan.clone();
+        match field {
+            0 => forged.plan_id.push('0'),
+            1 => forged.files[0].1.push(255),
+            2 => forged.directories.clear(),
+            3 => forged.registry_before.push(b' '),
+            4 => forged.registry_after.push(b' '),
+            5 => forged.pointer_source.push(b' '),
+            6 => forged.destination.repository_dir = f.root.clone(),
+            7 => forged.configuration_fingerprint.clear(),
+            _ => unreachable!(),
+        }
+        let before = snapshot(f._temp.path());
+        assert_eq!(
+            akasha_core::apply_project_init(&f.request(), &forged)
+                .unwrap_err()
+                .exit_code(),
+            5
+        );
+        assert_eq!(snapshot(f._temp.path()), before);
+    }
+}
+
+#[test]
+fn reviewed_init_refuses_pending_journal_without_parsing_or_recovery() {
+    let f = Fixture::new("pending-review");
+    let plan = akasha_core::prepare_project_init(&f.request()).unwrap();
+    let journal = f.root.join("Meta/.projects.yaml.akasha-init-journal.json");
+    for directory in [false, true] {
+        if directory {
+            fs::create_dir(&journal).unwrap();
+        } else {
+            fs::write(&journal, b"invalid retained journal\xff").unwrap();
+        }
+        let before = snapshot(f._temp.path());
+        for error in [
+            akasha_core::prepare_project_init(&f.request()).unwrap_err(),
+            akasha_core::apply_project_init(&f.request(), &plan).unwrap_err(),
+        ] {
+            assert_eq!(error.exit_code(), 5);
+            assert!(error.to_string().contains("pending initialization journal"));
+        }
+        assert_eq!(snapshot(f._temp.path()), before);
+        assert!(!f.root.join("Meta/.projects.yaml.akasha-init.lock").exists());
+        if directory {
+            fs::remove_dir(&journal).unwrap();
+        } else {
+            fs::remove_file(&journal).unwrap();
+        }
+    }
+}
+
+#[test]
+fn reviewed_init_serializes_with_existing_initializer_and_requires_fresh_registry_review() {
+    let f = Fixture::new("review-concurrent");
+    let request = f.request();
+    let plan = akasha_core::prepare_project_init(&request).unwrap();
+    let lock_path = f.root.join("Meta/.projects.yaml.akasha-init.lock");
+    fs::write(&lock_path, b"akasha init\n").unwrap();
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .unwrap();
+    lock.lock().unwrap();
+    let before = snapshot(f._temp.path());
+    assert_eq!(
+        akasha_core::apply_project_init(&request, &plan)
+            .unwrap_err()
+            .exit_code(),
+        5
+    );
+    assert_eq!(snapshot(f._temp.path()), before);
+    drop(lock);
+    let other_repo = f._temp.path().join("another repository");
+    fs::create_dir(&other_repo).unwrap();
+    let mut other = request.clone();
+    other.cwd = other_repo;
+    other.project = "another".into();
+    initialize_project(&other).unwrap();
+    let before = snapshot(f._temp.path());
+    assert_eq!(
+        akasha_core::apply_project_init(&request, &plan)
+            .unwrap_err()
+            .exit_code(),
+        5
+    );
+    assert_eq!(snapshot(f._temp.path()), before);
+    let fresh = akasha_core::prepare_project_init(&request).unwrap();
+    akasha_core::apply_project_init(&request, &fresh).unwrap();
+    assert_eq!(
+        parse_project_registry(&fs::read_to_string(&fresh.destination.registry).unwrap())
+            .unwrap()
+            .projects
+            .len(),
+        2
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn reviewed_init_refuses_symlinks_and_non_utf8_template_identities_without_writes() {
+    use std::os::unix::{ffi::OsStringExt, fs::symlink};
+    for target in ["template", "pointer", "journal", "invalid-path"] {
+        let f = Fixture::new(target);
+        let plan = akasha_core::prepare_project_init(&f.request()).unwrap();
+        match target {
+            "template" => symlink("missing", f.root.join("defaults/link.md")).unwrap(),
+            "pointer" => symlink("missing", &plan.destination.pointer).unwrap(),
+            "journal" => symlink(
+                "missing",
+                f.root.join("Meta/.projects.yaml.akasha-init-journal.json"),
+            )
+            .unwrap(),
+            "invalid-path" => fs::write(
+                f.root
+                    .join("defaults")
+                    .join(std::ffi::OsString::from_vec(b"bad-\xff".to_vec())),
+                b"x",
+            )
+            .unwrap(),
+            _ => unreachable!(),
+        }
+        let before = snapshot(f._temp.path());
+        assert!(akasha_core::prepare_project_init(&f.request()).is_err());
+        assert!(akasha_core::apply_project_init(&f.request(), &plan).is_err());
+        assert_eq!(snapshot(f._temp.path()), before);
+    }
+}
+
+// The persistent advisory lock is allowed on apply refusal, but no other path,
+// directory, symlink or source change may escape the reviewed transaction.
+fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, (String, Vec<u8>)> {
+    fn visit(
+        root: &Path,
+        path: &Path,
+        out: &mut std::collections::BTreeMap<PathBuf, (String, Vec<u8>)>,
+    ) {
+        for entry in fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.file_name().unwrap() == ".projects.yaml.akasha-init.lock" {
+                continue;
+            }
+            let meta = fs::symlink_metadata(&path).unwrap();
+            let (kind, bytes) = if meta.file_type().is_symlink() {
+                (
+                    "link",
+                    fs::read_link(&path)
+                        .unwrap()
+                        .as_os_str()
+                        .as_encoded_bytes()
+                        .to_vec(),
+                )
+            } else if meta.is_dir() {
+                ("directory", vec![])
+            } else {
+                ("file", fs::read(&path).unwrap())
+            };
+            out.insert(
+                path.strip_prefix(root).unwrap().to_path_buf(),
+                (kind.into(), bytes),
+            );
+            if meta.is_dir() {
+                visit(root, &path, out);
+            }
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    visit(root, root, &mut out);
+    out
+}
+
 struct Fixture {
     _temp: TempDir,
     root: PathBuf,

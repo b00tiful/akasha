@@ -1,5 +1,6 @@
 mod app;
 mod editor;
+mod init;
 mod integration;
 mod link;
 mod starlight;

@@ -260,6 +260,75 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
         send(b'\x0e')
         wait_for(b'REVIEW EXACT ' + label)
 
+    def displayed_plan_id():
+        # Read the actual review one wrapped screen line at a time, including
+        # the single-row reader at 40x12; do not regenerate the core plan hash.
+        rows, _, _, _ = struct.unpack('HHHH', fcntl.ioctl(slave, termios.TIOCGWINSZ, b'\0' * 8))
+        first_body = 5 if rows >= 13 else 4
+        collected = ''
+        send(b'\x1b[H')
+        for _ in range(100):
+            visible = re.search(r'PlanID:(sha256:[0-9a-f]{64})',
+                                re.sub(r'\s+', '', screen.text()))
+            if visible:
+                return visible.group(1)
+            collected += screen.text().splitlines()[first_body].strip()
+            match = re.search(r'Plan ID: ?(sha256:[0-9a-f]{64})', collected)
+            if match:
+                return match.group(1)
+            send(b'\x1b[B')
+        raise AssertionError(f'{term}: plan ID not reachable through reader scrolling: {collected}')
+
+    def project_initialization_review():
+        slug = f'init-{term}-{"keyboard" if keyboard else "full"}'
+        repository = root.parent / f'{slug} repository 世界'
+        repository.mkdir()
+        pointer = repository / '.akasha.toml'
+        project = root / 'Projects' / slug
+        prepare = f'init {slug} {repository}'
+        before_init = snapshot()
+        command(prepare)
+        wait_for(b'PROJECT INITIALIZATION REVIEW')
+        plan_id = displayed_plan_id()
+        for value in ['confirm incorrect', 'save', 'quit', 'refresh']:
+            command(value)
+        assert process.poll() is None and snapshot() == before_init
+        command('discard')
+        assert snapshot() == before_init and not pointer.exists() and not project.exists()
+        command(prepare)
+        wait_for(b'PROJECT INITIALIZATION REVIEW')
+        assert displayed_plan_id() == plan_id
+        # A valid but changed registry invalidates the complete reviewed replacement.
+        registry = root / 'Meta/projects.yaml'
+        registry.write_bytes(registry.read_bytes() + b'\n# External registry edit\n')
+        external = snapshot()
+        command(f'confirm {plan_id}')
+        wait_for(b'PROJECT INITIALIZATION RESULT')
+        assert not pointer.exists() and not project.exists()
+        lock = root / 'Meta/.projects.yaml.akasha-init.lock'
+        assert {p: b for p, b in snapshot().items() if p != lock} == {p: b for p, b in external.items() if p != lock}
+        command(prepare)
+        wait_for(b'PROJECT INITIALIZATION REVIEW')
+        fresh_id = displayed_plan_id()
+        assert fresh_id != plan_id
+        command(f'confirm {fresh_id}')
+        wait_for(b'PROJECT INITIALIZATION RESULT')
+        wait_for_ready()
+        assert pointer.read_bytes() == f'schema_version = 1\nproject = "{slug}"\n'.encode()
+        assert (project / 'index.md').read_bytes() == b''
+        assert (project / 'roadmap.md').read_bytes() == b''
+        assert not (root / 'Meta/.projects.yaml.akasha-init-journal.json').exists()
+        resolved = json.loads(subprocess.check_output(
+            [str(binary), '--root', str(root), '--json', 'resolve'], cwd=repository))
+        assert resolved['project'] == slug and resolved['pointer'] == str(pointer)
+        subprocess.run([str(binary), '--root', str(root), '--project', slug, 'validate'],
+                       check=True, stdout=subprocess.DEVNULL)
+        command('refresh')
+        wait_for_ready()
+        command(f'project {slug}')
+        wait_for(slug.encode())
+        command('project example')
+
     def repository_link_review():
         repository = root.parent / 'repository'
         pointer = repository / '.akasha.toml'
@@ -276,24 +345,6 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
         command(prepare)
         wait_for(b'REPOSITORY LINK REVIEW')
 
-        def displayed_plan_id():
-            # Read the actual review one wrapped screen line at a time, including
-            # the single-row reader at 40x12; do not regenerate the core plan hash.
-            rows, _, _, _ = struct.unpack('HHHH', fcntl.ioctl(slave, termios.TIOCGWINSZ, b'\0' * 8))
-            first_body = 5 if rows >= 13 else 4
-            collected = ''
-            send(b'\x1b[H')
-            for _ in range(100):
-                visible = re.search(r'PlanID:(sha256:[0-9a-f]{64})',
-                                    re.sub(r'\s+', '', screen.text()))
-                if visible:
-                    return visible.group(1)
-                collected += screen.text().splitlines()[first_body].strip()
-                match = re.search(r'Plan ID: ?(sha256:[0-9a-f]{64})', collected)
-                if match:
-                    return match.group(1)
-                send(b'\x1b[B')
-            raise AssertionError(f'{term}: plan ID not reachable through reader scrolling: {collected}')
 
         plan_id = displayed_plan_id()
         command('confirm incorrect')
@@ -858,6 +909,7 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
                             'validate'], check=True, stdout=subprocess.DEVNULL)
 
             repository_link_review()
+            project_initialization_review()
             # Preserve the established cross-launch task navigation checkpoint.
             command('open Projects/example/records/tasks/pty-created.md')
             wait_for(b'READING')
@@ -873,7 +925,7 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
               ('; animation, Unicode paste, dirty guard, checked save, search, create/lifecycle forms, recovery inspection/refusal/retry, integration inspection/cancel/confirm/apply/remove, resize' if full else
                '; keyboard-only, fragmented Unicode paste, dirty resize, save/discard, search, quiet refresh, Ctrl-C' if keyboard else
                '; ASCII, no-color, reduced motion' + ('; initial recovery refusal/retry' if recovery_start else '')) +
-              ('; repository-link review/cancel/conflict/confirm/resolve' if full or keyboard else ''))
+              ('; repository-link and project-init review/cancel/conflict/confirm/resolve' if full or keyboard else ''))
     finally:
         if process.poll() is None:
             process.terminate()
