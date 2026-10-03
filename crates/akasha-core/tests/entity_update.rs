@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use akasha_core::{
     MutableNoteLifecycleResult, NOTE_EDIT_JOURNAL_FILE, NoteClass, NoteEditRecovery,
     ResolutionEnvironment, ResolveRequest, apply_mutable_note_lifecycle,
-    prepare_mutable_note_lifecycle, recover_pending_note_edit, update_entity, update_record,
+    apply_mutable_note_lifecycle_preview, prepare_mutable_note_lifecycle,
+    preview_mutable_note_lifecycle, recover_pending_note_edit, update_entity, update_record,
     validate_project,
 };
 use serde_json::json;
@@ -270,6 +271,269 @@ fn lifecycle_preparation_recovers_partial_publication_and_preserves_conflicting_
         5
     );
     assert_eq!(lifecycle_snapshot(&fixture.root), before);
+}
+
+#[test]
+fn lifecycle_preview_is_read_only_and_applies_exact_record_problem_entity_pairs() {
+    for id in [
+        ENTITY_ID,
+        RECORD_ID,
+        "Projects/example/records/problems/open.md",
+    ] {
+        for separator in ["\n", "\r\n"] {
+            let fixture = Fixture::new("lifecycle-preview-exact");
+            let form = prepare_mutable_note_lifecycle(&fixture.request, id).unwrap();
+            let note = format!(
+                "{}{separator}# Reviewed 世界  {separator}{separator}Literal {{{{body}}}}  ",
+                form.source.replace('\n', separator)
+            );
+            let projection = format!(
+                "{}{separator}Caller-authored projection Привет  ",
+                form.projection_source.replace('\n', separator)
+            );
+            let before = lifecycle_snapshot(&fixture.root);
+            let preview =
+                preview_mutable_note_lifecycle(&fixture.request, &form, &note, &projection)
+                    .unwrap();
+            assert_eq!(preview.prepared, form);
+            assert_eq!(preview.replacement_source, note);
+            assert_eq!(preview.projection_source, projection);
+            assert_eq!(lifecycle_snapshot(&fixture.root), before);
+            apply_mutable_note_lifecycle_preview(&fixture.request, &preview).unwrap();
+            assert_eq!(fs::read(&form.path).unwrap(), note.as_bytes());
+            assert_eq!(fs::read(&form.projection).unwrap(), projection.as_bytes());
+            validate_project(&fixture.request).unwrap();
+            let fresh = prepare_mutable_note_lifecycle(&fixture.request, id).unwrap();
+            let before = lifecycle_snapshot(&fixture.root);
+            let noop = preview_mutable_note_lifecycle(&fixture.request, &fresh, &note, &projection)
+                .unwrap();
+            apply_mutable_note_lifecycle_preview(&fixture.request, &noop).unwrap();
+            assert_eq!(lifecycle_snapshot(&fixture.root), before);
+        }
+    }
+}
+
+#[test]
+fn lifecycle_preview_refuses_invalid_metadata_links_and_prepared_identities_without_writes() {
+    for id in [ENTITY_ID, RECORD_ID] {
+        let fixture = Fixture::new("lifecycle-preview-validation");
+        let form = prepare_mutable_note_lifecycle(&fixture.request, id).unwrap();
+        let before = lifecycle_snapshot(&fixture.root);
+        let changed_identity = if id == ENTITY_ID {
+            form.source.replace("entity: core", "entity: renamed")
+        } else {
+            form.source
+                .replace("created: 2026-07-13", "created: 2026-10-03")
+        };
+        for note in [
+            "invalid leading frontmatter".to_owned(),
+            changed_identity,
+            format!("{}\n[[Projects/example/entities/missing]]", form.source),
+        ] {
+            assert_eq!(
+                preview_mutable_note_lifecycle(
+                    &fixture.request,
+                    &form,
+                    &note,
+                    &form.projection_source
+                )
+                .unwrap_err()
+                .exit_code(),
+                4
+            );
+            assert_eq!(lifecycle_snapshot(&fixture.root), before);
+        }
+        for field in [
+            "root",
+            "project",
+            "id",
+            "type",
+            "class",
+            "path",
+            "projection",
+        ] {
+            let mut invalid = form.clone();
+            match field {
+                "root" => invalid.root = fixture.root.join("other"),
+                "project" => invalid.project = "other".into(),
+                "id" => invalid.id = EVENT_ID.into(),
+                "type" => invalid.note_type = "other".into(),
+                "class" => invalid.class = NoteClass::Event,
+                "path" => invalid.path = fixture.root.join("outside.md"),
+                "projection" => invalid.projection = fixture.root.join("outside.md"),
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                preview_mutable_note_lifecycle(
+                    &fixture.request,
+                    &invalid,
+                    &form.source,
+                    &form.projection_source
+                )
+                .unwrap_err()
+                .exit_code(),
+                4,
+                "{field}"
+            );
+            assert_eq!(lifecycle_snapshot(&fixture.root), before);
+        }
+        let reviewed = preview_mutable_note_lifecycle(
+            &fixture.request,
+            &form,
+            &form.source,
+            &form.projection_source,
+        )
+        .unwrap();
+        let config_path = fixture.root.join("akasha.toml");
+        let config = fs::read_to_string(&config_path).unwrap();
+        fs::write(
+            &config_path,
+            config
+                .replace("index = \"index.md\"", "index = \"memory-map.md\"")
+                .replace("roadmap = \"roadmap.md\"", "roadmap = \"plan.md\""),
+        )
+        .unwrap();
+        fs::rename(fixture.index_path(), fixture.project.join("memory-map.md")).unwrap();
+        fs::rename(
+            fixture.project.join("roadmap.md"),
+            fixture.project.join("plan.md"),
+        )
+        .unwrap();
+        let before = lifecycle_snapshot(&fixture.root);
+        assert_eq!(
+            preview_mutable_note_lifecycle(
+                &fixture.request,
+                &form,
+                &form.source,
+                &form.projection_source
+            )
+            .unwrap_err()
+            .exit_code(),
+            4
+        );
+        assert_eq!(lifecycle_snapshot(&fixture.root), before);
+        assert_eq!(
+            apply_mutable_note_lifecycle_preview(&fixture.request, &reviewed)
+                .unwrap_err()
+                .exit_code(),
+            4
+        );
+        assert_eq!(lifecycle_snapshot(&fixture.root), before);
+    }
+}
+
+#[test]
+fn lifecycle_review_rechecks_both_baselines_after_valid_concurrent_writes_and_retries_fresh() {
+    for id in [ENTITY_ID, RECORD_ID] {
+        for change_note in [false, true] {
+            let fixture = Fixture::new("lifecycle-review-conflict");
+            let form = prepare_mutable_note_lifecycle(&fixture.request, id).unwrap();
+            let preview = preview_mutable_note_lifecycle(
+                &fixture.request,
+                &form,
+                &format!("{}\nLocal note.", form.source),
+                &format!("{}\nLocal projection.", form.projection_source),
+            )
+            .unwrap();
+            let note = if change_note {
+                format!("{}\nConcurrent note.", form.source)
+            } else {
+                form.source.clone()
+            };
+            let projection = if change_note {
+                form.projection_source.clone()
+            } else {
+                format!("{}\nConcurrent projection.", form.projection_source)
+            };
+            apply_mutable_note_lifecycle(&fixture.request, &form, &note, &projection).unwrap();
+            let before = lifecycle_snapshot(&fixture.root);
+            for _ in 0..2 {
+                assert_eq!(
+                    preview_mutable_note_lifecycle(
+                        &fixture.request,
+                        &form,
+                        &preview.replacement_source,
+                        &preview.projection_source
+                    )
+                    .unwrap_err()
+                    .exit_code(),
+                    5
+                );
+                assert_eq!(
+                    apply_mutable_note_lifecycle_preview(&fixture.request, &preview)
+                        .unwrap_err()
+                        .exit_code(),
+                    5
+                );
+                assert_eq!(lifecycle_snapshot(&fixture.root), before);
+            }
+            let fresh = prepare_mutable_note_lifecycle(&fixture.request, id).unwrap();
+            let preview = preview_mutable_note_lifecycle(
+                &fixture.request,
+                &fresh,
+                &format!("{}\nFresh local update.", fresh.source),
+                &format!("{}\nFresh projection.", fresh.projection_source),
+            )
+            .unwrap();
+            apply_mutable_note_lifecycle_preview(&fixture.request, &preview).unwrap();
+            validate_project(&fixture.request).unwrap();
+        }
+    }
+}
+
+#[test]
+fn lifecycle_preview_never_recovers_and_reviewed_apply_retains_existing_recovery_policy() {
+    let fixture = Fixture::new("lifecycle-preview-recovery");
+    let versions = fixture.successful_versions();
+    fixture.restore_before(&versions);
+    let form = prepare_mutable_note_lifecycle(&fixture.request, ENTITY_ID).unwrap();
+    let preview = preview_mutable_note_lifecycle(
+        &fixture.request,
+        &form,
+        &versions.note_after,
+        &versions.index_after,
+    )
+    .unwrap();
+    fixture.write_journal(&versions);
+    fs::write(fixture.entity_path(), &versions.note_after).unwrap();
+    let before = lifecycle_snapshot(&fixture.root);
+    assert_eq!(
+        preview_mutable_note_lifecycle(
+            &fixture.request,
+            &form,
+            &versions.note_after,
+            &versions.index_after
+        )
+        .unwrap_err()
+        .exit_code(),
+        5
+    );
+    assert_eq!(lifecycle_snapshot(&fixture.root), before);
+    let result = apply_mutable_note_lifecycle_preview(&fixture.request, &preview).unwrap();
+    let MutableNoteLifecycleResult::Entity(result) = result else {
+        unreachable!()
+    };
+    assert_eq!(result.recovery, NoteEditRecovery::RolledBack);
+    assert_eq!(fixture.entity(), versions.note_after);
+    assert_eq!(fixture.index(), versions.index_after);
+    validate_project(&fixture.request).unwrap();
+    fixture.restore_before(&versions);
+    fixture.write_journal(&versions);
+    fs::write(
+        fixture.entity_path(),
+        b"unrecognized external editor bytes\r\n",
+    )
+    .unwrap();
+    let before = lifecycle_snapshot(&fixture.root);
+    for _ in 0..2 {
+        assert_eq!(
+            apply_mutable_note_lifecycle_preview(&fixture.request, &preview)
+                .unwrap_err()
+                .exit_code(),
+            5
+        );
+        assert_eq!(lifecycle_snapshot(&fixture.root), before);
+    }
 }
 
 fn lifecycle_snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {

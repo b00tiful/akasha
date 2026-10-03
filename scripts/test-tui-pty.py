@@ -209,6 +209,12 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
         send(b'\x0e')
         wait_for(b'REVIEW EXACT INDEX' if note_type == 'entity' else b'REVIEW EXACT ROADMAP')
 
+    def lifecycle_review(label):
+        send(b'\x0e')
+        wait_for(b'REVIEW EXACT NOTE')
+        send(b'\x0e')
+        wait_for(b'REVIEW EXACT ' + label)
+
     try:
         wait_for(b'Library loaded')
         if expect_restore:
@@ -351,7 +357,8 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             send(b'\x1b[1;5F')
             roadmap_addition = b'\nPTY lifecycle roadmap update.\n'
             send(b'\x1b[200~' + roadmap_addition + b'\x1b[201~')
-            send(b'\x13')  # Ctrl-S applies both buffers through the core.
+            lifecycle_review(b'ROADMAP')
+            send(b'\x13')  # Ctrl-S applies the reviewed pair through the core.
             wait_for(b'READING')
             assert created.read_bytes() == task_before_discard + task_addition
             assert roadmap.read_bytes() == roadmap_before_discard + roadmap_addition
@@ -393,6 +400,8 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
                 send(b'\x1b[200~' + projection_addition + b'\x1b[201~')
                 send(b'\x10')  # Ctrl-P returns to the retained note draft.
                 wait_for(b'NOTE SOURCE')
+                send(b'\x0e')  # Return to the projection editor before review.
+                lifecycle_review(label)
                 send(b'\x13')
                 wait_for(b'READING')
                 assert source_path.read_bytes() == note_before + note_addition
@@ -517,6 +526,87 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             assert len(output) == length, 'reduced motion must not repaint an idle screen'
             assert b'\x1b[38;' not in output and b'\x1b[48;' not in output
         if full or keyboard:
+            # Both lifecycle reviews, revision and no-write discard remain reachable at 40x12.
+            for identity, label in [
+                ('Projects/example/records/tasks/active.md', b'ROADMAP'),
+                ('Projects/example/entities/core.md', b'INDEX'),
+            ]:
+                command(f'open {identity}')
+                wait_for(b'READING')
+                command('lifecycle')
+                wait_for(b'NOTE SOURCE')
+                note_path = root / identity
+                projection_path = root / 'Projects/example' / ('index.md' if label == b'INDEX' else 'roadmap.md')
+                note_before = note_path.read_bytes()
+                projection_before = projection_path.read_bytes()
+                before_review = {p: p.read_bytes() for p in root.rglob('*') if p.is_file()}
+                note_addition = f'\nReviewed lifecycle {term}: Привет 世界  \n'.encode()
+                projection_addition = b'\nReviewed lifecycle projection.\n'
+                send(b'\x1b[1;5F')
+                send(b'\x1b[200~' + note_addition + b'\x1b[201~')
+                send(b'\x13')
+                assert {p: p.read_bytes() for p in root.rglob('*') if p.is_file()} == before_review
+                send(b'\x0e')
+                wait_for(b' LIFECYCLE')
+                send(b'\x1b[1;5F')
+                send(b'\x1b[200~' + projection_addition + b'\x1b[201~')
+                send(b'\x13')
+                assert {p: p.read_bytes() for p in root.rglob('*') if p.is_file()} == before_review
+                lifecycle_review(label)
+                send(b'\x11')
+                assert process.poll() is None, 'review must guard exit'
+                send(b'\x10')
+                wait_for(b'REVIEW EXACT NOTE')
+                send(b'\x10')  # Return to editing; invalidate both reviews.
+                wait_for(label)
+                projection_revision = b'Revised projection.\n'
+                send(b'\x1b[1;5F')
+                send(b'\x1b[200~' + projection_revision + b'\x1b[201~')
+                send(b'\x13')
+                assert {p: p.read_bytes() for p in root.rglob('*') if p.is_file()} == before_review
+                send(b'\x10')
+                wait_for(b'NOTE SOURCE')
+                note_revision = b'Revised note.\n'
+                send(b'\x1b[1;5F')
+                send(b'\x1b[200~' + note_revision + b'\x1b[201~')
+                send(b'\x0e')
+                lifecycle_review(label)
+                assert {p: p.read_bytes() for p in root.rglob('*') if p.is_file()} == before_review
+                if label == b'ROADMAP':
+                    command('discard')
+                    wait_for(b'READING')
+                    assert {p: p.read_bytes() for p in root.rglob('*') if p.is_file()} == before_review
+                else:
+                    # A genuine checked index-only write after review must refuse the stale pair.
+                    expected = root.parent / 'lifecycle-expected.md'
+                    accepted = root.parent / 'lifecycle-index.md'
+                    expected.write_bytes(note_before)
+                    external_index = projection_before + b'\nConcurrent index after lifecycle review.\n'
+                    accepted.write_bytes(external_index)
+                    subprocess.run([str(binary), '--root', str(root), '--project', 'example',
+                                    'update-entity', identity, '--expected', str(expected),
+                                    '--replacement', str(expected), '--index', str(accepted)],
+                                   check=True, stdout=subprocess.DEVNULL)
+                    external = {p: p.read_bytes() for p in root.rglob('*') if p.is_file()}
+                    send(b'\x13')
+                    wait_for(b'Operation failed')
+                    wait_for(b'REVIEW EXACT INDEX')
+                    assert {p: p.read_bytes() for p in root.rglob('*') if p.is_file()} == external
+                    command('discard')
+                    wait_for(b'READING')
+                    assert {p: p.read_bytes() for p in root.rglob('*') if p.is_file()} == external
+                    command('lifecycle')
+                    wait_for(b'NOTE SOURCE')
+                    send(b'\x1b[1;5F')
+                    send(b'\x1b[200~' + note_addition + note_revision + b'\x1b[201~')
+                    send(b'\x0e')
+                    send(b'\x1b[1;5F')
+                    send(b'\x1b[200~' + projection_addition + projection_revision + b'\x1b[201~')
+                    lifecycle_review(label)
+                    send(b'\x13')
+                    wait_for(b'READING')
+                    assert note_path.read_bytes() == note_before + note_addition + note_revision
+                    assert projection_path.read_bytes() == external_index + projection_addition + projection_revision
             # Guided fields and exact review remain reachable in the compact keyboard profile.
             for note_type in ['session', 'handoff']:
                 command('handoff' if note_type == 'handoff' else 'event session')

@@ -49,10 +49,11 @@ pub use note_creation::{
     create_mutable_note, prepare_mutable_note_creation, preview_mutable_note_creation,
 };
 pub use note_edit::{
-    EntityUpdateResult, MutableNoteLifecycleForm, MutableNoteLifecycleResult,
-    NOTE_EDIT_JOURNAL_FILE, NoteEditError, NoteEditRecovery, NoteEditResult,
-    PendingNoteEditInspection, RecordUpdateResult, TaskLifecycleForm, apply_mutable_note_lifecycle,
-    inspect_pending_note_edit, prepare_mutable_note_lifecycle, prepare_task_lifecycle,
+    EntityUpdateResult, MutableNoteLifecycleForm, MutableNoteLifecyclePreview,
+    MutableNoteLifecycleResult, NOTE_EDIT_JOURNAL_FILE, NoteEditError, NoteEditRecovery,
+    NoteEditResult, PendingNoteEditInspection, RecordUpdateResult, TaskLifecycleForm,
+    apply_mutable_note_lifecycle, apply_mutable_note_lifecycle_preview, inspect_pending_note_edit,
+    prepare_mutable_note_lifecycle, prepare_task_lifecycle, preview_mutable_note_lifecycle,
     recover_pending_note_edit, replace_library_document, update_entity, update_record,
 };
 pub use note_template::{

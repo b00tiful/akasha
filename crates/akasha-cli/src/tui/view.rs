@@ -376,6 +376,8 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
             );
         } else {
             if app.event_stage() == Some(false)
+                || (app.lifecycle_pane().is_some()
+                    && app.lifecycle_review() != Some(LifecyclePane::Projection))
                 || (app.event_stage().is_none()
                     && app.lifecycle_pane().is_none()
                     && app.creation_review() != Some(LifecyclePane::Projection))
@@ -414,39 +416,20 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
                 "Ctrl-S Apply",
                 Action::Command("save"),
             );
-            if app.lifecycle_pane().is_some() {
-                button(
-                    frame,
-                    app,
-                    area,
-                    &mut x,
-                    "Ctrl-P Note",
-                    Action::Command("previous"),
-                );
-                button(
-                    frame,
-                    app,
-                    area,
-                    &mut x,
-                    &format!("Ctrl-N {}", app.lifecycle_projection_label().unwrap()),
-                    Action::Command("next"),
-                );
-            } else {
-                button(
-                    frame,
-                    app,
-                    area,
-                    &mut x,
-                    if app.creation_review().is_some() {
-                        "Ctrl-P Note"
-                    } else if app.event_stage() == Some(true) {
-                        "Ctrl-P Fields"
-                    } else {
-                        "Ctrl-P Inputs"
-                    },
-                    Action::Command("previous"),
-                );
-            }
+            button(
+                frame,
+                app,
+                area,
+                &mut x,
+                if app.creation_review().is_some() || app.lifecycle_review().is_some() {
+                    "Ctrl-P Note"
+                } else if app.event_stage() == Some(true) {
+                    "Ctrl-P Fields"
+                } else {
+                    "Ctrl-P Inputs"
+                },
+                Action::Command("previous"),
+            );
         }
         button(
             frame,
@@ -829,7 +812,10 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
         } else {
             app.body.clone()
         };
-        let text = if app.event_stage() == Some(true) || app.creation_review().is_some() {
+        let text = if app.event_stage() == Some(true)
+            || app.creation_review().is_some()
+            || app.lifecycle_review().is_some()
+        {
             Text::from(safe_text(&source))
         } else {
             reading_text(&source, app)

@@ -103,6 +103,14 @@ pub struct MutableNoteLifecycleForm {
     pub projection_source: String,
 }
 
+/// Exact caller-authored pair validated for read-only review. Not a persisted approval token.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MutableNoteLifecyclePreview {
+    pub prepared: MutableNoteLifecycleForm,
+    pub replacement_source: String,
+    pub projection_source: String,
+}
+
 /// Class-specific result of applying one prepared lifecycle form.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum MutableNoteLifecycleResult {
@@ -264,6 +272,134 @@ pub fn prepare_mutable_note_lifecycle(
         projection_source: read_source(&projection)?,
         projection,
     })
+}
+
+/// Validate a caller-authored pair without locking, recovering or writing any file.
+/// Preview is a point-in-time check; apply revalidates under the existing writer lock.
+pub fn preview_mutable_note_lifecycle(
+    request: &ResolveRequest,
+    form: &MutableNoteLifecycleForm,
+    replacement_source: &str,
+    projection_source: &str,
+) -> Result<MutableNoteLifecyclePreview, NoteEditError> {
+    let inspection = inspect_pending_note_edit(request)?;
+    if inspection.pending {
+        return Err(NoteEditError::Conflict {
+            path: inspection.journal_path,
+            message: "pending recovery prevents lifecycle review; discard and prepare a fresh form"
+                .into(),
+        });
+    }
+    let resolved = resolve_project(request)?;
+    let library = build_library_projection(request)?;
+    let book = library
+        .projects
+        .iter()
+        .find(|shelf| shelf.project == resolved.project)
+        .into_iter()
+        .flat_map(|shelf| &shelf.categories)
+        .flat_map(|category| &category.books)
+        .find(|book| book.id == form.id)
+        .ok_or_else(|| NoteEditError::Validation {
+            path: PathBuf::from(&form.id),
+            message: "lifecycle review requires a projected note from the selected project".into(),
+        })?;
+    let config = load_root_config(&resolved.root)?;
+    let projection = resolved.project_dir.join(match book.class {
+        NoteClass::Record => &config.project.roadmap,
+        NoteClass::Entity => &config.project.index,
+        NoteClass::Event => {
+            return Err(NoteEditError::Validation {
+                path: PathBuf::from(&form.id),
+                message: "immutable events cannot enter a lifecycle review".into(),
+            });
+        }
+    });
+    let projection_before = read_regular_file(&projection, "read lifecycle review projection")?;
+    validate_lifecycle_baseline(
+        form,
+        &resolved,
+        &book.note_type,
+        book.class,
+        &projection,
+        &projection_before,
+    )?;
+    let current = read_regular_file(&form.path, "read lifecycle review note")?;
+    if current != form.source.as_bytes() {
+        return Err(NoteEditError::Conflict {
+            path: form.path.clone(),
+            message: "the canonical note no longer matches the source loaded by the lifecycle form"
+                .into(),
+        });
+    }
+    validate_replacement(
+        &resolved.root,
+        &resolved.project,
+        &form.path,
+        &book.note_type,
+        replacement_source.as_bytes(),
+        &config,
+    )?;
+    (match book.class {
+        NoteClass::Record => validate_preserved_record_metadata,
+        NoteClass::Entity => validate_preserved_entity_identity,
+        NoteClass::Event => unreachable!("immutable events rejected above"),
+    })(&form.path, &current, replacement_source.as_bytes())?;
+    let evidence = collect_candidate_evidence(
+        &resolved.project_dir,
+        &form.path,
+        replacement_source.as_bytes(),
+        &config,
+    )?;
+    let index = read_regular_file(
+        &resolved.project_dir.join(&config.project.index),
+        "read current lifecycle index",
+    )?;
+    let roadmap = read_regular_file(
+        &resolved.project_dir.join(&config.project.roadmap),
+        "read current lifecycle roadmap",
+    )?;
+    let state_path = resolved.project_dir.join(PROJECT_STATE_FILE);
+    let state = read_regular_file(&state_path, "read lifecycle review state")?;
+    let state = str::from_utf8(&state).map_err(|error| NoteEditError::Validation {
+        path: state_path.clone(),
+        message: format!("project state is not valid UTF-8: {error}"),
+    })?;
+    let (index, roadmap) = match book.class {
+        NoteClass::Record => (index.as_slice(), projection_source.as_bytes()),
+        NoteClass::Entity => (projection_source.as_bytes(), roadmap.as_slice()),
+        NoteClass::Event => unreachable!("immutable events rejected above"),
+    };
+    render_updated_project_state(
+        state,
+        &resolved.project_dir,
+        index,
+        roadmap,
+        &evidence,
+        &BTreeSet::new(),
+    )
+    .map_err(|message| NoteEditError::Validation {
+        path: state_path,
+        message,
+    })?;
+    Ok(MutableNoteLifecyclePreview {
+        prepared: form.clone(),
+        replacement_source: replacement_source.into(),
+        projection_source: projection_source.into(),
+    })
+}
+
+/// Apply exactly the reviewed pair through the existing checked lifecycle transaction.
+pub fn apply_mutable_note_lifecycle_preview(
+    request: &ResolveRequest,
+    preview: &MutableNoteLifecyclePreview,
+) -> Result<MutableNoteLifecycleResult, NoteEditError> {
+    apply_mutable_note_lifecycle(
+        request,
+        &preview.prepared,
+        &preview.replacement_source,
+        &preview.projection_source,
+    )
 }
 
 /// Apply exact edits only while both prepared note and projection baselines still match.
