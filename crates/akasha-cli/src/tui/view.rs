@@ -1,5 +1,5 @@
 use super::{
-    app::{Action, App, Focus, Target, scope_name},
+    app::{Action, App, Focus, LifecyclePane, Target, scope_name},
     editor::safe_text,
     starlight,
 };
@@ -375,7 +375,11 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
                 Action::Command("previous"),
             );
         } else {
-            if app.event_stage() == Some(false) {
+            if app.event_stage() == Some(false)
+                || (app.event_stage().is_none()
+                    && app.lifecycle_pane().is_none()
+                    && app.creation_review() != Some(LifecyclePane::Projection))
+            {
                 button(
                     frame,
                     app,
@@ -433,7 +437,9 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
                     app,
                     area,
                     &mut x,
-                    if app.event_stage() == Some(true) {
+                    if app.creation_review().is_some() {
+                        "Ctrl-P Note"
+                    } else if app.event_stage() == Some(true) {
                         "Ctrl-P Fields"
                     } else {
                         "Ctrl-P Inputs"
@@ -823,7 +829,7 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
         } else {
             app.body.clone()
         };
-        let text = if app.event_stage() == Some(true) {
+        let text = if app.event_stage() == Some(true) || app.creation_review().is_some() {
             Text::from(safe_text(&source))
         } else {
             reading_text(&source, app)

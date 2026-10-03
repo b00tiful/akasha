@@ -193,6 +193,22 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             rows, _, _, _ = struct.unpack('HHHH', fcntl.ioctl(slave, termios.TIOCGWINSZ, b'\0' * 8))
             send(f'\x1b[<0;6;{rows - 3}M\x1b[<0;6;{rows - 3}m'.encode())
         send(value.encode() + b'\r')
+    def create_inputs(note_type, values):
+        command(f'create {note_type}')
+        wait_for(f'CREATE {note_type}'.encode())
+        send(values[0].encode() + b'\r')
+        wait_for(b'(1/')  # Named template-field editor, with its configured field count.
+        for value in values[1:]:
+            send(b'\x1b[200~' + value.encode() + b'\x1b[201~')
+            send(b'\x0e')
+        wait_for(b'EDIT INDEX' if note_type == 'entity' else b'EDIT ROADMAP')
+
+    def create_review(note_type):
+        send(b'\x0e')
+        wait_for(b'REVIEW EXACT NOTE')
+        send(b'\x0e')
+        wait_for(b'REVIEW EXACT INDEX' if note_type == 'entity' else b'REVIEW EXACT ROADMAP')
+
     try:
         wait_for(b'Library loaded')
         if expect_restore:
@@ -248,21 +264,14 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             drain(0.3)
             command('search PTY acceptance')
             wait_for(b'matches')
-            command('create task')
-            wait_for(b'CREATE task')
-            for value in [
-                'pty-created.md',
-                'open',
-                '2026-09-17',
-                '2026-09-17',
-                'PTY created task',
-                'Tracks [[Projects/example/entities/core|the core]].',
-            ]:
-                command(value)
-            wait_for(b'REVIEW ROADMAP')
+            create_inputs('task', [
+                'pty-created.md', 'open', '2026-09-17', '2026-09-17',
+                'PTY created task', 'Tracks [[Projects/example/entities/core|the core]].',
+            ])
             send(b'\x1b[1;5F')
             projection = b'\n- [[Projects/example/records/tasks/pty-created|PTY created task]]\n'
             send(b'\x1b[200~' + projection + b'\x1b[201~')
+            create_review('task')
             command('save')
             created = root / 'Projects/example/records/tasks/pty-created.md'
             deadline = time.monotonic() + 8
@@ -286,11 +295,8 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
                  ['pty-reviewed.md', 'pty-reviewed', 'subsystem', 'active', '2026-10-03',
                   'Reviewed entity', 'Привет 世界']),
             ]:
-                command(f'create {note_type}')
-                wait_for(f'CREATE {note_type}'.encode())
-                for value in values:
-                    command(value)
-                wait_for(b'REVIEW')
+                create_inputs(note_type, values)
+                create_review(note_type)
                 maintained = root / 'Projects/example' / projection_name
                 external = maintained.read_bytes() + f'\nConcurrent {note_type} decision: 世界  \n'.encode()
                 accepted = root.parent / f'accepted-{projection_name}'
@@ -313,11 +319,8 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
                 assert {str(path.relative_to(root)): path.read_bytes()
                         for path in root.rglob('*') if path.is_file()} == before_refusal
                 # Fresh review uses the concurrent projection, then creates and reopens.
-                command(f'create {note_type}')
-                wait_for(f'CREATE {note_type}'.encode())
-                for value in values:
-                    command(value)
-                wait_for(b'REVIEW')
+                create_inputs(note_type, values)
+                create_review(note_type)
                 command('save')
                 wait_for(b'READING')
                 folder = 'records/tasks' if note_type == 'task' else 'entities'
@@ -548,6 +551,47 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
                                 f'date: 2026-10-03\n---\n\n# Guided {term}\n\n{body}\nRevised before publication.\n')
                     assert destination.read_bytes() == expected.encode(), 'exact reviewed immutable source must be published'
                     assert destination.read_bytes().count(b'{{title}}') == 1, 'substitution must remain nonrecursive'
+            # Mutable multiline fields, revision, paired exact review and no-write discard
+            # use the same actual keyboard path in full and compact 40x12 scenarios.
+            for note_type in ['task', 'entity']:
+                name = f'pty-multiline-{term}-{"keyboard" if keyboard else "full"}-{note_type}.md'
+                folder = 'entities' if note_type == 'entity' else 'records/tasks'
+                destination = root / f'Projects/example/{folder}/{name}'
+                projection_path = root / f'Projects/example/{"index.md" if note_type == "entity" else "roadmap.md"}'
+                body = f'  Mutable {term}: Привет 世界  \n\nLiteral {{{{title}}}}'
+                values = ([name, name[:-3], 'subsystem', 'active', '2026-10-03', f'Mutable {term}', body]
+                          if note_type == 'entity' else
+                          [name, 'open', '2026-10-03', '2026-10-03', f'Mutable {term}', body])
+                create_inputs(note_type, values)
+                before_review = {p: p.read_bytes() for p in root.rglob('*') if p.is_file()}
+                send(b'\x13')
+                assert not destination.exists(), 'projection editor must not publish'
+                create_review(note_type)
+                send(b'\x11')
+                assert process.poll() is None, 'paired review must guard exit'
+                send(b'\x10')  # exact note
+                wait_for(b'REVIEW EXACT NOTE')
+                send(b'\x10')  # editable projection; invalidates review
+                wait_for(b'EDIT INDEX' if note_type == 'entity' else b'EDIT ROADMAP')
+                send(b'\x10')  # body field
+                wait_for(b'body')
+                send(b'\x1b[1;5F')
+                send(b'\x1b[200~\nRevised mutable field.\x1b[201~')
+                send(b'\x0e')  # projection editor
+                create_review(note_type)
+                assert {p: p.read_bytes() for p in root.rglob('*') if p.is_file()} == before_review
+                if note_type == 'task':
+                    command('discard')
+                    assert {p: p.read_bytes() for p in root.rglob('*') if p.is_file()} == before_review
+                    assert not destination.exists()
+                else:
+                    send(b'\x13')
+                    wait_for(b'READING')
+                    expected = ('---\nschema_version: 1\n'
+                                f'entity: {name[:-3]}\nkind: subsystem\nstatus: active\nreviewed: 2026-10-03\n'
+                                f'---\n\n# Mutable {term}\n\n{body}\nRevised mutable field.\n')
+                    assert destination.read_bytes() == expected.encode(), 'published note must match exact multiline review'
+                    assert projection_path.read_bytes() == before_review[projection_path]
             # Preserve the established cross-launch task navigation checkpoint.
             command('open Projects/example/records/tasks/pty-created.md')
             wait_for(b'READING')

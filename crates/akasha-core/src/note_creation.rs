@@ -68,6 +68,76 @@ pub struct MutableNoteCreationForm {
     pub projection_source: String,
 }
 
+/// Exact note and caller-authored projection for read-only review; no persisted protocol.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MutableNoteCreationPreview {
+    pub form: MutableNoteCreationForm,
+    pub relative_path: PathBuf,
+    pub fields: BTreeMap<String, String>,
+    pub id: String,
+    pub path: PathBuf,
+    pub source: String,
+    pub projection_source: String,
+}
+
+/// Render explicit multiline fields and check links without recovery or publication.
+/// Apply remains responsible for current configuration, baselines and full project validation.
+pub fn preview_mutable_note_creation(
+    form: &MutableNoteCreationForm,
+    relative_path: &Path,
+    fields: &BTreeMap<String, String>,
+    projection_source: &str,
+) -> Result<MutableNoteCreationPreview, MutableNoteCreationError> {
+    let path = note_destination(&form.project_dir, &form.note_folder, relative_path)?;
+    reject_existing_destination(&path)?;
+    let source = instantiate_template(
+        &form.template_source,
+        &form.template,
+        &form.project,
+        &form.note_type,
+        fields,
+    )?;
+    validate_note_source(
+        &form.root,
+        &form.project,
+        &form.note_type,
+        &path,
+        source.as_bytes(),
+        &form.required_fields,
+    )?;
+    validate_wikilinks_with_targets(
+        &form.root,
+        &form.projection,
+        projection_source,
+        &BTreeSet::from([path.clone()]),
+    )?;
+    Ok(MutableNoteCreationPreview {
+        id: vault_relative_id(&form.root, &path)?,
+        form: form.clone(),
+        relative_path: relative_path.to_owned(),
+        fields: fields.clone(),
+        path,
+        source,
+        projection_source: projection_source.to_owned(),
+    })
+}
+
+/// Publish only the exact regenerated review while prepared baselines still match under lock.
+pub fn apply_mutable_note_creation_preview(
+    request: &ResolveRequest,
+    preview: &MutableNoteCreationPreview,
+) -> Result<MutableNoteCreationResult, MutableNoteCreationError> {
+    create_mutable_note_checked(
+        request,
+        &preview.form.note_type,
+        &preview.relative_path,
+        &preview.fields,
+        &preview.projection_source,
+        Some(&preview.form),
+        Some(preview),
+    )
+}
+
 /// An input, resolution, validation, conflict, filesystem, or recovery failure.
 #[derive(Debug)]
 pub enum MutableNoteCreationError {
@@ -310,6 +380,7 @@ pub fn create_mutable_note(
         fields,
         projection_source,
         None,
+        None,
     )
 }
 
@@ -330,6 +401,7 @@ pub fn apply_mutable_note_creation(
         fields,
         projection_source,
         Some(form),
+        None,
     )
 }
 
@@ -340,6 +412,7 @@ fn create_mutable_note_checked(
     fields: &BTreeMap<String, String>,
     projection_source: &str,
     form: Option<&MutableNoteCreationForm>,
+    preview: Option<&MutableNoteCreationPreview>,
 ) -> Result<MutableNoteCreationResult, MutableNoteCreationError> {
     let resolved = resolve_project(request)?;
     let _lock = ProjectWriteLock::acquire(&resolved.project_dir)?;
@@ -427,6 +500,22 @@ fn create_mutable_note_checked(
         source.as_bytes(),
         &configured.required_fields,
     )?;
+
+    if let Some(preview) = preview {
+        let regenerated =
+            preview_mutable_note_creation(&preview.form, relative_path, fields, projection_source)?;
+        if &regenerated != preview
+            || regenerated.path != destination
+            || regenerated.source != source
+        {
+            return Err(MutableNoteCreationError::Validation {
+                path: destination,
+                message:
+                    "prepared creation review no longer matches its exact source or destination"
+                        .into(),
+            });
+        }
+    }
 
     let mut evidence = collect_existing_evidence(&resolved.project_dir, &config)?;
     evidence.push(CanonicalNoteEvidence {
