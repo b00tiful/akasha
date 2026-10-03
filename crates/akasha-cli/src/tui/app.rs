@@ -13,12 +13,13 @@ use akasha_core::{
     AgentClient, AgentWiringPlan, EventCreationResult, LibraryBook, LibraryDocument,
     LibraryProjection, LibraryScope, LibrarySearchResult, MutableNoteCreationForm,
     MutableNoteCreationResult, MutableNoteLifecycleForm, MutableNoteLifecycleResult, NoteClass,
-    ResolveRequest, SessionHookWiringPlan, apply_mutable_note_lifecycle, assemble_context,
-    assemble_session_breadcrumb, build_library_projection, capture_handoff, create_event,
-    create_mutable_note, load_library_document, prepare_agent_wiring,
-    prepare_mutable_note_creation, prepare_mutable_note_lifecycle, prepare_session_hook_wiring,
-    recover_pending_note_edit, render_context_markdown, render_session_breadcrumb,
-    replace_library_document, resolve_note_template, search_library, validate_project,
+    ResolveRequest, SessionHookWiringPlan, apply_mutable_note_creation,
+    apply_mutable_note_lifecycle, assemble_context, assemble_session_breadcrumb,
+    build_library_projection, capture_handoff, create_event, load_library_document,
+    prepare_agent_wiring, prepare_mutable_note_creation, prepare_mutable_note_lifecycle,
+    prepare_session_hook_wiring, recover_pending_note_edit, render_context_markdown,
+    render_session_breadcrumb, replace_library_document, resolve_note_template, search_library,
+    validate_project,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -325,7 +326,7 @@ pub(super) enum Job {
     PrepareCreate(ResolveRequest, String),
     Create(
         ResolveRequest,
-        String,
+        Box<MutableNoteCreationForm>,
         PathBuf,
         BTreeMap<String, String>,
         String,
@@ -454,9 +455,9 @@ fn execute_job(job: Job) -> WorkResult {
                 .map(Response::CreatePrepared)
                 .map_err(|e| err(&e))
         }
-        Job::Create(request, note_type, path, fields, projection) => create_mutable_note(
+        Job::Create(request, prepared, path, fields, projection) => apply_mutable_note_creation(
             &request,
-            &note_type,
+            &prepared,
             &path,
             &fields,
             &projection,
@@ -776,10 +777,16 @@ impl App {
     }
     fn watched_sources(&self) -> Vec<WatchedSource> {
         match &self.workflow {
-            Some(Workflow::Creation(form)) => vec![WatchedSource {
-                path: form.prepared.projection.clone(),
-                expected: form.prepared.projection_source.clone(),
-            }],
+            Some(Workflow::Creation(form)) => vec![
+                WatchedSource {
+                    path: form.prepared.projection.clone(),
+                    expected: form.prepared.projection_source.clone(),
+                },
+                WatchedSource {
+                    path: form.prepared.template.clone(),
+                    expected: form.prepared.template_source.clone(),
+                },
+            ],
             Some(Workflow::Lifecycle(form)) => vec![
                 WatchedSource {
                     path: form.prepared.path.clone(),
@@ -1415,7 +1422,7 @@ impl App {
             Some(Workflow::Creation(form)) if form.stage == CreationStage::Projection => {
                 Some(Job::Create(
                     self.request.clone(),
-                    form.prepared.note_type.clone(),
+                    Box::new(form.prepared.clone()),
                     PathBuf::from(&form.path),
                     form.fields.iter().cloned().collect(),
                     form.projection.source(),
@@ -3412,6 +3419,185 @@ mod tests {
                 .contains("TUI created task")
         );
         validate_project(&fixture.app.request).unwrap();
+    }
+
+    #[test]
+    fn creation_refuses_valid_concurrent_roadmap_update_and_retains_drafts() {
+        let mut fixture = Fixture::new();
+        fixture.app.command("create task");
+        fixture.finish();
+        for value in [
+            "tui-created.md",
+            "open",
+            "2026-10-03",
+            "2026-10-03",
+            "Draft task",
+            "Привет 世界",
+        ] {
+            fixture.app.paste(value);
+            press(&mut fixture.app, KeyCode::Enter);
+        }
+        let draft = fixture.app.active_editor().unwrap().source();
+        let task = fs::read_to_string(fixture.root().join(TASK_ID)).unwrap();
+        let roadmap = fixture.root().join("Projects/example/roadmap.md");
+        let external = format!("{draft}\nConcurrent roadmap decision.\n");
+        akasha_core::update_record(&fixture.app.request, TASK_ID, &task, &task, &external).unwrap();
+        let state = fixture.root().join("Projects/example/.akasha-state.toml");
+        let state_before = fs::read(&state).unwrap();
+
+        // Apply before the periodic observer: the core must own this check.
+        fixture.app.command("save");
+        fixture.finish();
+
+        assert!(
+            fixture.app.in_workflow(),
+            "stale creation must retain the form"
+        );
+        assert_eq!(fixture.app.active_editor().unwrap().source(), draft);
+        assert_eq!(fs::read_to_string(&roadmap).unwrap(), external);
+        assert_eq!(fs::read(&state).unwrap(), state_before);
+        assert!(!fixture.root().join(CREATED_TASK_ID).exists());
+        let Some(Workflow::Creation(form)) = &fixture.app.workflow else {
+            unreachable!()
+        };
+        assert_eq!(form.path, "tui-created.md");
+        assert_eq!(form.fields.last().unwrap().1, "Привет 世界");
+        fixture.app.command("discard");
+        assert!(!fixture.app.in_workflow());
+        assert_eq!(fs::read_to_string(roadmap).unwrap(), external);
+        assert_eq!(fs::read(state).unwrap(), state_before);
+    }
+
+    #[test]
+    fn entity_creation_refuses_stale_index_then_reopens_after_fresh_review() {
+        let mut fixture = Fixture::new();
+        let template = fixture.root().join("Projects/example/templates/entity.md");
+        fs::write(
+            &template,
+            include_str!("../../../../tests/fixtures/tui/entity.md"),
+        )
+        .unwrap();
+        fixture.app.command("create entity");
+        fixture.finish();
+        for value in [
+            "prepared.md",
+            "prepared",
+            "subsystem",
+            "active",
+            "2026-10-03",
+            "Prepared entity",
+            "Привет 世界",
+        ] {
+            fixture.app.paste(value);
+            press(&mut fixture.app, KeyCode::Enter);
+        }
+        let source = fs::read_to_string(fixture.root().join(ID)).unwrap();
+        let draft = fixture.app.active_editor().unwrap().source();
+        let external = format!("{draft}\nConcurrent index decision.\n");
+        akasha_core::update_entity(&fixture.app.request, ID, &source, &source, &external).unwrap();
+        fixture.check_external_changes();
+        assert!(fixture.app.external_change_pending);
+        fixture.app.command("save");
+        fixture.finish();
+        assert!(fixture.app.in_workflow());
+        assert_eq!(fixture.app.active_editor().unwrap().source(), draft);
+        let id = "Projects/example/entities/prepared.md";
+        assert!(!fixture.root().join(id).exists());
+        for command in ["refresh", "quit", "projects"] {
+            fixture.app.command(command);
+            assert!(fixture.app.in_workflow());
+            assert!(!fixture.app.busy);
+            assert!(!fixture.app.quit);
+        }
+        fixture.app.command("discard");
+        fixture.app.command("create entity");
+        fixture.finish();
+        for value in [
+            "prepared.md",
+            "prepared",
+            "subsystem",
+            "active",
+            "2026-10-03",
+            "Prepared entity",
+            "Привет 世界",
+        ] {
+            fixture.app.paste(value);
+            press(&mut fixture.app, KeyCode::Enter);
+        }
+        assert_eq!(fixture.app.active_editor().unwrap().source(), external);
+        fixture.app.command("save");
+        fixture.finish();
+        fixture.finish();
+        fixture.finish();
+        assert!(!fixture.app.in_workflow());
+        assert_eq!(fixture.app.document.as_ref().unwrap().id, id);
+        assert!(
+            fixture
+                .app
+                .document
+                .as_ref()
+                .unwrap()
+                .source
+                .contains("Привет 世界")
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.root().join("Projects/example/index.md")).unwrap(),
+            external
+        );
+        assert!(!fixture.app.external_change_pending);
+        validate_project(&fixture.app.request).unwrap();
+    }
+
+    #[test]
+    fn creation_template_change_signals_and_preserves_every_input_on_refusal() {
+        let mut fixture = Fixture::new();
+        fixture.app.command("create task");
+        fixture.finish();
+        fixture.app.paste("kept-path.md");
+        let template = fixture.root().join("Projects/example/templates/task.md");
+        fs::write(&template, format!("{TASK_TEMPLATE}\nTemplate changed.\n")).unwrap();
+        fixture.check_external_changes();
+        assert!(fixture.app.external_change_pending);
+        assert_eq!(fixture.app.prompt.lines(), ["kept-path.md"]);
+        press(&mut fixture.app, KeyCode::Enter);
+        for value in [
+            "open",
+            "2026-10-03",
+            "2026-10-03",
+            "Kept title",
+            "Kept body",
+        ] {
+            fixture.app.paste(value);
+            press(&mut fixture.app, KeyCode::Enter);
+        }
+        let draft = fixture.app.active_editor().unwrap().source();
+        let state = fixture.root().join("Projects/example/.akasha-state.toml");
+        let before = fs::read(&state).unwrap();
+        fixture.app.command("save");
+        fixture.finish();
+        assert!(fixture.app.in_workflow());
+        assert!(
+            fixture
+                .app
+                .messages
+                .back()
+                .unwrap()
+                .contains("template no longer matches")
+        );
+        assert_eq!(fixture.app.active_editor().unwrap().source(), draft);
+        assert_eq!(fs::read(state).unwrap(), before);
+        assert!(
+            !fixture
+                .root()
+                .join("Projects/example/records/tasks/kept-path.md")
+                .exists()
+        );
+        assert!(
+            !fixture
+                .root()
+                .join("Projects/example/.akasha-edit-journal.json")
+                .exists()
+        );
     }
 
     #[test]

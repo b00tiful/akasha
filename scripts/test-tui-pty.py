@@ -266,6 +266,58 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             roadmap = root / 'Projects/example/roadmap.md'
             roadmap_before_discard = roadmap.read_bytes()
             assert projection in roadmap_before_discard
+            # Long-lived creation must check the projection under the core lock,
+            # independently of the periodic external-change observer.
+            for note_type, existing_id, projection_name, flag, values in [
+                ('task', 'Projects/example/records/tasks/active.md', 'roadmap.md', '--roadmap',
+                 ['pty-reviewed.md', 'open', '2026-10-03', '2026-10-03',
+                  'Reviewed task', 'Привет 世界']),
+                ('entity', 'Projects/example/entities/core.md', 'index.md', '--index',
+                 ['pty-reviewed.md', 'pty-reviewed', 'subsystem', 'active', '2026-10-03',
+                  'Reviewed entity', 'Привет 世界']),
+            ]:
+                command(f'create {note_type}')
+                wait_for(f'CREATE {note_type}'.encode())
+                for value in values:
+                    command(value)
+                wait_for(b'REVIEW')
+                maintained = root / 'Projects/example' / projection_name
+                external = maintained.read_bytes() + f'\nConcurrent {note_type} decision: 世界  \n'.encode()
+                accepted = root.parent / f'accepted-{projection_name}'
+                accepted.write_bytes(external)
+                existing = root / existing_id
+                subprocess.run([
+                    str(binary), '--root', str(root), '--project', 'example',
+                    'update-record' if note_type == 'task' else 'update-entity', existing_id,
+                    '--expected', str(existing), '--replacement', str(existing), flag, str(accepted),
+                ], check=True, stdout=subprocess.DEVNULL)
+                before_refusal = {str(path.relative_to(root)): path.read_bytes()
+                                  for path in root.rglob('*') if path.is_file()}
+                command('save')
+                wait_for(b'Operation failed')
+                wait_for(b'REVIEW')
+                assert maintained.read_bytes() == external, 'refusal must retain concurrent projection'
+                assert {str(path.relative_to(root)): path.read_bytes()
+                        for path in root.rglob('*') if path.is_file()} == before_refusal
+                command('discard')
+                assert {str(path.relative_to(root)): path.read_bytes()
+                        for path in root.rglob('*') if path.is_file()} == before_refusal
+                # Fresh review uses the concurrent projection, then creates and reopens.
+                command(f'create {note_type}')
+                wait_for(f'CREATE {note_type}'.encode())
+                for value in values:
+                    command(value)
+                wait_for(b'REVIEW')
+                command('save')
+                wait_for(b'READING')
+                folder = 'records/tasks' if note_type == 'task' else 'entities'
+                reviewed = root / 'Projects/example' / folder / 'pty-reviewed.md'
+                assert 'Привет 世界'.encode() in reviewed.read_bytes()
+                assert maintained.read_bytes() == external, 'fresh creation must keep reviewed projection'
+            command('open Projects/example/records/tasks/pty-created.md')
+            wait_for(b'READING')
+            task_before_discard = created.read_bytes()
+            roadmap_before_discard = roadmap.read_bytes()
             command('lifecycle')
             wait_for(b'TASK LIFECYCLE')
             send(b'\x1b[1;5F')

@@ -41,7 +41,7 @@ pub use library::{
 pub use link::{LinkError, LinkRequest, LinkResult, link_project};
 pub use note_creation::{
     MutableNoteCreationError, MutableNoteCreationForm, MutableNoteCreationResult,
-    create_mutable_note, prepare_mutable_note_creation,
+    apply_mutable_note_creation, create_mutable_note, prepare_mutable_note_creation,
 };
 pub use note_edit::{
     EntityUpdateResult, MutableNoteLifecycleForm, MutableNoteLifecycleResult,

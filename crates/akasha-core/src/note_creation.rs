@@ -11,15 +11,17 @@ use serde::Serialize;
 use crate::evidence::collect_canonical_evidence;
 use crate::note_edit::{
     NoteEditError, NoteEditRecovery, NoteProjectionJournal, complete_note_mutation_journal,
-    recover_note_mutation_locked, recover_pending_note_edit,
-    write_note_projection_mutation_journal,
+    recover_note_mutation_locked, write_note_projection_mutation_journal,
 };
-use crate::note_template::{NoteTemplateError, NoteTemplateScope, resolve_note_template};
+use crate::note_template::{
+    NoteTemplateError, NoteTemplateScope, ResolvedNoteTemplate, resolve_note_template,
+};
 use crate::project_validation::{
     ProjectValidationError, validate_project, validate_wikilinks_with_targets,
 };
 use crate::resolution::{
-    NoteClass, ResolveError, ResolveRequest, RootConfig, load_root_config, resolve_project,
+    NoteClass, ResolveError, ResolveRequest, ResolvedProject, RootConfig, load_root_config,
+    resolve_project,
 };
 use crate::state::{CanonicalNoteEvidence, PROJECT_STATE_FILE, render_updated_project_state};
 use crate::validation::{parse_leading_frontmatter_bytes, validate_configured_note};
@@ -47,15 +49,20 @@ pub struct MutableNoteCreationResult {
     pub recovery: NoteEditRecovery,
 }
 
-/// Read-only inputs needed to present one configured record/entity creation form.
+/// Exact inputs needed to present and check one configured record/entity creation form.
+/// Preparation can recover a pending journal before returning validated sources.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MutableNoteCreationForm {
     pub root: PathBuf,
     pub project: String,
+    pub project_dir: PathBuf,
     pub note_type: String,
     pub class: NoteClass,
+    pub note_folder: PathBuf,
+    pub required_fields: Vec<String>,
     pub template: PathBuf,
     pub template_scope: NoteTemplateScope,
+    pub template_source: String,
     pub fields: Vec<String>,
     pub projection: PathBuf,
     pub projection_source: String,
@@ -195,6 +202,7 @@ impl From<AtomicCreateError> for MutableNoteCreationError {
 }
 
 /// Resolve one configured record/entity template and its exact maintained projection for review.
+/// Holds the writer lock through recovery, validation and source reads; otherwise writes nothing.
 ///
 /// `project` and `type` placeholders are core-owned. Every other valid template placeholder is
 /// returned once, in first-appearance order, for an interface to collect without reimplementing
@@ -203,9 +211,16 @@ pub fn prepare_mutable_note_creation(
     request: &ResolveRequest,
     note_type: &str,
 ) -> Result<MutableNoteCreationForm, MutableNoteCreationError> {
-    recover_pending_note_edit(request)?;
-    let report = validate_project(request)?;
     let resolved = resolve_project(request)?;
+    let _lock = ProjectWriteLock::acquire(&resolved.project_dir)?;
+    recover_note_mutation_locked(request, &resolved.project_dir)?;
+    let report = validate_project(request)?;
+    if report.project_dir != resolved.project_dir {
+        return Err(MutableNoteCreationError::Conflict {
+            path: report.project_dir,
+            message: "project resolution changed while acquiring the writer lock".to_owned(),
+        });
+    }
     let config = load_root_config(&resolved.root)?;
     let configured = config.project.note_types.get(note_type).ok_or_else(|| {
         MutableNoteCreationError::Input {
@@ -238,11 +253,15 @@ pub fn prepare_mutable_note_creation(
     Ok(MutableNoteCreationForm {
         root: resolved.root,
         project: resolved.project,
+        note_folder: resolved.project_dir.join(&configured.folder),
+        project_dir: resolved.project_dir,
         note_type: note_type.to_owned(),
         class: configured.class,
+        required_fields: configured.required_fields.clone(),
         fields: template_fields(&template.source),
         template: template.path,
         template_scope: template.scope,
+        template_source: template.source,
         projection,
         projection_source,
     })
@@ -284,6 +303,44 @@ pub fn create_mutable_note(
     fields: &BTreeMap<String, String>,
     projection_source: &str,
 ) -> Result<MutableNoteCreationResult, MutableNoteCreationError> {
+    create_mutable_note_checked(
+        request,
+        note_type,
+        relative_path,
+        fields,
+        projection_source,
+        None,
+    )
+}
+
+/// Apply a prepared creation only while its exact projection/template sources and configured
+/// identities still match under the writer lock. Refusal leaves inputs available for review;
+/// existing validation, no-clobber publication and journal recovery remain authoritative.
+pub fn apply_mutable_note_creation(
+    request: &ResolveRequest,
+    form: &MutableNoteCreationForm,
+    relative_path: &Path,
+    fields: &BTreeMap<String, String>,
+    projection_source: &str,
+) -> Result<MutableNoteCreationResult, MutableNoteCreationError> {
+    create_mutable_note_checked(
+        request,
+        &form.note_type,
+        relative_path,
+        fields,
+        projection_source,
+        Some(form),
+    )
+}
+
+fn create_mutable_note_checked(
+    request: &ResolveRequest,
+    note_type: &str,
+    relative_path: &Path,
+    fields: &BTreeMap<String, String>,
+    projection_source: &str,
+    form: Option<&MutableNoteCreationForm>,
+) -> Result<MutableNoteCreationResult, MutableNoteCreationError> {
     let resolved = resolve_project(request)?;
     let _lock = ProjectWriteLock::acquire(&resolved.project_dir)?;
     let recovery = recover_note_mutation_locked(request, &resolved.project_dir)?;
@@ -296,6 +353,18 @@ pub fn create_mutable_note(
     }
 
     let config = load_root_config(&resolved.root)?;
+    if form.is_some()
+        && config
+            .project
+            .note_types
+            .get(note_type)
+            .is_none_or(|configured| configured.class == NoteClass::Event)
+    {
+        return Err(MutableNoteCreationError::Validation {
+            path: PathBuf::from(note_type),
+            message: "prepared creation type is no longer configured as a record or entity".into(),
+        });
+    }
     if config
         .project
         .note_types
@@ -311,6 +380,35 @@ pub fn create_mutable_note(
     }
     let template = resolve_note_template(request, note_type)?;
     let configured = &config.project.note_types[note_type];
+    let index_path = resolved.project_dir.join(&config.project.index);
+    let roadmap_path = resolved.project_dir.join(&config.project.roadmap);
+    let index_before = read_regular_file(&index_path, "read the current index projection")?;
+    let roadmap_before = read_regular_file(&roadmap_path, "read the current roadmap projection")?;
+    let (projection_path, projection_before, index_after, roadmap_after) = match template.class {
+        NoteClass::Record => (
+            &roadmap_path,
+            &roadmap_before,
+            index_before.as_slice(),
+            projection_source.as_bytes(),
+        ),
+        NoteClass::Entity => (
+            &index_path,
+            &index_before,
+            projection_source.as_bytes(),
+            roadmap_before.as_slice(),
+        ),
+        NoteClass::Event => unreachable!("immutable events were rejected before mutation"),
+    };
+    if let Some(form) = form {
+        validate_creation_baseline(
+            form,
+            &resolved,
+            &config,
+            &template,
+            projection_path,
+            projection_before,
+        )?;
+    }
     let destination = note_destination(&resolved.project_dir, &configured.folder, relative_path)?;
     reject_existing_destination(&destination)?;
 
@@ -338,25 +436,6 @@ pub fn create_mutable_note(
     });
     evidence.sort_by(|left, right| left.path.cmp(&right.path));
 
-    let index_path = resolved.project_dir.join(&config.project.index);
-    let roadmap_path = resolved.project_dir.join(&config.project.roadmap);
-    let index_before = read_regular_file(&index_path, "read the current index projection")?;
-    let roadmap_before = read_regular_file(&roadmap_path, "read the current roadmap projection")?;
-    let (projection_path, projection_before, index_after, roadmap_after) = match template.class {
-        NoteClass::Record => (
-            &roadmap_path,
-            &roadmap_before,
-            index_before.as_slice(),
-            projection_source.as_bytes(),
-        ),
-        NoteClass::Entity => (
-            &index_path,
-            &index_before,
-            projection_source.as_bytes(),
-            roadmap_before.as_slice(),
-        ),
-        NoteClass::Event => unreachable!("immutable events were rejected before mutation"),
-    };
     let projection_before_text = str::from_utf8(projection_before).map_err(|error| {
         MutableNoteCreationError::Validation {
             path: projection_path.clone(),
@@ -465,6 +544,47 @@ pub fn create_mutable_note(
             }),
         },
     }
+}
+
+fn validate_creation_baseline(
+    form: &MutableNoteCreationForm,
+    resolved: &ResolvedProject,
+    config: &RootConfig,
+    template: &ResolvedNoteTemplate,
+    projection: &Path,
+    projection_before: &[u8],
+) -> Result<(), MutableNoteCreationError> {
+    let configured = &config.project.note_types[&template.note_type];
+    if form.root != resolved.root
+        || form.project != resolved.project
+        || form.project_dir != resolved.project_dir
+        || form.note_type != template.note_type
+        || form.class != configured.class
+        || form.note_folder != resolved.project_dir.join(&configured.folder)
+        || form.required_fields != configured.required_fields
+        || form.projection != projection
+        || form.template != template.path
+        || form.template_scope != template.scope
+        || form.fields != template_fields(&form.template_source)
+    {
+        return Err(MutableNoteCreationError::Validation {
+            path: form.projection.clone(),
+            message: "prepared creation identities no longer match the selected project configuration; discard and prepare a fresh form".into(),
+        });
+    }
+    if form.template_source != template.source {
+        return Err(MutableNoteCreationError::Conflict {
+            path: template.path.clone(),
+            message: "the template no longer matches the source loaded by the creation form; discard and prepare a fresh form".into(),
+        });
+    }
+    if projection_before != form.projection_source.as_bytes() {
+        return Err(MutableNoteCreationError::Conflict {
+            path: projection.to_owned(),
+            message: "the maintained projection no longer matches the source loaded by the creation form; discard and prepare a fresh form".into(),
+        });
+    }
+    Ok(())
 }
 
 fn note_destination(

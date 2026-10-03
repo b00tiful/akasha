@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use akasha_core::{
     NOTE_EDIT_JOURNAL_FILE, NoteClass, NoteEditRecovery, NoteTemplateScope, ResolutionEnvironment,
-    ResolveRequest, create_mutable_note, prepare_mutable_note_creation, recover_pending_note_edit,
+    ResolveRequest, apply_mutable_note_creation, create_mutable_note,
+    prepare_mutable_note_creation, recover_pending_note_edit, update_entity, update_record,
     validate_project,
 };
 use serde_json::json;
@@ -24,6 +25,9 @@ fn prepares_configured_fields_and_exact_projection_without_writes() {
         .expect("prepare configured record form");
     assert_eq!(record.class, NoteClass::Record);
     assert_eq!(record.template_scope, NoteTemplateScope::Project);
+    assert_eq!(record.project_dir, fixture.project);
+    assert_eq!(record.note_folder, fixture.project.join("records/tasks"));
+    assert_eq!(record.template_source, record_template());
     assert_eq!(
         record.fields,
         ["status", "created", "updated", "title", "body"]
@@ -44,6 +48,359 @@ fn prepares_configured_fields_and_exact_projection_without_writes() {
 
     assert_eq!(fixture.state(), state_before);
     assert!(!fixture.record_path().exists());
+}
+
+#[test]
+fn prepared_creation_refuses_concurrent_projections_then_accepts_fresh_review() {
+    for note_type in ["task", "entity"] {
+        let fixture = Fixture::new(note_type);
+        let form = prepare_mutable_note_creation(&fixture.request, note_type).unwrap();
+        let existing_id = if note_type == "task" {
+            "Projects/example/records/tasks/active.md"
+        } else {
+            "Projects/example/entities/core.md"
+        };
+        let existing = fs::read_to_string(fixture.root.join(existing_id)).unwrap();
+        let external = format!(
+            "{}\r\nConcurrent decision: Привет 世界  ",
+            form.projection_source
+        );
+        if note_type == "task" {
+            update_record(
+                &fixture.request,
+                existing_id,
+                &existing,
+                &existing,
+                &external,
+            )
+            .unwrap();
+        } else {
+            update_entity(
+                &fixture.request,
+                existing_id,
+                &existing,
+                &existing,
+                &external,
+            )
+            .unwrap();
+        }
+        let mut fields = if note_type == "task" {
+            fixture.record_fields()
+        } else {
+            fixture.entity_fields()
+        };
+        fields.insert("body".into(), "Привет 世界  \r\nExact body".into());
+        let before = snapshot(&fixture.root);
+        for _ in 0..2 {
+            let error = apply_mutable_note_creation(
+                &fixture.request,
+                &form,
+                Path::new("prepared.md"),
+                &fields,
+                &form.projection_source,
+            )
+            .unwrap_err();
+            assert_eq!(error.exit_code(), 5, "{error}");
+            assert!(error.to_string().contains("maintained projection"));
+            assert_eq!(snapshot(&fixture.root), before);
+        }
+        let fresh = prepare_mutable_note_creation(&fixture.request, note_type).unwrap();
+        assert_eq!(fresh.projection_source, external);
+        let result = apply_mutable_note_creation(
+            &fixture.request,
+            &fresh,
+            Path::new("prepared.md"),
+            &fields,
+            &external,
+        )
+        .unwrap();
+        assert!(!result.projection_changed);
+        assert_eq!(fs::read_to_string(&result.projection).unwrap(), external);
+        assert!(
+            fs::read_to_string(&result.path)
+                .unwrap()
+                .contains("Привет 世界")
+        );
+        validate_project(&fixture.request).unwrap();
+        let committed = snapshot(&fixture.root);
+        assert_eq!(
+            apply_mutable_note_creation(
+                &fixture.request,
+                &fresh,
+                Path::new("prepared.md"),
+                &fields,
+                &external,
+            )
+            .unwrap_err()
+            .exit_code(),
+            5
+        );
+        assert_eq!(snapshot(&fixture.root), committed);
+    }
+}
+
+#[test]
+fn prepared_creation_checks_exact_template_and_override_identity() {
+    for (note_type, change) in [
+        ("task", "source"),
+        ("entity", "source"),
+        ("task", "remove"),
+        ("entity", "override"),
+    ] {
+        let fixture = Fixture::new(change);
+        let form = prepare_mutable_note_creation(&fixture.request, note_type).unwrap();
+        match change {
+            // New placeholders must report source drift before field validation.
+            "source" => fs::write(
+                &form.template,
+                format!("{}\n{{{{new_field}}}}", form.template_source),
+            )
+            .unwrap(),
+            "remove" => {
+                fs::write(
+                    fixture.root.join("templates/task.md"),
+                    &form.template_source,
+                )
+                .unwrap();
+                fs::remove_file(&form.template).unwrap();
+            }
+            "override" => fs::write(
+                fixture.project.join("templates/entity.md"),
+                &form.template_source,
+            )
+            .unwrap(),
+            _ => unreachable!(),
+        }
+        let before = snapshot(&fixture.root);
+        let fields = if note_type == "task" {
+            fixture.record_fields()
+        } else {
+            fixture.entity_fields()
+        };
+        let error = apply_mutable_note_creation(
+            &fixture.request,
+            &form,
+            Path::new("prepared.md"),
+            &fields,
+            &form.projection_source,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.exit_code(),
+            if change == "source" { 5 } else { 4 },
+            "{error}"
+        );
+        assert_eq!(snapshot(&fixture.root), before);
+    }
+}
+
+#[test]
+fn prepared_creation_refuses_changed_config_and_accepts_custom_projection_path() {
+    for note_type in ["task", "entity"] {
+        let fixture = Fixture::new("config");
+        let form = prepare_mutable_note_creation(&fixture.request, note_type).unwrap();
+        let fields = if note_type == "task" {
+            fixture.record_fields()
+        } else {
+            fixture.entity_fields()
+        };
+        let config_path = fixture.root.join("akasha.toml");
+        let original = fs::read_to_string(&config_path).unwrap();
+        let changed = original.replace(
+            if note_type == "task" {
+                "\"created\", \"updated\"]"
+            } else {
+                "\"status\", \"reviewed\"]"
+            },
+            if note_type == "task" {
+                "\"created\", \"updated\", \"schema_version\"]"
+            } else {
+                "\"status\", \"reviewed\", \"schema_version\"]"
+            },
+        );
+        fs::write(&config_path, changed).unwrap();
+        validate_project(&fixture.request).unwrap();
+        let before = snapshot(&fixture.root);
+        let error = apply_mutable_note_creation(
+            &fixture.request,
+            &form,
+            Path::new("prepared.md"),
+            &fields,
+            &form.projection_source,
+        )
+        .unwrap_err();
+        assert_eq!(error.exit_code(), 4, "{error}");
+        assert_eq!(snapshot(&fixture.root), before);
+
+        let (key, old_name) = if note_type == "task" {
+            ("roadmap", "roadmap.md")
+        } else {
+            ("index", "index.md")
+        };
+        fs::write(
+            &config_path,
+            original.replace(
+                &format!("{key} = \"{old_name}\""),
+                &format!("{key} = \"custom.md\""),
+            ),
+        )
+        .unwrap();
+        fs::rename(&form.projection, fixture.project.join("custom.md")).unwrap();
+        validate_project(&fixture.request).unwrap();
+        let before = snapshot(&fixture.root);
+        assert_eq!(
+            apply_mutable_note_creation(
+                &fixture.request,
+                &form,
+                Path::new("prepared.md"),
+                &fields,
+                &form.projection_source,
+            )
+            .unwrap_err()
+            .exit_code(),
+            4
+        );
+        assert_eq!(snapshot(&fixture.root), before);
+        let fresh = prepare_mutable_note_creation(&fixture.request, note_type).unwrap();
+        assert_eq!(fresh.projection, fixture.project.join("custom.md"));
+        apply_mutable_note_creation(
+            &fixture.request,
+            &fresh,
+            Path::new("prepared.md"),
+            &fields,
+            &fresh.projection_source,
+        )
+        .unwrap();
+        validate_project(&fixture.request).unwrap();
+    }
+}
+
+#[test]
+fn prepared_creation_validates_form_identities_without_writes() {
+    let fixture = Fixture::new("identities");
+    let form = prepare_mutable_note_creation(&fixture.request, "task").unwrap();
+    let before = snapshot(&fixture.root);
+    let mut variants = Vec::new();
+    for path in [
+        "root",
+        "project_dir",
+        "note_folder",
+        "template",
+        "projection",
+    ] {
+        let mut changed = form.clone();
+        match path {
+            "root" => changed.root.push("other"),
+            "project_dir" => changed.project_dir.push("other"),
+            "note_folder" => changed.note_folder.push("other"),
+            "template" => changed.template.push("other"),
+            "projection" => changed.projection.push("other"),
+            _ => unreachable!(),
+        }
+        variants.push(changed);
+    }
+    let mut changed = form.clone();
+    changed.project = "other".into();
+    variants.push(changed);
+    let mut changed = form.clone();
+    changed.class = NoteClass::Entity;
+    variants.push(changed);
+    let mut changed = form.clone();
+    changed.template_scope = NoteTemplateScope::Root;
+    variants.push(changed);
+    let mut changed = form.clone();
+    changed.required_fields.push("other".into());
+    variants.push(changed);
+    let mut changed = form.clone();
+    changed.fields.push("other".into());
+    variants.push(changed);
+    let mut changed = form.clone();
+    changed.note_type = "session".into();
+    variants.push(changed);
+    for changed in variants {
+        let error = apply_mutable_note_creation(
+            &fixture.request,
+            &changed,
+            Path::new("prepared.md"),
+            &fixture.record_fields(),
+            &form.projection_source,
+        )
+        .unwrap_err();
+        assert_eq!(error.exit_code(), 4, "{error}");
+        assert_eq!(snapshot(&fixture.root), before);
+    }
+}
+
+#[test]
+fn prepared_creation_allows_an_unrelated_valid_index_update() {
+    let fixture = Fixture::new("unrelated");
+    let form = prepare_mutable_note_creation(&fixture.request, "task").unwrap();
+    let id = "Projects/example/entities/core.md";
+    let source = fs::read_to_string(fixture.root.join(id)).unwrap();
+    let index = format!("{}\nUnrelated accepted index update.\n", fixture.index());
+    update_entity(&fixture.request, id, &source, &source, &index).unwrap();
+    let result = apply_mutable_note_creation(
+        &fixture.request,
+        &form,
+        Path::new("prepared.md"),
+        &fixture.record_fields(),
+        &form.projection_source,
+    )
+    .unwrap();
+    assert_eq!(result.recovery, NoteEditRecovery::None);
+    assert_eq!(fixture.index(), index);
+    validate_project(&fixture.request).unwrap();
+}
+
+#[test]
+fn prepared_creation_recovers_partial_publication_before_checking_baselines() {
+    let fixture = Fixture::new("prepared-recovery");
+    let form = prepare_mutable_note_creation(&fixture.request, "task").unwrap();
+    let versions = fixture.successful_versions();
+    fixture.seed(&versions, true, true, false);
+    fixture.write_creation_journal(&versions);
+    let recovered_form = prepare_mutable_note_creation(&fixture.request, "task").unwrap();
+    assert_eq!(recovered_form, form);
+    fixture.assert_before(&versions);
+    fixture.seed(&versions, true, true, false);
+    fixture.write_creation_journal(&versions);
+    let result = apply_mutable_note_creation(
+        &fixture.request,
+        &form,
+        Path::new(RECORD_RELATIVE_PATH),
+        &fixture.record_fields(),
+        &versions.projection_after,
+    )
+    .unwrap();
+    assert_eq!(result.recovery, NoteEditRecovery::RolledBack);
+    assert!(!fixture.journal().exists());
+    assert_eq!(fixture.record(), versions.note_after);
+    assert_eq!(fixture.roadmap(), versions.projection_after);
+    validate_project(&fixture.request).unwrap();
+
+    fixture.seed(&versions, true, true, false);
+    fixture.write_creation_journal(&versions);
+    fs::write(fixture.roadmap_path(), "unexpected external bytes").unwrap();
+    let before = snapshot(&fixture.root);
+    assert_eq!(
+        prepare_mutable_note_creation(&fixture.request, "task")
+            .unwrap_err()
+            .exit_code(),
+        5
+    );
+    assert_eq!(
+        apply_mutable_note_creation(
+            &fixture.request,
+            &form,
+            Path::new(RECORD_RELATIVE_PATH),
+            &fixture.record_fields(),
+            &versions.projection_after
+        )
+        .unwrap_err()
+        .exit_code(),
+        5
+    );
+    assert_eq!(snapshot(&fixture.root), before);
 }
 
 #[test]
@@ -281,6 +638,17 @@ impl Fixture {
         ])
     }
 
+    fn entity_fields(&self) -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("entity".into(), "prepared".into()),
+            ("kind".into(), "subsystem".into()),
+            ("status".into(), "active".into()),
+            ("reviewed".into(), "2026-10-03".into()),
+            ("title".into(), "Prepared entity".into()),
+            ("body".into(), "Привет 世界  \r\nExact body".into()),
+        ])
+    }
+
     fn expected_record(&self) -> String {
         "---\nschema_version: 1\nproject: example\ntype: task\nstatus: open\ncreated: 2026-07-15\nupdated: 2026-07-15\n---\n\n# Created task\n\nTracks [[Projects/example/entities/core|the core]].\n"
             .to_owned()
@@ -464,4 +832,23 @@ impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn collect(root: &Path, path: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                collect(root, &path, files);
+            } else {
+                files.insert(
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+    let mut files = BTreeMap::new();
+    collect(root, root, &mut files);
+    files
 }
