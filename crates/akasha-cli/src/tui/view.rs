@@ -375,6 +375,33 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
                 Action::Command("previous"),
             );
         } else {
+            if app.event_stage() == Some(false) {
+                button(
+                    frame,
+                    app,
+                    area,
+                    &mut x,
+                    "Ctrl-N Next",
+                    Action::Command("next"),
+                );
+                button(
+                    frame,
+                    app,
+                    area,
+                    &mut x,
+                    "Ctrl-P Previous",
+                    Action::Command("previous"),
+                );
+                button(
+                    frame,
+                    app,
+                    area,
+                    &mut x,
+                    "Discard form",
+                    Action::Command("discard"),
+                );
+                return;
+            }
             button(
                 frame,
                 app,
@@ -406,7 +433,11 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
                     app,
                     area,
                     &mut x,
-                    "Ctrl-P Inputs",
+                    if app.event_stage() == Some(true) {
+                        "Ctrl-P Fields"
+                    } else {
+                        "Ctrl-P Inputs"
+                    },
                     Action::Command("previous"),
                 );
             }
@@ -792,7 +823,11 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
         } else {
             app.body.clone()
         };
-        let text = reading_text(&source, app);
+        let text = if app.event_stage() == Some(true) {
+            Text::from(safe_text(&source))
+        } else {
+            reading_text(&source, app)
+        };
         let paragraph = Paragraph::new(text).style(style).wrap(Wrap { trim: false });
         let count = paragraph.line_count(body.width);
         app.max_scroll = count

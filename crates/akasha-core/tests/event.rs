@@ -5,13 +5,241 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use akasha_core::{
     NOTE_EDIT_JOURNAL_FILE, NoteEditRecovery, NoteTemplateScope, ResolutionEnvironment,
-    ResolveRequest, capture_handoff, create_event, recover_pending_note_edit, validate_project,
+    ResolveRequest, apply_event_creation, capture_handoff, create_event, prepare_event_creation,
+    prepare_handoff_creation, preview_event_creation, recover_pending_note_edit, validate_project,
 };
 use serde_json::json;
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 const EVENT_RELATIVE_PATH: &str = "2026-07-15-goal-integration.md";
 const EVENT_ID: &str = "Projects/example/events/sessions/2026-07-15-goal-integration.md";
+
+#[test]
+fn guided_event_reviews_exact_multiline_source_and_applies_without_projection_changes() {
+    let fixture = Fixture::new("guided");
+    let form = prepare_event_creation(&fixture.request, "session").unwrap();
+    assert_eq!(form.fields, ["date", "title", "body"]);
+    assert!(!form.handoff);
+    let before = snapshot(&fixture.root);
+    let preview =
+        preview_event_creation(&form, Path::new(EVENT_RELATIVE_PATH), &fixture.fields()).unwrap();
+    assert_eq!(preview.source, fixture.expected_event());
+    assert_eq!(preview.id, EVENT_ID);
+    assert_eq!(snapshot(&fixture.root), before, "preview writes nothing");
+    let result = apply_event_creation(&fixture.request, &preview).unwrap();
+    assert_eq!(fs::read_to_string(result.path).unwrap(), preview.source);
+    for projection in ["index.md", "roadmap.md"] {
+        assert_eq!(
+            fs::read(fixture.project.join(projection)).unwrap(),
+            before[&PathBuf::from(format!("Projects/example/{projection}"))]
+        );
+    }
+    validate_project(&fixture.request).unwrap();
+    let committed = snapshot(&fixture.root);
+    assert_eq!(
+        apply_event_creation(&fixture.request, &preview)
+            .unwrap_err()
+            .exit_code(),
+        5
+    );
+    assert_eq!(snapshot(&fixture.root), committed);
+}
+
+#[test]
+fn guided_event_refuses_template_drift_and_fresh_review_succeeds() {
+    let fixture = Fixture::new("guided-template");
+    let form = prepare_handoff_creation(&fixture.request).unwrap();
+    assert!(form.handoff);
+    let preview = preview_event_creation(&form, Path::new("guided.md"), &fixture.fields()).unwrap();
+    fs::write(
+        &form.template,
+        format!("{}\nChanged template.\n", form.template_source),
+    )
+    .unwrap();
+    let before = snapshot(&fixture.root);
+    for _ in 0..2 {
+        assert_eq!(
+            apply_event_creation(&fixture.request, &preview)
+                .unwrap_err()
+                .exit_code(),
+            5
+        );
+        assert_eq!(snapshot(&fixture.root), before);
+    }
+    let fresh = prepare_handoff_creation(&fixture.request).unwrap();
+    let fresh = preview_event_creation(&fresh, Path::new("guided.md"), &fixture.fields()).unwrap();
+    apply_event_creation(&fixture.request, &fresh).unwrap();
+    assert_eq!(fs::read_to_string(fresh.path).unwrap(), fresh.source);
+}
+
+#[test]
+fn guided_event_refuses_changed_prepared_identities_and_review_bytes() {
+    let fixture = Fixture::new("guided-identities");
+    let form = prepare_handoff_creation(&fixture.request).unwrap();
+    let preview = preview_event_creation(&form, Path::new("guided.md"), &fixture.fields()).unwrap();
+    let before = snapshot(&fixture.root);
+    for change in 0..11 {
+        let mut changed = preview.clone();
+        match change {
+            0 => changed.form.root = fixture.root.join("other"),
+            1 => changed.form.project = "other".into(),
+            2 => changed.form.project_dir = fixture.root.clone(),
+            3 => changed.form.note_folder = fixture.project.clone(),
+            4 => changed.form.required_fields.push("extra".into()),
+            5 => changed.form.template = fixture.project.join("other.md"),
+            6 => changed.form.template_scope = NoteTemplateScope::Root,
+            7 => changed.form.fields.push("extra".into()),
+            8 => changed.path = fixture.project.join("other.md"),
+            9 => changed.id = "other".into(),
+            _ => changed.source.push_str("unreviewed"),
+        }
+        assert_eq!(
+            apply_event_creation(&fixture.request, &changed)
+                .unwrap_err()
+                .exit_code(),
+            4,
+            "change {change}"
+        );
+        assert_eq!(snapshot(&fixture.root), before, "change {change}");
+    }
+}
+
+#[test]
+fn guided_event_binds_handoff_role_and_required_schema_but_allows_unrelated_valid_writes() {
+    let fixture = Fixture::new("guided-role");
+    let form = prepare_handoff_creation(&fixture.request).unwrap();
+    let preview = preview_event_creation(&form, Path::new("guided.md"), &fixture.fields()).unwrap();
+    create_event(
+        &fixture.request,
+        "session",
+        Path::new("unrelated.md"),
+        &fixture.fields(),
+    )
+    .unwrap();
+    let config_path = fixture.root.join("akasha.toml");
+    let config = fs::read_to_string(&config_path).unwrap();
+    // Swap the two valid semantic event roles while retaining a valid root configuration.
+    let changed = config
+        .replace("handoffs = \"handoff\"", "handoffs = \"session\"")
+        .replace(
+            "recent_events = [\"session\"]",
+            "recent_events = [\"handoff\"]",
+        );
+    assert_ne!(config, changed);
+    fs::write(&config_path, changed).unwrap();
+    validate_project(&fixture.request).unwrap();
+    let before = snapshot(&fixture.root);
+    assert_eq!(
+        apply_event_creation(&fixture.request, &preview)
+            .unwrap_err()
+            .exit_code(),
+        4
+    );
+    assert_eq!(snapshot(&fixture.root), before);
+    fs::write(config_path, config).unwrap();
+    apply_event_creation(&fixture.request, &preview).unwrap();
+    validate_project(&fixture.request).unwrap();
+}
+
+#[test]
+fn guided_event_preparation_recovers_pending_publication_and_refuses_external_bytes() {
+    let fixture = Fixture::new("guided-recovery");
+    let versions = fixture.successful_versions();
+    fs::write(fixture.state_path(), &versions.state_before).unwrap();
+    fixture.write_creation_journal(&versions);
+    prepare_event_creation(&fixture.request, "session").unwrap();
+    assert!(!fixture.event_path().exists());
+    assert!(!fixture.journal().exists());
+    assert_eq!(fixture.state(), versions.state_before);
+    fixture.write_creation_journal(&versions);
+    fs::write(fixture.event_path(), "External event bytes").unwrap();
+    let before = snapshot(&fixture.root);
+    assert_eq!(
+        prepare_event_creation(&fixture.request, "session")
+            .unwrap_err()
+            .exit_code(),
+        5
+    );
+    assert_eq!(snapshot(&fixture.root), before);
+}
+
+#[test]
+fn guided_event_preview_refuses_invalid_fields_paths_and_links_without_writes() {
+    let fixture = Fixture::new("guided-invalid");
+    assert_eq!(
+        prepare_event_creation(&fixture.request, "entity")
+            .unwrap_err()
+            .exit_code(),
+        2
+    );
+    let form = prepare_event_creation(&fixture.request, "session").unwrap();
+    let before = snapshot(&fixture.root);
+    for path in ["../escape.md", "/absolute.md", "missing/new.md", "note.txt"] {
+        assert_eq!(
+            preview_event_creation(&form, Path::new(path), &fixture.fields())
+                .unwrap_err()
+                .exit_code(),
+            2
+        );
+    }
+    let mut fields = fixture.fields();
+    fields.remove("date");
+    assert_eq!(
+        preview_event_creation(&form, Path::new("new.md"), &fields)
+            .unwrap_err()
+            .exit_code(),
+        2
+    );
+    fields = fixture.fields();
+    fields.insert(
+        "body".into(),
+        "[[Projects/example/entities/missing]]".into(),
+    );
+    assert_eq!(
+        preview_event_creation(&form, Path::new("new.md"), &fields)
+            .unwrap_err()
+            .exit_code(),
+        4
+    );
+    assert_eq!(snapshot(&fixture.root), before);
+}
+
+#[test]
+fn guided_event_preserves_crlf_literal_markers_and_root_template_fallback() {
+    let fixture = Fixture::new("guided-crlf");
+    fs::remove_file(fixture.project.join("templates/session.md")).unwrap();
+    let source = event_template()
+        .trim_end_matches('\n')
+        .replace('\n', "\r\n");
+    fs::write(fixture.root.join("templates/session.md"), &source).unwrap();
+    let form = prepare_event_creation(&fixture.request, "session").unwrap();
+    assert_eq!(form.template_scope, NoteTemplateScope::Root);
+    let mut fields = fixture.fields();
+    fields.insert("body".into(), "Привет 世界  \r\n{{title}}".into());
+    let preview = preview_event_creation(&form, Path::new("crlf.md"), &fields).unwrap();
+    assert!(preview.source.ends_with("Привет 世界  \r\n{{title}}"));
+    apply_event_creation(&fixture.request, &preview).unwrap();
+    assert_eq!(fs::read(preview.path).unwrap(), preview.source.as_bytes());
+}
+
+fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn visit(root: &Path, directory: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(root, &path, files);
+            } else {
+                files.insert(
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+    let mut files = BTreeMap::new();
+    visit(root, root, &mut files);
+    files
+}
 
 #[test]
 fn creates_exact_template_event_updates_state_and_keeps_project_valid() {

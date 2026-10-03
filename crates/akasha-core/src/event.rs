@@ -43,6 +43,136 @@ pub struct EventCreationResult {
     pub recovery: NoteEditRecovery,
 }
 
+/// Exact configured inputs for guided event authoring, loaded under the project writer lock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventCreationForm {
+    pub root: PathBuf,
+    pub project: String,
+    pub project_dir: PathBuf,
+    pub note_type: String,
+    pub note_folder: PathBuf,
+    pub required_fields: Vec<String>,
+    pub template: PathBuf,
+    pub template_scope: NoteTemplateScope,
+    pub template_source: String,
+    pub fields: Vec<String>,
+    pub handoff: bool,
+}
+
+/// Validated exact source for review. Applying rechecks its inputs under the writer lock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventCreationPreview {
+    pub form: EventCreationForm,
+    pub relative_path: PathBuf,
+    pub fields: BTreeMap<String, String>,
+    pub id: String,
+    pub path: PathBuf,
+    pub source: String,
+}
+
+/// Prepare a configured event form, recovering a pending transaction before validation.
+pub fn prepare_event_creation(
+    request: &ResolveRequest,
+    note_type: &str,
+) -> Result<EventCreationForm, EventCreationError> {
+    prepare_configured_event(request, Some(note_type))
+}
+
+/// Prepare the event type selected by the configured semantic handoff role.
+pub fn prepare_handoff_creation(
+    request: &ResolveRequest,
+) -> Result<EventCreationForm, EventCreationError> {
+    prepare_configured_event(request, None)
+}
+
+fn prepare_configured_event(
+    request: &ResolveRequest,
+    explicit_note_type: Option<&str>,
+) -> Result<EventCreationForm, EventCreationError> {
+    let resolved = resolve_project(request)?;
+    let _lock = ProjectWriteLock::acquire(&resolved.project_dir)?;
+    recover_note_mutation_locked(request, &resolved.project_dir)?;
+    let report = validate_project(request)?;
+    if report.project_dir != resolved.project_dir {
+        return Err(EventCreationError::Conflict {
+            path: report.project_dir,
+            message: "project resolution changed while acquiring the writer lock".into(),
+        });
+    }
+    let config = load_root_config(&resolved.root)?;
+    let note_type = explicit_note_type.unwrap_or(&config.context.handoffs);
+    let template = resolve_note_template(request, note_type)?;
+    if template.class != NoteClass::Event {
+        return Err(EventCreationError::Input {
+            path: PathBuf::from(note_type),
+            message: format!("configured note type {note_type:?} is not an immutable event"),
+        });
+    }
+    let configured = &config.project.note_types[note_type];
+    Ok(EventCreationForm {
+        root: resolved.root,
+        project: resolved.project,
+        note_folder: resolved.project_dir.join(&configured.folder),
+        project_dir: resolved.project_dir,
+        note_type: note_type.to_owned(),
+        required_fields: configured.required_fields.clone(),
+        fields: crate::note_creation::template_fields(&template.source),
+        template: template.path,
+        template_scope: template.scope,
+        template_source: template.source,
+        handoff: explicit_note_type.is_none(),
+    })
+}
+
+/// Render and validate a prepared template without recovery or publication.
+///
+/// Fields may contain multiline text. No clock, filename, escaping or content is inferred.
+pub fn preview_event_creation(
+    form: &EventCreationForm,
+    relative_path: &Path,
+    fields: &BTreeMap<String, String>,
+) -> Result<EventCreationPreview, EventCreationError> {
+    let path = event_destination(&form.project_dir, &form.note_folder, relative_path)?;
+    reject_existing_destination(&path)?;
+    let source = instantiate_template(
+        &form.template_source,
+        &form.template,
+        &form.project,
+        &form.note_type,
+        fields,
+    )?;
+    validate_event_source(
+        &form.root,
+        &form.project,
+        &form.note_type,
+        &path,
+        source.as_bytes(),
+        &form.required_fields,
+    )?;
+    Ok(EventCreationPreview {
+        id: vault_relative_id(&form.root, &path)?,
+        form: form.clone(),
+        relative_path: relative_path.to_owned(),
+        fields: fields.clone(),
+        path,
+        source,
+    })
+}
+
+/// Publish only the exact reviewed event while template/configured identities still match.
+pub fn apply_event_creation(
+    request: &ResolveRequest,
+    preview: &EventCreationPreview,
+) -> Result<EventCreationResult, EventCreationError> {
+    create_configured_event(
+        request,
+        Some(&preview.form.note_type),
+        &preview.relative_path,
+        &preview.fields,
+        Some(preview),
+    )
+}
+
 /// An input, resolution, validation, conflict, filesystem, or recovery failure.
 #[derive(Debug)]
 pub enum EventCreationError {
@@ -189,7 +319,7 @@ pub fn create_event(
     relative_path: &Path,
     fields: &BTreeMap<String, String>,
 ) -> Result<EventCreationResult, EventCreationError> {
-    create_configured_event(request, Some(note_type), relative_path, fields)
+    create_configured_event(request, Some(note_type), relative_path, fields, None)
 }
 
 /// Capture one handoff through the configured semantic handoff role.
@@ -202,7 +332,7 @@ pub fn capture_handoff(
     relative_path: &Path,
     fields: &BTreeMap<String, String>,
 ) -> Result<EventCreationResult, EventCreationError> {
-    create_configured_event(request, None, relative_path, fields)
+    create_configured_event(request, None, relative_path, fields, None)
 }
 
 fn create_configured_event(
@@ -210,6 +340,7 @@ fn create_configured_event(
     explicit_note_type: Option<&str>,
     relative_path: &Path,
     fields: &BTreeMap<String, String>,
+    preview: Option<&EventCreationPreview>,
 ) -> Result<EventCreationResult, EventCreationError> {
     let resolved = resolve_project(request)?;
     let _lock = ProjectWriteLock::acquire(&resolved.project_dir)?;
@@ -235,6 +366,30 @@ fn create_configured_event(
         });
     }
     let configured = &config.project.note_types[note_type];
+    if let Some(preview) = preview {
+        let form = &preview.form;
+        if form.root != resolved.root
+            || form.project != resolved.project
+            || form.project_dir != resolved.project_dir
+            || form.note_folder != resolved.project_dir.join(&configured.folder)
+            || form.required_fields != configured.required_fields
+            || form.template != template.path
+            || form.template_scope != template.scope
+            || form.fields != crate::note_creation::template_fields(&form.template_source)
+            || (form.handoff && config.context.handoffs != form.note_type)
+        {
+            return Err(EventCreationError::Validation {
+                path: form.template.clone(),
+                message: "prepared event identities no longer match the selected project configuration; discard and prepare a fresh form".into(),
+            });
+        }
+        if form.template_source != template.source {
+            return Err(EventCreationError::Conflict {
+                path: template.path.clone(),
+                message: "the template no longer matches the source loaded by the event form; discard and prepare a fresh form".into(),
+            });
+        }
+    }
     let destination = event_destination(&resolved.project_dir, &configured.folder, relative_path)?;
     reject_existing_destination(&destination)?;
 
@@ -245,6 +400,16 @@ fn create_configured_event(
         note_type,
         fields,
     )?;
+    if let Some(preview) = preview
+        && (preview.path != destination
+            || preview.id != vault_relative_id(&resolved.root, &destination)?
+            || preview.source != source)
+    {
+        return Err(EventCreationError::Validation {
+            path: destination,
+            message: "event review no longer matches its rendered source and destination; review a fresh preview".into(),
+        });
+    }
     validate_event_source(
         &resolved.root,
         &resolved.project,

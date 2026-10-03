@@ -267,7 +267,7 @@ pub fn prepare_mutable_note_creation(
     })
 }
 
-fn template_fields(source: &str) -> Vec<String> {
+pub(crate) fn template_fields(source: &str) -> Vec<String> {
     let mut fields = Vec::new();
     let mut seen = BTreeSet::new();
     let mut cursor = 0;

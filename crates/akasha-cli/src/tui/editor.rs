@@ -37,6 +37,12 @@ impl Editor {
     pub fn source(&self) -> String {
         self.area.lines().join(self.separator)
     }
+    pub fn empty_like(source: &str) -> Result<Self, String> {
+        let separator = Self::new(source)?.separator;
+        let mut editor = Self::new("")?;
+        editor.separator = separator;
+        Ok(editor)
+    }
     pub fn dirty(&self) -> bool {
         self.source() != self.original
     }

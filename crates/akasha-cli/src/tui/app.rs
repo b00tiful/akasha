@@ -10,16 +10,17 @@ use super::state::{NavigationLocation, NavigationState};
 use crate::discover_agent_home;
 use crate::render::{agent_wiring_action_name, session_hook_action_name};
 use akasha_core::{
-    AgentClient, AgentWiringPlan, EventCreationResult, LibraryBook, LibraryDocument,
-    LibraryProjection, LibraryScope, LibrarySearchResult, MutableNoteCreationForm,
-    MutableNoteCreationResult, MutableNoteLifecycleForm, MutableNoteLifecycleResult, NoteClass,
-    ResolveRequest, SessionHookWiringPlan, apply_mutable_note_creation,
-    apply_mutable_note_lifecycle, assemble_context, assemble_session_breadcrumb,
-    build_library_projection, capture_handoff, create_event, load_library_document,
-    prepare_agent_wiring, prepare_mutable_note_creation, prepare_mutable_note_lifecycle,
-    prepare_session_hook_wiring, recover_pending_note_edit, render_context_markdown,
-    render_session_breadcrumb, replace_library_document, resolve_note_template, search_library,
-    validate_project,
+    AgentClient, AgentWiringPlan, EventCreationForm, EventCreationPreview, EventCreationResult,
+    LibraryBook, LibraryDocument, LibraryProjection, LibraryScope, LibrarySearchResult,
+    MutableNoteCreationForm, MutableNoteCreationResult, MutableNoteLifecycleForm,
+    MutableNoteLifecycleResult, NoteClass, ResolveRequest, SessionHookWiringPlan,
+    apply_event_creation, apply_mutable_note_creation, apply_mutable_note_lifecycle,
+    assemble_context, assemble_session_breadcrumb, build_library_projection, capture_handoff,
+    create_event, load_library_document, prepare_agent_wiring, prepare_event_creation,
+    prepare_handoff_creation, prepare_mutable_note_creation, prepare_mutable_note_lifecycle,
+    prepare_session_hook_wiring, preview_event_creation, recover_pending_note_edit,
+    render_context_markdown, render_session_breadcrumb, replace_library_document,
+    resolve_note_template, search_library, validate_project,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -109,8 +110,8 @@ const COMMANDS: &[Completion] = &[
     },
     Completion {
         command: "handoff",
-        argument: "PATH | NAME=VALUE | ...",
-        description: "Capture a configured handoff event",
+        argument: "",
+        description: "Author and review a multiline configured handoff",
     },
     Completion {
         command: "template",
@@ -119,8 +120,8 @@ const COMMANDS: &[Completion] = &[
     },
     Completion {
         command: "event",
-        argument: "TYPE PATH | NAME=VALUE | ...",
-        description: "Create a configured immutable event",
+        argument: "TYPE",
+        description: "Author and review a multiline configured event",
     },
     Completion {
         command: "create",
@@ -200,7 +201,7 @@ fn prompt_area(text: String) -> TextArea<'static> {
     prompt_area_with_placeholder(text, PROMPT_PLACEHOLDER)
 }
 
-pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       update the open record/entity and its projection\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff PATH | NAME=VALUE | ...\n                capture a handoff from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE PATH | NAME=VALUE | ...\n                create a configured immutable event\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\nconfirm PLAN_ID authorize the displayed integration plan\nrefresh         reload data (or press F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and lifecycle forms show exact configured templates and\nmaintained projections. Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. Integration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nOpen from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
+pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       update the open record/entity and its projection\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff         guided multiline handoff authoring and exact review\nhandoff PATH | NAME=VALUE | ...\n                inline capture from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE      guided multiline event authoring and exact review\nevent TYPE PATH | NAME=VALUE | ...\n                inline configured immutable event creation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\nconfirm PLAN_ID authorize the displayed integration plan\nrefresh         reload data (or press F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and lifecycle forms show exact configured templates and\nmaintained projections. Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. Guided event fields support multiline text;\nCtrl-N/Ctrl-P navigate and Ctrl-S publishes only after exact source review.\nIntegration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nOpen from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Focus {
@@ -295,7 +296,23 @@ struct LifecycleForm {
     pane: LifecyclePane,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EventStage {
+    Path,
+    Field(usize),
+    Review,
+}
+
+struct EventForm {
+    prepared: EventCreationForm,
+    path: String,
+    fields: Vec<(String, Editor)>,
+    stage: EventStage,
+    preview: Option<EventCreationPreview>,
+}
+
 enum Workflow {
+    Event(Box<EventForm>),
     Creation(Box<CreationForm>),
     Lifecycle(Box<LifecycleForm>),
 }
@@ -321,6 +338,9 @@ pub(super) enum Job {
     CaptureHandoff(ResolveRequest, PathBuf, BTreeMap<String, String>),
     Template(ResolveRequest, String),
     CreateEvent(ResolveRequest, String, PathBuf, BTreeMap<String, String>),
+    PrepareEvent(ResolveRequest, Option<String>),
+    PreviewEvent(Box<EventCreationForm>, PathBuf, BTreeMap<String, String>),
+    ApplyEvent(ResolveRequest, Box<EventCreationPreview>),
     Validate(ResolveRequest),
     Save(ResolveRequest, String, String, String),
     PrepareCreate(ResolveRequest, String),
@@ -350,6 +370,8 @@ pub(super) enum Response {
     Text(String, String),
     Saved(String),
     EventCreated(EventCreationResult),
+    EventPrepared(EventCreationForm),
+    EventPreviewed(Box<EventCreationPreview>),
     CreatePrepared(MutableNoteCreationForm),
     Created(MutableNoteCreationResult),
     LifecyclePrepared(MutableNoteLifecycleForm),
@@ -455,6 +477,19 @@ fn execute_job(job: Job) -> WorkResult {
                 .map(Response::CreatePrepared)
                 .map_err(|e| err(&e))
         }
+        Job::PrepareEvent(request, note_type) => {
+            let form = match note_type {
+                Some(note_type) => prepare_event_creation(&request, &note_type),
+                None => prepare_handoff_creation(&request),
+            };
+            form.map(Response::EventPrepared).map_err(|e| err(&e))
+        }
+        Job::PreviewEvent(form, path, fields) => preview_event_creation(&form, &path, &fields)
+            .map(|preview| Response::EventPreviewed(Box::new(preview)))
+            .map_err(|e| err(&e)),
+        Job::ApplyEvent(request, preview) => apply_event_creation(&request, &preview)
+            .map(Response::EventCreated)
+            .map_err(|e| err(&e)),
         Job::Create(request, prepared, path, fields, projection) => apply_mutable_note_creation(
             &request,
             &prepared,
@@ -777,6 +812,10 @@ impl App {
     }
     fn watched_sources(&self) -> Vec<WatchedSource> {
         match &self.workflow {
+            Some(Workflow::Event(form)) => vec![WatchedSource {
+                path: form.prepared.template.clone(),
+                expected: form.prepared.template_source.clone(),
+            }],
             Some(Workflow::Creation(form)) => vec![
                 WatchedSource {
                     path: form.prepared.projection.clone(),
@@ -847,7 +886,13 @@ impl App {
         matches!(
             self.workflow,
             Some(Workflow::Creation(ref form)) if form.stage == CreationStage::Inputs
-        )
+        ) || matches!(self.workflow, Some(Workflow::Event(ref form)) if form.stage == EventStage::Path)
+    }
+    pub fn event_stage(&self) -> Option<bool> {
+        match &self.workflow {
+            Some(Workflow::Event(form)) => Some(form.stage == EventStage::Review),
+            _ => None,
+        }
     }
     pub fn lifecycle_pane(&self) -> Option<LifecyclePane> {
         match &self.workflow {
@@ -867,6 +912,10 @@ impl App {
     }
     pub fn active_editor(&self) -> Option<&Editor> {
         match &self.workflow {
+            Some(Workflow::Event(form)) => match form.stage {
+                EventStage::Field(index) => Some(&form.fields[index].1),
+                _ => None,
+            },
             Some(Workflow::Creation(form)) if form.stage == CreationStage::Projection => {
                 Some(&form.projection)
             }
@@ -877,6 +926,10 @@ impl App {
     }
     pub fn active_editor_mut(&mut self) -> Option<&mut Editor> {
         match &mut self.workflow {
+            Some(Workflow::Event(form)) => match form.stage {
+                EventStage::Field(index) => Some(&mut form.fields[index].1),
+                _ => None,
+            },
             Some(Workflow::Creation(form)) if form.stage == CreationStage::Projection => {
                 Some(&mut form.projection)
             }
@@ -889,6 +942,20 @@ impl App {
     }
     pub fn workflow_title(&self) -> Option<String> {
         match &self.workflow {
+            Some(Workflow::Event(form)) => Some(format!(
+                "EVENT {} · {}",
+                form.prepared.note_type,
+                match form.stage {
+                    EventStage::Path => "RELATIVE PATH".into(),
+                    EventStage::Field(index) => format!(
+                        "{} ({}/{})",
+                        form.fields[index].0,
+                        index + 1,
+                        form.fields.len()
+                    ),
+                    EventStage::Review => "REVIEW EXACT SOURCE".into(),
+                }
+            )),
             Some(Workflow::Creation(form)) if form.stage == CreationStage::Inputs => Some(format!(
                 "CREATE {} · INPUT {}/{}",
                 form.prepared.note_type,
@@ -918,6 +985,14 @@ impl App {
     }
     pub fn workflow_path(&self) -> Option<String> {
         match &self.workflow {
+            Some(Workflow::Event(form)) => Some(if form.stage == EventStage::Review {
+                form.preview
+                    .as_ref()
+                    .map(|preview| preview.id.clone())
+                    .unwrap_or_default()
+            } else {
+                form.prepared.template.display().to_string()
+            }),
             Some(Workflow::Creation(form)) if form.stage == CreationStage::Projection => {
                 Some(form.prepared.projection.display().to_string())
             }
@@ -986,6 +1061,21 @@ impl App {
     }
 
     fn show_creation_input(&mut self) {
+        if let Some(Workflow::Event(form)) = &self.workflow {
+            self.prompt = prompt_area_with_placeholder(form.path.clone(), "relative .md path");
+            self.body_title = format!("EVENT {}", form.prepared.note_type);
+            self.body = format!(
+                "Project: {}\nFolder: {}\nTemplate: {}\n\nEnter an explicit relative .md path.\nThen edit each template field; Ctrl-N advances and Ctrl-P returns.\nReview the complete exact source before Ctrl-S creates the immutable event.\nDiscard cancels without writing.",
+                form.prepared.project,
+                form.prepared.note_folder.display(),
+                form.prepared.template.display()
+            );
+            self.scroll = 0;
+            self.editing = false;
+            self.focus = Focus::Prompt;
+            self.prompt_changed();
+            return;
+        }
         let Some(Workflow::Creation(form)) = &self.workflow else {
             return;
         };
@@ -1013,6 +1103,19 @@ impl App {
             self.message("This form value is required.");
             return;
         }
+        if let Some(Workflow::Event(form)) = &mut self.workflow {
+            form.path = value;
+            if !form.fields.is_empty() {
+                form.stage = EventStage::Field(0);
+                self.reset_prompt();
+                self.editing = true;
+                self.focus = Focus::Reader;
+                self.message("Edit this template field, including multiline text. Ctrl-N advances; Ctrl-P returns. Ctrl-S applies only after exact review.");
+            } else {
+                self.preview_event();
+            }
+            return;
+        }
         let mut projection_ready = false;
         if let Some(Workflow::Creation(form)) = &mut self.workflow {
             form.set_input_value(value);
@@ -1036,7 +1139,31 @@ impl App {
     }
 
     fn previous_workflow_step(&mut self) {
+        if self.busy {
+            self.message("An operation is running; please wait.");
+            return;
+        }
         match &mut self.workflow {
+            Some(Workflow::Event(form)) if form.stage == EventStage::Path => {
+                self.message("Already at the first form input.");
+            }
+            Some(Workflow::Event(form)) => {
+                form.preview = None;
+                form.stage = match form.stage {
+                    EventStage::Review if !form.fields.is_empty() => {
+                        EventStage::Field(form.fields.len() - 1)
+                    }
+                    EventStage::Field(index) if index > 0 => EventStage::Field(index - 1),
+                    _ => EventStage::Path,
+                };
+                if form.stage == EventStage::Path {
+                    self.show_creation_input();
+                } else {
+                    self.reset_prompt();
+                    self.editing = true;
+                    self.focus = Focus::Reader;
+                }
+            }
             Some(Workflow::Creation(form)) if form.stage == CreationStage::Projection => {
                 form.stage = CreationStage::Inputs;
                 form.input_index = form.input_count().saturating_sub(1);
@@ -1057,7 +1184,20 @@ impl App {
     }
 
     fn next_workflow_step(&mut self) {
+        if self.busy {
+            self.message("An operation is running; please wait.");
+            return;
+        }
         match &mut self.workflow {
+            Some(Workflow::Event(form)) => match form.stage {
+                EventStage::Path => self.accept_creation_input(self.prompt.lines().join(" ")),
+                EventStage::Field(index) if index + 1 < form.fields.len() => {
+                    form.stage = EventStage::Field(index + 1);
+                    self.editing = true;
+                    self.focus = Focus::Reader;
+                }
+                _ => self.preview_event(),
+            },
             Some(Workflow::Lifecycle(form)) => {
                 form.pane = LifecyclePane::Projection;
                 self.editing = true;
@@ -1082,7 +1222,7 @@ impl App {
         self.editing = false;
         self.reset_prompt();
         match workflow {
-            Workflow::Creation(_) => {
+            Workflow::Creation(_) | Workflow::Event(_) => {
                 self.close_reader();
                 self.focus = Focus::List;
             }
@@ -1098,6 +1238,20 @@ impl App {
             }
         }
         self.message("Form discarded; no files changed.");
+    }
+
+    fn preview_event(&mut self) {
+        let Some(Workflow::Event(form)) = &self.workflow else {
+            return;
+        };
+        self.submit(Job::PreviewEvent(
+            Box::new(form.prepared.clone()),
+            PathBuf::from(&form.path),
+            form.fields
+                .iter()
+                .map(|(name, editor)| (name.clone(), editor.source()))
+                .collect(),
+        ));
     }
     fn remember(&mut self) {
         self.navigation.push(Navigation {
@@ -1419,6 +1573,15 @@ impl App {
             return;
         }
         let workflow_job = match &self.workflow {
+            Some(Workflow::Event(form)) => {
+                if form.stage != EventStage::Review {
+                    self.message("Complete the template fields with Ctrl-N and review the exact source before applying.");
+                    return;
+                }
+                form.preview
+                    .as_ref()
+                    .map(|preview| Job::ApplyEvent(self.request.clone(), Box::new(preview.clone())))
+            }
             Some(Workflow::Creation(form)) if form.stage == CreationStage::Projection => {
                 Some(Job::Create(
                     self.request.clone(),
@@ -1609,6 +1772,46 @@ impl App {
                     "Saved through the core. Refresh to update library metrics and lists.",
                 );
             }
+            Ok(Response::EventPrepared(prepared)) => {
+                let fields = prepared
+                    .fields
+                    .iter()
+                    .map(|name| {
+                        Editor::empty_like(&prepared.template_source)
+                            .map(|editor| (name.clone(), editor))
+                    })
+                    .collect::<Result<Vec<_>, _>>();
+                let fields = match fields {
+                    Ok(fields) => fields,
+                    Err(error) => {
+                        self.message(&format!("Operation failed: {error}"));
+                        return true;
+                    }
+                };
+                self.document = None;
+                self.editor = None;
+                self.workflow = Some(Workflow::Event(Box::new(EventForm {
+                    prepared,
+                    path: String::new(),
+                    fields,
+                    stage: EventStage::Path,
+                    preview: None,
+                })));
+                self.show_creation_input();
+                self.message("Event form loaded; enter a path, then author its template fields. Nothing is published before exact review and Ctrl-S.");
+            }
+            Ok(Response::EventPreviewed(preview)) => {
+                if let Some(Workflow::Event(form)) = &mut self.workflow {
+                    self.body = preview.source.clone();
+                    form.preview = Some(*preview);
+                    form.stage = EventStage::Review;
+                    self.reset_prompt();
+                    self.scroll = 0;
+                    self.editing = false;
+                    self.focus = Focus::Reader;
+                    self.message("Review the exact immutable source. Ctrl-S creates it; Ctrl-P returns to fields; discard writes nothing.");
+                }
+            }
             Ok(Response::CreatePrepared(prepared)) => {
                 let projection = match Editor::new(&prepared.projection_source) {
                     Ok(editor) => editor,
@@ -1655,6 +1858,10 @@ impl App {
                 self.load();
             }
             Ok(Response::EventCreated(result)) => {
+                self.workflow = None;
+                self.editor = None;
+                self.editing = false;
+                self.reset_prompt();
                 self.pending_open = Some(result.id.clone());
                 self.message(&format!(
                     "Created {} through the configured {} event template.",
@@ -1895,6 +2102,10 @@ impl App {
                     self.message("Select a project before capturing a handoff.");
                     return;
                 }
+                if argument.is_empty() {
+                    self.submit(Job::PrepareEvent(self.request.clone(), None));
+                    return;
+                }
                 match handoff_arguments(argument) {
                     Ok((path, fields)) => {
                         self.submit(Job::CaptureHandoff(self.request.clone(), path, fields))
@@ -1915,6 +2126,22 @@ impl App {
             "event" => {
                 if !matches!(self.scope, LibraryScope::Project { .. }) {
                     self.message("Select a project before creating an event.");
+                    return;
+                }
+                if argument.is_empty() {
+                    self.prompt = prompt_area("/event ".into());
+                    self.prompt_changed();
+                    self.focus = Focus::Prompt;
+                    self.message(
+                        "Choose a configured event type, then Enter to author a guided event.",
+                    );
+                    return;
+                }
+                if argument.split_whitespace().count() == 1 {
+                    self.submit(Job::PrepareEvent(
+                        self.request.clone(),
+                        Some(argument.to_owned()),
+                    ));
                     return;
                 }
                 match event_arguments(argument) {
@@ -2555,6 +2782,225 @@ mod tests {
     const TASK_ID: &str = "Projects/example/records/tasks/active.md";
     const CREATED_TASK_ID: &str = "Projects/example/records/tasks/tui-created.md";
     const TASK_TEMPLATE: &str = "---\nschema_version: 1\nproject: {{project}}\ntype: {{type}}\nstatus: {{status}}\ncreated: {{created}}\nupdated: {{updated}}\n---\n\n# {{title}}\n\n{{body}}\n";
+    const EVENT_TEMPLATE: &str = "---\nschema_version: 1\nproject: {{project}}\ntype: {{type}}\ndate: {{date}}\n---\n\n# {{title}}\n\n{{body}}\n";
+
+    fn guided_event(fixture: &mut Fixture, handoff: bool, crlf: bool) {
+        let note_type = if handoff { "handoff" } else { "session" };
+        let source = if crlf {
+            EVENT_TEMPLATE.replace('\n', "\r\n")
+        } else {
+            EVENT_TEMPLATE.into()
+        };
+        fs::write(
+            fixture
+                .root()
+                .join(format!("Projects/example/templates/{note_type}.md")),
+            source,
+        )
+        .unwrap();
+        fixture
+            .app
+            .command(if handoff { "handoff" } else { "event session" });
+        fixture.finish();
+        fixture.app.prompt = prompt_area("guided.md".into());
+        fixture
+            .app
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        for value in [
+            "2026-10-03",
+            "Guided event",
+            "Привет 世界  \n\nSee [[Projects/example/entities/core|core]].\n{{title}}",
+        ] {
+            fixture.app.paste(value);
+            fixture
+                .app
+                .key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        }
+        fixture.finish();
+        assert_eq!(
+            fixture.app.event_stage(),
+            Some(true),
+            "{:?}",
+            fixture.app.messages
+        );
+    }
+
+    fn root_snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        fn visit(root: &Path, directory: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+            for entry in fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    visit(root, &path, files);
+                } else {
+                    files.insert(
+                        path.strip_prefix(root).unwrap().to_owned(),
+                        fs::read(path).unwrap(),
+                    );
+                }
+            }
+        }
+        let mut files = BTreeMap::new();
+        visit(root, root, &mut files);
+        files
+    }
+
+    #[test]
+    fn guided_events_review_multiline_exact_source_and_reopen_immutable_notes() {
+        for (handoff, crlf) in [(false, false), (true, true)] {
+            let mut fixture = Fixture::new();
+            guided_event(&mut fixture, handoff, crlf);
+            let source = fixture.app.body.clone();
+            assert!(
+                source.contains("{{title}}"),
+                "field substitution is nonrecursive"
+            );
+            assert!(!fixture.app.editing);
+            assert!(fixture.app.active_editor().is_none(), "review is read-only");
+            let before = root_snapshot(&fixture.root());
+            fixture.app.command("edit");
+            assert!(!fixture.app.editing);
+            assert_eq!(root_snapshot(&fixture.root()), before);
+            fixture
+                .app
+                .key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+            fixture.finish(); // apply
+            assert!(!fixture.app.in_workflow());
+            fixture.finish(); // fresh projection
+            fixture.finish(); // exact reopen
+            let document = fixture.app.document.as_ref().unwrap();
+            assert_eq!(document.source, source);
+            assert_eq!(
+                fs::read(fixture.root().join(&document.id)).unwrap(),
+                source.as_bytes()
+            );
+            assert!(!fixture.app.editable());
+            assert_eq!(source.contains("\r\n"), crlf);
+            if crlf {
+                assert!(!source.replace("\r\n", "").contains('\n'));
+            }
+            validate_project(&fixture.app.request).unwrap();
+        }
+    }
+
+    #[test]
+    fn guided_event_without_fields_goes_from_explicit_path_to_exact_review() {
+        let mut fixture = Fixture::new();
+        let source = "---\nschema_version: 1\nproject: example\ntype: session\ndate: 2026-10-03\n---\n\n# Fixed event\n";
+        fs::write(
+            fixture.root().join("Projects/example/templates/session.md"),
+            source,
+        )
+        .unwrap();
+        fixture.app.command("event session");
+        fixture.finish();
+        let before = root_snapshot(&fixture.root());
+        fixture.app.accept_creation_input("fixed.md".into());
+        fixture.finish();
+        assert_eq!(fixture.app.event_stage(), Some(true));
+        assert_eq!(fixture.app.body, source);
+        assert_eq!(root_snapshot(&fixture.root()), before);
+        fixture.app.previous_workflow_step();
+        assert!(fixture.app.creation_input_active());
+        assert_eq!(fixture.app.prompt.lines()[0], "fixed.md");
+        fixture.app.next_workflow_step();
+        fixture.finish();
+        fixture.app.save();
+        fixture.finish();
+        fixture.finish();
+        fixture.finish();
+        assert_eq!(fixture.app.document.as_ref().unwrap().source, source);
+    }
+
+    #[test]
+    fn guided_event_navigation_invalidates_review_and_discard_writes_nothing() {
+        let mut fixture = Fixture::new();
+        guided_event(&mut fixture, false, false);
+        let before = root_snapshot(&fixture.root());
+        let expected = fixture.app.body.clone();
+        fixture.app.command("quit");
+        assert!(!fixture.app.quit);
+        fixture.app.command("global");
+        assert!(matches!(fixture.app.scope, LibraryScope::Project { .. }));
+        fixture.app.previous_workflow_step();
+        let Some(Workflow::Event(form)) = &fixture.app.workflow else {
+            unreachable!()
+        };
+        assert!(form.preview.is_none());
+        assert!(matches!(form.stage, EventStage::Field(2)));
+        fixture.app.save();
+        assert!(fixture.jobs.try_recv().is_err(), "no apply before review");
+        fixture.app.paste("\nRevised field.");
+        fixture.app.next_workflow_step();
+        fixture.finish();
+        assert_ne!(fixture.app.body, expected);
+        assert_eq!(root_snapshot(&fixture.root()), before);
+        fixture.app.command("discard");
+        assert!(!fixture.app.in_workflow());
+        assert_eq!(root_snapshot(&fixture.root()), before);
+    }
+
+    #[test]
+    fn guided_event_template_drift_signals_retains_drafts_and_refuses_apply() {
+        let mut fixture = Fixture::new();
+        guided_event(&mut fixture, true, false);
+        let draft = fixture.app.body.clone();
+        let template = fixture.root().join("Projects/example/templates/handoff.md");
+        fs::write(&template, format!("{EVENT_TEMPLATE}\nExternal template.\n")).unwrap();
+        let before = root_snapshot(&fixture.root());
+        fixture.check_external_changes();
+        assert!(fixture.app.external_change_pending);
+        for _ in 0..2 {
+            fixture.app.save();
+            fixture.finish();
+            assert_eq!(fixture.app.body, draft);
+            assert_eq!(fixture.app.event_stage(), Some(true));
+            let Some(Workflow::Event(form)) = &fixture.app.workflow else {
+                unreachable!()
+            };
+            assert_eq!(form.path, "guided.md");
+            assert!(form.fields[2].1.source().contains("Привет 世界"));
+            assert_eq!(root_snapshot(&fixture.root()), before);
+        }
+        fixture.app.command("discard");
+        assert_eq!(root_snapshot(&fixture.root()), before);
+    }
+
+    #[test]
+    fn guided_event_invalid_preview_preserves_fields_for_correction() {
+        let mut fixture = Fixture::new();
+        guided_event(&mut fixture, false, false);
+        let before = root_snapshot(&fixture.root());
+        for _ in 0..3 {
+            fixture.app.previous_workflow_step();
+        }
+        assert!(fixture.app.editing);
+        *fixture.app.active_editor_mut().unwrap() = Editor::new("[invalid date").unwrap();
+        for _ in 0..3 {
+            fixture.app.next_workflow_step();
+        }
+        fixture.finish();
+        assert_eq!(fixture.app.event_stage(), Some(false));
+        assert!(
+            fixture
+                .app
+                .active_editor()
+                .unwrap()
+                .source()
+                .contains("Привет 世界")
+        );
+        assert_eq!(root_snapshot(&fixture.root()), before);
+        for _ in 0..2 {
+            fixture.app.previous_workflow_step();
+        }
+        *fixture.app.active_editor_mut().unwrap() = Editor::new("2026-10-03").unwrap();
+        for _ in 0..3 {
+            fixture.app.next_workflow_step();
+        }
+        fixture.finish();
+        assert_eq!(fixture.app.event_stage(), Some(true));
+        fixture.app.command("discard");
+        assert_eq!(root_snapshot(&fixture.root()), before);
+    }
     struct Fixture {
         temp: PathBuf,
         app: App,

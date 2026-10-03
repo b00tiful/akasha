@@ -175,6 +175,16 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
         os.write(master, data)
         drain()
     def command(value, from_editor=False):
+        # A retained READING title can render during save/load/reopen. Wait for the
+        # serialized worker before focusing the prompt, or reopen can steal focus.
+        deadline = time.monotonic() + 8
+        while True:
+            lines = screen.text().splitlines()
+            if len(lines) > 1 and 'AKASHA' in lines[1] and not lines[1].rstrip().endswith('working'):
+                break
+            assert process.poll() is None, 'TUI exited before command injection'
+            assert time.monotonic() < deadline, 'TUI worker did not finish before command injection'
+            drain(0.05)
         if keyboard:
             # Reader -> list -> prompt; Backspace focuses prompt outside editing.
             # No mouse/focus reports or function keys are needed on this path.
@@ -503,6 +513,44 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             drain(0.4)
             assert len(output) == length, 'reduced motion must not repaint an idle screen'
             assert b'\x1b[38;' not in output and b'\x1b[48;' not in output
+        if full or keyboard:
+            # Guided fields and exact review remain reachable in the compact keyboard profile.
+            for note_type in ['session', 'handoff']:
+                command('handoff' if note_type == 'handoff' else 'event session')
+                wait_for(f'EVENT {note_type}'.encode())
+                name = f'pty-guided-{term}-{"keyboard" if keyboard else "full"}-{note_type}.md'
+                destination = root / f'Projects/example/events/{"sessions" if note_type == "session" else "handoffs"}/{name}'
+                before_review = {p: p.read_bytes() for p in root.rglob('*') if p.is_file()}
+                send(name.encode() + b'\r')
+                wait_for(b'date')
+                body = f'Guided {term}: Привет 世界  \n\nSee [[Projects/example/entities/core|core]].\n{{{{title}}}}'
+                for value in ['2026-10-03', f'Guided {term}', body]:
+                    send(b'\x1b[200~' + value.encode() + b'\x1b[201~')
+                    send(b'\x0e')
+                wait_for(b'REVIEW')
+                assert {p: p.read_bytes() for p in root.rglob('*') if p.is_file()} == before_review
+                send(b'\x11')
+                assert process.poll() is None, 'unfinished event form must guard exit'
+                send(b'\x10')
+                wait_for(b'body')
+                send(b'\x1b[1;5F')
+                send(b'\x1b[200~\nRevised before publication.\x1b[201~')
+                send(b'\x0e')
+                wait_for(b'REVIEW')
+                if note_type == 'session':
+                    command('discard')
+                    assert {p: p.read_bytes() for p in root.rglob('*') if p.is_file()} == before_review
+                    assert not destination.exists(), 'discarded event must remain absent'
+                else:
+                    send(b'\x13')
+                    wait_for(b'READ ONLY')
+                    expected = ('---\nschema_version: 1\nproject: example\ntype: handoff\n'
+                                f'date: 2026-10-03\n---\n\n# Guided {term}\n\n{body}\nRevised before publication.\n')
+                    assert destination.read_bytes() == expected.encode(), 'exact reviewed immutable source must be published'
+                    assert destination.read_bytes().count(b'{{title}}') == 1, 'substitution must remain nonrecursive'
+            # Preserve the established cross-launch task navigation checkpoint.
+            command('open Projects/example/records/tasks/pty-created.md')
+            wait_for(b'READING')
         command('quit')
         process.wait(timeout=8)
         drain()

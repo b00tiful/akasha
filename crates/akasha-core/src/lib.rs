@@ -30,7 +30,11 @@ pub use context::{
     assemble_session_breadcrumb, assemble_session_breadcrumb_if_linked, render_context_markdown,
     render_session_breadcrumb,
 };
-pub use event::{EventCreationError, EventCreationResult, capture_handoff, create_event};
+pub use event::{
+    EventCreationError, EventCreationForm, EventCreationPreview, EventCreationResult,
+    apply_event_creation, capture_handoff, create_event, prepare_event_creation,
+    prepare_handoff_creation, preview_event_creation,
+};
 pub use init::{InitError, InitRecovery, InitRequest, InitResult, initialize_project};
 pub use library::{
     LibraryBook, LibraryCategory, LibraryCollection, LibraryDashboard, LibraryDocument,
