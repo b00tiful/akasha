@@ -49,6 +49,16 @@ pub(super) struct Suggestion {
 
 const COMMANDS: &[Completion] = &[
     Completion {
+        command: "setup",
+        argument: "PATH",
+        description: "Review a new private data root and defaults",
+    },
+    Completion {
+        command: "onboard",
+        argument: "",
+        description: "Prepare the optional external-agent onboarding handoff",
+    },
+    Completion {
         command: "init",
         argument: "PROJECT [REPOSITORY]",
         description: "Review creating, registering and linking an empty project",
@@ -221,7 +231,7 @@ fn prompt_area(text: String) -> TextArea<'static> {
     prompt_area_with_placeholder(text, PROMPT_PLACEHOLDER)
 }
 
-pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       edit and review the open record/entity and its projection\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff         guided multiline handoff authoring and exact review\nhandoff PATH | NAME=VALUE | ...\n                inline capture from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE      guided multiline event authoring and exact review\nevent TYPE PATH | NAME=VALUE | ...\n                inline configured immutable event creation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\ninit PROJECT [REPOSITORY]\n                review an empty project scaffold and registry update\nlink PROJECT [REPOSITORY]\n                review an exclusive repository pointer creation\nconfirm PLAN_ID authorize the displayed administration plan\nrecovery        inspect journal presence without writing; Esc returns\nrefresh         retry core recovery and reload validated data (F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and lifecycle forms show exact configured templates and\nmaintained projections. Creation and lifecycle use Ctrl-N to review the exact note and projection\nbefore Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. All guided template fields support multiline text;\nCtrl-N/Ctrl-P navigate and Ctrl-S publishes only after exact source review.\nIntegration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nOpen from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
+pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nsetup PATH      review a new private data root (first run)\nonboard         prepare external-agent onboarding instructions\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       edit and review the open record/entity and its projection\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff         guided multiline handoff authoring and exact review\nhandoff PATH | NAME=VALUE | ...\n                inline capture from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE      guided multiline event authoring and exact review\nevent TYPE PATH | NAME=VALUE | ...\n                inline configured immutable event creation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\ninit PROJECT [REPOSITORY]\n                review an empty project scaffold and registry update\nlink PROJECT [REPOSITORY]\n                review an exclusive repository pointer creation\nconfirm PLAN_ID authorize the displayed administration plan\nrecovery        inspect journal presence without writing; Esc returns\nrefresh         retry core recovery and reload validated data (F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and lifecycle forms show exact configured templates and\nmaintained projections. Creation and lifecycle use Ctrl-N to review the exact note and projection\nbefore Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. All guided template fields support multiline text;\nCtrl-N/Ctrl-P navigate and Ctrl-S publishes only after exact source review.\nIntegration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nFirst run: /setup PATH, /confirm PLAN_ID, /init PROJECT [REPOSITORY], then /onboard.\nOtherwise open from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Focus {
@@ -357,6 +367,9 @@ pub(super) enum Job {
     InspectIntegrations(ResolveRequest, AgentClient, PathBuf),
     PrepareIntegration(IntegrationOperation),
     CommitIntegration(IntegrationOperation, String),
+    PrepareSetup(PathBuf),
+    CommitSetup(Box<akasha_core::RootSetupPlan>),
+    Onboard(ResolveRequest),
     PrepareInit(InitRequest),
     CommitInit(InitRequest, Box<InitPlan>),
     PrepareLink(LinkRequest),
@@ -386,6 +399,8 @@ pub(super) enum Response {
     LifecycleUpdated(MutableNoteLifecycleResult),
     IntegrationPrepared(Box<IntegrationReview>),
     IntegrationCommitted(Result<String, String>),
+    SetupPrepared(Box<akasha_core::RootSetupPlan>),
+    SetupCommitted(Result<akasha_core::RootSetupResult, String>),
     InitPrepared(Box<InitReview>),
     InitCommitted(Result<String, String>),
     LinkPrepared(Box<LinkReview>),
@@ -436,6 +451,7 @@ fn execute_job(job: Job) -> WorkResult {
         Job::Load(request)
         | Job::Open(request, _)
         | Job::Search(request, _, _)
+        | Job::Onboard(request)
         | Job::Context(request)
         | Job::Breadcrumb(request)
         | Job::CaptureHandoff(request, _, _)
@@ -482,6 +498,13 @@ fn execute_job(job: Job) -> WorkResult {
 fn execute_job_inner(job: Job) -> WorkResult {
     let err = |error: &dyn std::fmt::Display| error.to_string();
     match job {
+        Job::PrepareSetup(path) => akasha_core::prepare_root_setup(&path)
+            .map(|plan| Response::SetupPrepared(Box::new(plan))).map_err(|error| err(&error)),
+        Job::CommitSetup(plan) => Ok(Response::SetupCommitted(
+            akasha_core::apply_root_setup(&plan).map_err(|error| err(&error)))),
+        Job::Onboard(request) => akasha_core::prepare_onboarding_handoff(&request)
+            .map(|handoff| Response::Text("AGENT ONBOARDING HANDOFF".into(), crate::render::onboarding_handoff_text(&handoff)))
+            .map_err(|error| err(&error)),
         Job::PrepareInit(request) => InitReview::prepare(request)
             .map(|review| Response::InitPrepared(Box::new(review))),
         Job::CommitInit(request, plan) =>
@@ -772,6 +795,7 @@ pub(super) struct App {
     pinned_project: Option<String>,
     workflow: Option<Workflow>,
     integration_review: Option<IntegrationReview>,
+    setup_review: Option<akasha_core::RootSetupPlan>,
     init_review: Option<InitReview>,
     link_review: Option<LinkReview>,
     pending_open: Option<String>,
@@ -832,6 +856,7 @@ impl App {
             pinned_project,
             workflow: None,
             integration_review: None,
+            setup_review: None,
             init_review: None,
             link_review: None,
             pending_open: None,
@@ -1048,6 +1073,7 @@ impl App {
         self.integration_review.is_some()
             || self.link_review.is_some()
             || self.init_review.is_some()
+            || self.setup_review.is_some()
     }
     pub fn creation_input_active(&self) -> bool {
         if self.recovery_visible {
@@ -1951,6 +1977,39 @@ impl App {
                 self.scroll = 0;
                 self.focus = Focus::Reader;
             }
+            Ok(Response::SetupPrepared(plan)) => {
+                self.body_title = "ROOT SETUP REVIEW".into();
+                self.body = format!(
+                    "{}\n/confirm {} authorizes this exact plan.\n/discard cancels without writing.",
+                    crate::render::setup_plan_text(&plan),
+                    plan.plan_id
+                );
+                self.setup_review = Some(*plan);
+                self.document = None;
+                self.editor = None;
+                self.editing = false;
+                self.scroll = 0;
+                self.focus = Focus::Reader;
+            }
+            Ok(Response::SetupCommitted(result)) => {
+                self.setup_review = None;
+                self.body_title = "ROOT SETUP RESULT".into();
+                self.body = match result {
+                    Ok(result) => {
+                        self.request.root_override = Some(result.root.clone());
+                        self.request.project_override = None;
+                        format!(
+                            "{}\n\nThis session now uses that root. Next: /init PROJECT [REPOSITORY]. After confirmation, /onboard prepares the optional agent handoff.",
+                            crate::render::setup_result_text(&result)
+                        )
+                    }
+                    Err(error) => format!(
+                        "Operation failed: {error}\n\nPrepare a fresh /setup PATH review. Existing files are preserved."
+                    ),
+                };
+                self.scroll = 0;
+                self.focus = Focus::Reader;
+            }
             Ok(Response::InitPrepared(review)) => {
                 self.body_title = "PROJECT INITIALIZATION REVIEW".into();
                 self.body = review.body.clone();
@@ -2341,6 +2400,12 @@ impl App {
                     } else {
                         self.message("Confirmation must match the complete displayed plan ID.");
                     }
+                } else if let Some(plan) = &self.setup_review {
+                    if argument == plan.plan_id {
+                        self.submit(Job::CommitSetup(Box::new(plan.clone())));
+                    } else {
+                        self.message("Confirmation must match the complete displayed plan ID.");
+                    }
                 } else if let Some(review) = &self.init_review {
                     if argument == review.plan.plan_id {
                         self.submit(Job::CommitInit(review.request.clone(), Box::new(review.plan.clone())));
@@ -2381,6 +2446,11 @@ impl App {
                     return;
                 }
                 self.hide_recovery();
+                if self.setup_review.take().is_some() {
+                    self.close_reader();
+                    self.message("Root setup review discarded; no files changed.");
+                    return;
+                }
                 if self.init_review.take().is_some() {
                     self.close_reader();
                     self.message("Initialization review discarded; no files changed.");
@@ -2423,6 +2493,11 @@ impl App {
                 self.focus = Focus::Prompt;
             }
             "projects" => self.projects(),
+            "setup" if argument.is_empty() => self.message("Usage: /setup PATH. Choose a new directory with an existing parent."),
+            "setup" if self.projection.is_some() => self.message("A project is already loaded. To set up another root, open a separate Akasha session with --root pointing to the new destination."),
+            "setup" => self.submit(Job::PrepareSetup(self.request.cwd.join(argument))),
+            "onboard" if !argument.is_empty() => self.message("Usage: /onboard"),
+            "onboard" => self.submit(Job::Onboard(self.request.clone())),
             "init" => match init::arguments(&self.request, argument) {
                 Ok(request) => self.submit(Job::PrepareInit(request)),
                 Err(error) => self.message(&error),
@@ -4269,6 +4344,106 @@ mod tests {
         assert_eq!(fs::read_dir(&home).unwrap().count(), 2);
     }
 
+    fn first_run_fixture() -> Fixture {
+        let mut f = Fixture::new();
+        let request = ResolveRequest {
+            root_override: Some(f.temp.join("new memory 世界")),
+            project_override: None,
+            cwd: f.temp.clone(),
+            environment: ResolutionEnvironment::default(),
+        };
+        let (sender, jobs) = mpsc::channel();
+        f.app = App::new(request, sender, true, false, false);
+        f.jobs = jobs;
+        f.app.load();
+        f.finish();
+        assert!(f.app.projection.is_none());
+        f
+    }
+
+    #[test]
+    fn first_run_setup_cancel_confirm_init_and_onboarding_handoff() {
+        let mut f = first_run_fixture();
+        let before = root_snapshot(&f.temp);
+        f.app.command("setup new memory 世界");
+        f.finish();
+        let plan = f.app.setup_review.clone().unwrap();
+        assert_eq!(root_snapshot(&f.temp), before);
+        assert!(f.app.body.contains("UTF-8 JSON"));
+        for command in ["confirm wrong", "init sample", "onboard", "quit", "save"] {
+            f.app.command(command);
+            assert!(f.jobs.try_recv().is_err());
+        }
+        f.app.command("discard");
+        assert!(f.app.setup_review.is_none());
+        assert_eq!(root_snapshot(&f.temp), before);
+        f.app.command("setup new memory 世界");
+        f.finish();
+        assert_eq!(f.app.setup_review.as_ref().unwrap(), &plan);
+        f.app.command(&format!("confirm {}", plan.plan_id));
+        f.finish();
+        assert!(f.app.body.contains("Root configured."));
+        assert_eq!(f.app.request.root_override, Some(plan.root.clone()));
+        assert!(f.app.body.contains("/init PROJECT"));
+        f.app.command("init first repository");
+        f.finish();
+        let init = f.app.init_review.as_ref().unwrap().plan.clone();
+        f.app.command(&format!("confirm {}", init.plan_id));
+        f.finish();
+        assert!(f.app.body.contains("Project initialized."));
+        let before = root_snapshot(&f.temp);
+        f.app.command("onboard");
+        f.finish();
+        assert!(
+            f.app.body.contains("AGENT ONBOARDING HANDOFF"),
+            "{}",
+            f.app.body
+        );
+        assert!(f.app.body.contains("human approval"));
+        assert!(f.app.body.contains("No agent connection"));
+        assert_eq!(root_snapshot(&f.temp), before);
+        f.app.command("refresh");
+        f.finish();
+        assert_eq!(f.app.projection.as_ref().unwrap().selected_project, "first");
+    }
+
+    #[test]
+    fn first_run_setup_stale_refusal_consumes_review_and_preserves_existing_root() {
+        let mut f = first_run_fixture();
+        f.app.command("setup new memory 世界");
+        f.finish();
+        let plan = f.app.setup_review.clone().unwrap();
+        fs::create_dir(&plan.root).unwrap();
+        fs::write(plan.root.join("human.md"), "human bytes").unwrap();
+        let before = root_snapshot(&f.temp);
+        f.app.command(&format!("confirm {}", plan.plan_id));
+        f.finish();
+        assert!(f.app.setup_review.is_none());
+        assert!(f.app.body.contains("Operation failed:"));
+        assert_eq!(root_snapshot(&f.temp), before);
+    }
+
+    #[test]
+    fn first_run_setup_is_literal_and_scrollable_in_compact_terminal() {
+        let mut f = first_run_fixture();
+        f.app.command("setup new memory 世界");
+        f.finish();
+        let plan = f.app.setup_review.as_ref().unwrap();
+        for (path, source) in &plan.files {
+            assert!(f.app.body.contains(&format!("{path:?}")));
+            assert!(f.app.body.contains(&serde_json::to_string(source).unwrap()));
+        }
+        let backend = ratatui::backend::TestBackend::new(40, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::super::view::draw(frame, &mut f.app))
+            .unwrap();
+        assert!(f.app.max_scroll > 0);
+        f.app
+            .key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
+        assert!(f.app.setup_review.is_some());
+    }
+
     #[test]
     fn initialization_repository_argument_preserves_launch_relative_root_inputs() {
         let f = Fixture::new();
@@ -6072,13 +6247,14 @@ mod tests {
                 .iter()
                 .map(|c| c.command.as_str())
                 .collect::<Vec<_>>(),
-            ["search", "search-all", "save"]
+            ["setup", "search", "search-all", "save"]
         );
         assert!(app.completions().iter().all(|c| !c.description.is_empty()));
         press(app, KeyCode::Up);
-        assert_eq!(app.completion_selection(), 2);
+        assert_eq!(app.completion_selection(), 3);
         press(app, KeyCode::Down);
         assert_eq!(app.completion_selection(), 0);
+        press(app, KeyCode::Down);
         press(app, KeyCode::Down);
         press(app, KeyCode::Tab);
         assert_eq!(app.prompt.lines(), ["/search-all "]);

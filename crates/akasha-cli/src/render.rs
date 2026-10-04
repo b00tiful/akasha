@@ -783,3 +783,79 @@ const fn agent_wiring_recovery_name(recovery: AgentWiringRecovery) -> &'static s
         AgentWiringRecovery::Finalized => "finalized",
     }
 }
+
+pub(crate) fn setup_plan_text(plan: &akasha_core::RootSetupPlan) -> String {
+    let mut text = format!(
+        "ROOT SETUP REVIEW · NO FILES CHANGED\n\nRoot: {:?}\nResume owned partial setup: {}\nPlan ID: {}\n\nDirectories (private on Unix):\n",
+        plan.root, plan.resuming, plan.plan_id
+    );
+    for path in &plan.directories {
+        writeln!(text, "  {path:?}").unwrap();
+    }
+    text.push_str("\nFiles (exact UTF-8 JSON strings; private on Unix):\n");
+    for (path, source) in &plan.files {
+        writeln!(
+            text,
+            "\n{path:?}\n{}",
+            serde_json::to_string(source).unwrap()
+        )
+        .unwrap();
+    }
+    writeln!(text, "\nExisting matching partial paths: {:?}\n\nPlan ID: {}\n\nApply creates/reuses a persistent sibling setup lock and a temporary root setup journal. Existing roots are never overwritten. Partial setup is retained on error; fresh review resumes only matching files. No user or client configuration is changed. Use --root PATH for later commands or configure AKASHA_ROOT explicitly.\n", plan.present, plan.plan_id).unwrap();
+    text
+}
+
+pub(crate) fn setup_result_text(result: &akasha_core::RootSetupResult) -> String {
+    format!(
+        "Root configured.\nRoot: {:?}\nFiles: {}\nResumed: {}\n\nNext: from your repository, run akasha --root PATH init PROJECT.\nThen run akasha --root PATH onboard for the optional connected-agent handoff.\nReplace PATH with the root above. No client or user configuration was changed.",
+        result.root, result.files, result.resumed
+    )
+}
+
+pub(crate) fn onboarding_handoff_text(handoff: &akasha_core::OnboardingHandoff) -> String {
+    format!(
+        "AGENT ONBOARDING HANDOFF · NO FILES CHANGED\n\nProject: {:?}\nRoot: {:?}\nRepository: {:?}\n\n{}\n\nStdio command (JSON string): {}\nArguments (JSON array): {}\n\nRequest for the connected agent:\n{}\n\nAfter approved application, run akasha --root PATH --project PROJECT validate with the identities above.\n",
+        handoff.project,
+        handoff.root,
+        handoff.repository,
+        handoff.next_step,
+        serde_json::to_string(&handoff.command).unwrap(),
+        serde_json::to_string(&handoff.args).unwrap(),
+        handoff.agent_request
+    )
+}
+
+pub(crate) fn render_setup_plan(
+    plan: &akasha_core::RootSetupPlan,
+    output: OutputMode,
+) -> io::Result<()> {
+    if output.json {
+        write_stdout(&json_line(serde_json::to_string_pretty(plan))?)
+    } else {
+        write_stdout(&format!(
+            "{}\nTo apply: akasha setup-root PATH --plan-id {}\nReplace PATH with the reviewed root. Omitting apply cancels without writing.\n",
+            setup_plan_text(plan),
+            plan.plan_id
+        ))
+    }
+}
+pub(crate) fn render_setup_result(
+    result: &akasha_core::RootSetupResult,
+    output: OutputMode,
+) -> io::Result<()> {
+    if output.json {
+        write_stdout(&json_line(serde_json::to_string_pretty(result))?)
+    } else {
+        write_stdout(&format!("{}\n", setup_result_text(result)))
+    }
+}
+pub(crate) fn render_onboarding_handoff(
+    handoff: &akasha_core::OnboardingHandoff,
+    output: OutputMode,
+) -> io::Result<()> {
+    if output.json {
+        write_stdout(&json_line(serde_json::to_string_pretty(handoff))?)
+    } else {
+        write_stdout(&onboarding_handoff_text(handoff))
+    }
+}

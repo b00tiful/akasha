@@ -43,7 +43,8 @@ VAULT.md
 implementation_plan.md
 RELEASE_WORK_PLAN.md
 
-# Public synthetic fixtures for the agent-wiring contract.
+# Public bundled instructions and synthetic agent-wiring fixtures.
+!crates/akasha-core/defaults/AGENTS.md
 !tests/fixtures/resolution/valid-root/Meta/AGENTS.md
 !tests/fixtures/codex-onboarding/root/Meta/AGENTS.md
 !tests/fixtures/memory-benchmark/akasha-adapter/root/Meta/AGENTS.md

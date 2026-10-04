@@ -69,6 +69,15 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Review a new data root and bundled defaults; apply only a reviewed full plan ID.
+    SetupRoot {
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
+        #[arg(long, value_name = "SHA256")]
+        plan_id: Option<String>,
+    },
+    /// Prepare a read-only handoff for an external onboarding agent.
+    Onboard,
     /// Open the persistent human terminal interface (also the interactive default).
     Tui {
         /// Freeze decorative animation.
@@ -309,7 +318,9 @@ fn run(cli: Cli) -> Result<(), u8> {
     if let Some(selected) = project.as_ref() {
         let positional = match &command {
             Command::Init { slug } | Command::Link { slug, .. } => Some(slug),
-            Command::CreateEvent { .. }
+            Command::SetupRoot { .. }
+            | Command::Onboard
+            | Command::CreateEvent { .. }
             | Command::Search { .. }
             | Command::Tui { .. }
             | Command::CaptureHandoff { .. }
@@ -361,6 +372,33 @@ fn run(cli: Cli) -> Result<(), u8> {
                     error.exit_code()
                 })?;
             finish_output(render::render_search(&result, output))?;
+        }
+        Command::SetupRoot { path, plan_id } => {
+            if root.is_some() || project.is_some() {
+                eprintln!("akasha: setup-root uses its explicit PATH; omit --root and --project");
+                return Err(3);
+            }
+            let plan = akasha_core::prepare_root_setup(&path).map_err(report_setup)?;
+            if let Some(id) = plan_id {
+                if id != plan.plan_id {
+                    eprintln!(
+                        "akasha: setup plan changed or confirmation does not match; prepare a fresh review"
+                    );
+                    return Err(5);
+                }
+                let result = akasha_core::apply_root_setup(&plan).map_err(report_setup)?;
+                finish_output(render::render_setup_result(&result, output))?;
+            } else {
+                finish_output(render::render_setup_plan(&plan, output))?;
+            }
+        }
+        Command::Onboard => {
+            let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
+            let handoff = akasha_core::prepare_onboarding_handoff(&request).map_err(|error| {
+                eprintln!("akasha: {error}");
+                error.exit_code()
+            })?;
+            finish_output(render::render_onboarding_handoff(&handoff, output))?;
         }
         Command::Init { slug } => {
             let request = InitRequest::from_process(root, slug).map_err(report_resolution)?;
@@ -680,4 +718,9 @@ fn parse_template_fields(fields: Vec<String>) -> Result<BTreeMap<String, String>
         }
     }
     Ok(parsed)
+}
+
+fn report_setup(error: akasha_core::RootSetupError) -> u8 {
+    eprintln!("akasha: {error}");
+    error.exit_code()
 }

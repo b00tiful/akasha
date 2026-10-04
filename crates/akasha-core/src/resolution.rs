@@ -314,6 +314,22 @@ pub fn resolve_project(request: &ResolveRequest) -> Result<ResolvedProject, Reso
 }
 
 pub(crate) fn load_root_config(root: &Path) -> Result<RootConfig, ResolveError> {
+    let setup_journal = root.join(crate::setup::JOURNAL);
+    match fs::symlink_metadata(&setup_journal) {
+        Ok(_) => {
+            return Err(ResolveError::Configuration(format!(
+                "unfinished root setup at {root:?}; prepare a fresh setup-root review before using this root"
+            )));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(ResolveError::FileSystem {
+                operation: "inspect root setup journal",
+                path: setup_journal,
+                source,
+            });
+        }
+    }
     let path = root.join(ROOT_CONFIG_FILE);
     let config: RootConfig = read_toml(&path, "data-root configuration")?;
     require_schema_version(config.schema_version, &path)?;
@@ -347,7 +363,7 @@ pub(crate) fn load_project_registry(
     Ok((path, registry))
 }
 
-fn validate_root_config(config: &RootConfig) -> Result<(), ResolveError> {
+pub(crate) fn validate_root_config(config: &RootConfig) -> Result<(), ResolveError> {
     let root_paths = [
         ("files.registry", &config.files.registry),
         ("files.agent_instructions", &config.files.agent_instructions),

@@ -1127,6 +1127,14 @@ struct SessionHookWiringLock {
     _file: File,
 }
 
+impl Drop for SessionHookWiringLock {
+    fn drop(&mut self) {
+        // Closing alone can retain a flock while another thread's forked child
+        // holds an inherited descriptor before exec. Release the owner's scope now.
+        let _ = self._file.unlock();
+    }
+}
+
 impl SessionHookWiringLock {
     fn acquire(agent_home: &Path, target: &Path) -> Result<Self, SessionHookWiringError> {
         let path = auxiliary_path(agent_home, target, LOCK_SUFFIX)?;
@@ -1618,6 +1626,20 @@ mod tests {
             };
             Self { home, request }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writer_scope_releases_inherited_descriptor() {
+        let home = TempDir::new("lock-inheritance");
+        let target = home.path().join("hooks.json");
+        let owner = SessionHookWiringLock::acquire(home.path(), &target).unwrap();
+        let inherited = owner._file.try_clone().unwrap();
+        assert!(SessionHookWiringLock::acquire(home.path(), &target).is_err());
+        drop(owner);
+        let reacquired = SessionHookWiringLock::acquire(home.path(), &target);
+        drop(inherited);
+        assert!(reacquired.is_ok());
     }
 
     struct TempDir(PathBuf);

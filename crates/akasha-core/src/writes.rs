@@ -257,6 +257,14 @@ pub(crate) struct ProjectWriteLock {
     _file: File,
 }
 
+impl Drop for ProjectWriteLock {
+    fn drop(&mut self) {
+        // Closing alone can retain a flock while another thread's forked child
+        // holds an inherited descriptor before exec. Release the owner's scope now.
+        let _ = self._file.unlock();
+    }
+}
+
 impl ProjectWriteLock {
     pub(crate) fn acquire(project_dir: &Path) -> Result<Self, AtomicCreateError> {
         let project_dir =
@@ -599,6 +607,31 @@ mod tests {
         drop(first);
         fs::remove_file(root.join(PROJECT_WRITE_LOCK_FILE)).expect("remove lock file");
         fs::remove_dir(&root).expect("remove test directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writer_scope_releases_lock_while_a_duplicate_descriptor_remains_open() {
+        let root = std::env::temp_dir().join(format!(
+            "akasha-lock-inheritance-{}-{}",
+            std::process::id(),
+            NEXT_STAGING_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        let owner = ProjectWriteLock::acquire(&root).unwrap();
+        // dup and fork share the same open file description on Unix. Holding this
+        // descriptor models a child between fork and close-on-exec deterministically.
+        let inherited = owner._file.try_clone().unwrap();
+        assert!(ProjectWriteLock::acquire(&root).is_err());
+        drop(owner);
+        let reacquired = ProjectWriteLock::acquire(&root);
+        drop(inherited);
+        assert!(
+            reacquired.is_ok(),
+            "normal scope exit must release independently of inherited descriptors"
+        );
+        drop(reacquired);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]

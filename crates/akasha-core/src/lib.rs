@@ -11,9 +11,11 @@ pub mod note_creation;
 pub mod note_edit;
 pub mod note_template;
 pub mod onboarding;
+pub mod onboarding_handoff;
 pub mod project_validation;
 pub mod resolution;
 pub mod session_hook_wiring;
+pub mod setup;
 mod state;
 pub mod validation;
 mod wikilink;
@@ -74,6 +76,7 @@ pub use onboarding::{
     OnboardingPreparation, OnboardingTemplate, ProposedNote, apply_approved_onboarding_batch,
     apply_onboarding_batch, prepare_onboarding, preview_onboarding_batch,
 };
+pub use onboarding_handoff::{OnboardingHandoff, prepare_onboarding_handoff};
 pub use project_validation::{
     NoteTypeValidation, ProjectValidationError, ProjectValidationReport, ProjectionValidation,
     validate_project,
@@ -87,6 +90,9 @@ pub use session_hook_wiring::{
     SessionHookWiringPatch, SessionHookWiringPlan, SessionHookWiringRecovery,
     SessionHookWiringResult, apply_session_hook_wiring, prepare_session_hook_removal,
     prepare_session_hook_wiring, remove_session_hook_wiring,
+};
+pub use setup::{
+    RootSetupError, RootSetupPlan, RootSetupResult, apply_root_setup, prepare_root_setup,
 };
 pub use validation::{
     ParsedNote, ProjectRegistry, ProjectRegistryEntry, ValidationError, parse_leading_frontmatter,

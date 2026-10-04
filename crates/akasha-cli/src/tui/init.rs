@@ -97,7 +97,7 @@ impl Review {
     pub fn commit(request: &InitRequest, plan: &InitPlan) -> Result<String, String> {
         let result = apply_project_init(request, plan).map_err(|error| error.to_string())?;
         Ok(format!(
-            "Project initialized.\nProject: {}\nRepository: {:?}\nProject directory: {:?}\nPointer: {:?}\nTemplates copied: {}\n\nUse F5 to refresh the library, then /project {} to select the empty project.",
+            "Project initialized.\nProject: {}\nRepository: {:?}\nProject directory: {:?}\nPointer: {:?}\nTemplates copied: {}\n\nUse F5 to refresh the library, then /project {} to select the empty project. Then /onboard prepares a read-only handoff for your connected agent; it does not start an agent.",
             result.project,
             result.repository_dir,
             result.project_dir,

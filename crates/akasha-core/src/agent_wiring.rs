@@ -1224,6 +1224,14 @@ struct AgentWiringLock {
     _file: File,
 }
 
+impl Drop for AgentWiringLock {
+    fn drop(&mut self) {
+        // Closing alone can retain a flock while another thread's forked child
+        // holds an inherited descriptor before exec. Release the owner's scope now.
+        let _ = self._file.unlock();
+    }
+}
+
 impl AgentWiringLock {
     fn acquire(agent_home: &Path, target: &Path) -> Result<Self, AgentWiringError> {
         let path = auxiliary_path(agent_home, target, LOCK_SUFFIX)?;
@@ -1531,6 +1539,20 @@ mod tests {
                 request,
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writer_scope_releases_inherited_descriptor() {
+        let home = TempDir::new("lock-inheritance");
+        let target = home.path().join("AGENTS.md");
+        let owner = AgentWiringLock::acquire(home.path(), &target).unwrap();
+        let inherited = owner._file.try_clone().unwrap();
+        assert!(AgentWiringLock::acquire(home.path(), &target).is_err());
+        drop(owner);
+        let reacquired = AgentWiringLock::acquire(home.path(), &target);
+        drop(inherited);
+        assert!(reacquired.is_ok());
     }
 
     struct TempDir(PathBuf);

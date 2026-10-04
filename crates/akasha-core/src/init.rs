@@ -1624,6 +1624,14 @@ struct InitLock {
     _file: File,
 }
 
+impl Drop for InitLock {
+    fn drop(&mut self) {
+        // Closing alone can retain a flock while another thread's forked child
+        // holds an inherited descriptor before exec. Release the owner's scope now.
+        let _ = self._file.unlock();
+    }
+}
+
 impl InitLock {
     fn acquire(registry: &Path) -> Result<Self, InitError> {
         let file_name = registry
@@ -1895,6 +1903,20 @@ mod tests {
         );
         assert!(init_journal_path(&fixture.root.join("Meta/projects.yaml")).is_file());
         assert!(fixture.repository.join(POINTER_FILE).is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writer_scope_releases_inherited_descriptor() {
+        let fixture = Fixture::new("lock-inheritance");
+        let registry = fixture.root.join("Meta/projects.yaml");
+        let owner = InitLock::acquire(&registry).unwrap();
+        let inherited = owner._file.try_clone().unwrap();
+        assert!(InitLock::acquire(&registry).is_err());
+        drop(owner);
+        let reacquired = InitLock::acquire(&registry);
+        drop(inherited);
+        assert!(reacquired.is_ok());
     }
 
     struct Fixture {
