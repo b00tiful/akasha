@@ -80,8 +80,9 @@ obtain a fresh review before trying again.
 Five actual process exits verify journal/directory/file/pointer/registry publication,
 exact snapshots and modes, lock release, recovery-only completion and stale replay
 refusal. CLI and TUI fixtures also verify human-byte retention and fresh retry; the
-keyboard walkthrough passes at 110×32 and 40×12. Physical/device durability,
-in-kernel interruption and root-setup returned-I/O acceptance remain separate limits.
+keyboard walkthrough passes at 110×32 and 40×12. Physical/device durability and
+in-kernel interruption remain separate limits. Root setup has its own returned-error
+acceptance and [state-specific retry guidance](first-run.md#interrupted-setup).
 Initialization additionally has returned-error coverage for publication, rollback,
 persistent completion-sync refusal and journal cleanup, with exact bytes/modes,
 foreign-artifact preservation and fresh reviewed retry.

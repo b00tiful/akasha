@@ -81,9 +81,27 @@ automatically adopted. Choose a new destination or reconcile the backed-up parti
 Do not remove a journal to bypass the check. A completed root refuses repeat setup; continue with
 `init`, or `validate` if a project is already initialized.
 
-Process-exit tests cover publication boundaries and lock release. Physical power loss, device
-flush behavior and interruption within kernel calls are not covered. Existing project mutation
-recovery is described separately in [the recovery runbook](recovery.md).
+Returned filesystem errors need the same inspection as an interrupted process. Once the
+filesystem problem is corrected, use the remaining state to choose the next action:
+
+| Remaining state | Next action |
+|---|---|
+| Destination absent | Prepare and confirm a new setup review. A private sibling lock may remain. |
+| Exact journal-owned partial tree | Prepare a fresh review and resume. Previously published files are retained; supporting directory syncs are retried before journal removal. |
+| Unowned incomplete directory, changed files, missing supporting files after configuration, or staging residue inside the root | Back up and inspect the partial root. Setup refuses adoption; preserve it and choose a new destination or reconcile it manually. |
+| Complete defaults without a journal | The final directory sync may have failed after journal removal. Repeated setup refuses this existing root; inspect its files, then continue with `init`, or validate an already initialized project. |
+
+A persistent supporting-directory sync or journal-removal failure returns an I/O error and
+retains the journal. Exact visible bytes alone do not mean setup finished. Fresh review and cancellation
+remain read-only. Private staging residue beside the sibling lock is also preserved; it is
+never adopted as a lock or setup journal. Keep it with the backup during inspection.
+
+Ten regression tests cover 290 returned-error and preservation scenarios, including genuine
+partial writes, every default-file publication and directory-sync boundary, compound staging
+cleanup failures, repeated refusal, exact bytes/modes, released locks and validated init/handoff
+after retry. Process-exit tests additionally cover publication boundaries. Physical power loss,
+device flush behavior and interruption within kernel calls are not covered. Existing project
+mutation recovery is described separately in [the recovery runbook](recovery.md).
 
 ## Interrupted project initialization
 

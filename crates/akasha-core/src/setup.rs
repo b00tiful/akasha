@@ -8,7 +8,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::Serialize;
 
 use crate::resolution::{ROOT_CONFIG_FILE, RootConfig, validate_root_config};
-use crate::writes::{AtomicCreateError, create_file_atomically, sync_directory};
+use crate::writes::{AtomicCreateError, create_file_atomically, io_call, sync_directory};
 
 pub(crate) const JOURNAL: &str = ".akasha-setup.json";
 
@@ -321,7 +321,10 @@ pub fn apply_root_setup(plan: &RootSetupPlan) -> Result<RootSetupResult, RootSet
     }
     sync_tree(plan)?;
     let journal = plan.root.join(JOURNAL);
-    io_at(&journal, fs::remove_file(&journal))?;
+    io_at(
+        &journal,
+        io_call!(&journal, Remove, fs::remove_file(&journal)),
+    )?;
     checkpoint("unlinked");
     io_at(&plan.root, sync_directory(&plan.root))?;
     Ok(RootSetupResult {
@@ -345,7 +348,7 @@ fn private_directory(path: &Path) -> Result<(), RootSetupError> {
         use std::os::unix::fs::DirBuilderExt;
         builder.mode(0o700);
     }
-    io_at(path, builder.create(path))
+    io_at(path, io_call!(path, Create, builder.create(path)))
 }
 struct SetupLock(File);
 impl Drop for SetupLock {
@@ -384,3 +387,7 @@ fn checkpoint(_stage: &str) {
 #[cfg(test)]
 #[path = "setup_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "setup_error_tests.rs"]
+mod error_tests;

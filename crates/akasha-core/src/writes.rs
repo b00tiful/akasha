@@ -549,7 +549,7 @@ struct StagingFile {
 
 impl Drop for StagingFile {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        let _ = io_call!(&self.path, Remove, fs::remove_file(&self.path));
     }
 }
 
@@ -667,6 +667,10 @@ mod tests {
             .open(&replaced)
             .and_then(|mut file| file.write_all(b"before"))
             .expect("seed replacement target");
+        // Creation mode is filtered by the caller's umask. Make this fixture's
+        // preservation baseline explicit, including under a private 077 umask.
+        fs::set_permissions(&replaced, fs::Permissions::from_mode(0o640))
+            .expect("set replacement fixture mode");
         replace_file_if_unchanged(&replaced, b"before", b"after")
             .expect("replace file with original mode");
         assert_eq!(
