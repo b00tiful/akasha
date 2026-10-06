@@ -70,11 +70,21 @@ hashes, or delete a journal to make the root load. After an I/O failure, inspect
 remaining state and obtain a fresh review rather than replaying an old ID. A failure
 after journal unlink can leave completed recovery visible without its journal.
 
+Recovery retries the registry and projects parent directories and the repository
+directory when it still exists. Finalization also syncs every committed scaffold
+directory, deepest first. These checks run before journal removal even if a prior
+attempt already removed the pointer or left exact committed bytes. A failed sync
+retains the journal and reports an I/O error; correct the filesystem problem and
+obtain a fresh review before trying again.
+
 Five actual process exits verify journal/directory/file/pointer/registry publication,
 exact snapshots and modes, lock release, recovery-only completion and stale replay
 refusal. CLI and TUI fixtures also verify human-byte retention and fresh retry; the
 keyboard walkthrough passes at 110×32 and 40×12. Physical/device durability,
-in-kernel interruption, and root-init returned-I/O matrices remain separate limits.
+in-kernel interruption and root-setup returned-I/O acceptance remain separate limits.
+Initialization additionally has returned-error coverage for publication, rollback,
+persistent completion-sync refusal and journal cleanup, with exact bytes/modes,
+foreign-artifact preservation and fresh reviewed retry.
 
 ## When an operation reports an I/O failure
 

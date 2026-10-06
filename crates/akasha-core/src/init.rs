@@ -20,7 +20,7 @@ use crate::validation::{
     ProjectRegistry, ProjectRegistryEntry, ValidationError, parse_project_registry,
 };
 use crate::writes::{
-    AtomicCreateError, PROJECT_WRITE_LOCK_FILE, create_file_atomically, sync_directory,
+    AtomicCreateError, PROJECT_WRITE_LOCK_FILE, create_file_atomically, io_call, sync_directory,
 };
 
 const MAX_REGISTRY_STAGING_ATTEMPTS: u64 = 128;
@@ -37,6 +37,10 @@ pub use recovery::{
 #[cfg(test)]
 #[path = "init_recovery_tests.rs"]
 mod recovery_tests;
+
+#[cfg(test)]
+#[path = "init_error_tests.rs"]
+mod error_tests;
 
 /// Inputs for initializing one repository as a new Akasha project.
 #[derive(Debug, Clone)]
@@ -484,10 +488,10 @@ fn initialize_locked(
         after_scaffold();
 
         create_file_atomically(&prepared.pointer, &pointer_contents)?;
-        sync_parent(&prepared.pointer, "sync the initialized repository pointer")?;
         created
             .files
             .push((prepared.pointer.clone(), pointer_contents));
+        sync_parent(&prepared.pointer, "sync the initialized repository pointer")?;
         publication_hook(InitPublicationStage::Pointer);
         before_registry_commit();
 
@@ -852,7 +856,7 @@ fn create_scaffold(
 }
 
 fn create_directory(path: &Path) -> Result<(), InitError> {
-    match fs::create_dir(path) {
+    match io_call!(path, Create, fs::create_dir(path)) {
         Ok(()) => Ok(()),
         Err(source) if source.kind() == io::ErrorKind::AlreadyExists => Err(InitError::Conflict {
             path: path.to_path_buf(),
@@ -1006,7 +1010,48 @@ fn finish_checked_init_recovery(
             &checked.journal.repository_dir.join(POINTER_FILE),
         )?;
     }
+    sync_recovered_init(registry, &path, &checked.journal, checked.recovery)?;
     complete_init_journal(&path, &checked.source)
+}
+
+fn sync_recovered_init(
+    registry: &Path,
+    journal_path: &Path,
+    journal: &InitJournal,
+    recovery: InitRecovery,
+) -> Result<(), InitError> {
+    // Matching bytes do not prove that a previous attempt synced its directory
+    // entries. Retry every surviving publication parent before dropping authority.
+    let mut directories = BTreeSet::from([
+        registry.parent().expect("registry parent").to_path_buf(),
+        journal
+            .project_dir
+            .parent()
+            .expect("project parent")
+            .to_path_buf(),
+    ]);
+    if verify_journal_repository(journal_path, &journal.repository_dir, false)? {
+        directories.insert(journal.repository_dir.clone());
+    }
+    if recovery == InitRecovery::Finalized {
+        directories.insert(journal.project_dir.clone());
+        directories.extend(
+            journal
+                .directories
+                .iter()
+                .map(|path| journal.project_dir.join(path)),
+        );
+    }
+    let mut directories = directories.into_iter().collect::<Vec<_>>();
+    directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    for path in directories {
+        sync_directory(&path).map_err(|source| InitError::FileSystem {
+            operation: "sync initialization recovery completion",
+            path,
+            source,
+        })?;
+    }
+    Ok(())
 }
 
 fn read_init_journal(path: &Path) -> Result<Option<(InitJournal, Vec<u8>)>, InitError> {
@@ -1417,7 +1462,7 @@ fn remove_init_file_if_unchanged(
     if !inspect_optional_init_file(journal_path, path, expected, description)? {
         return Ok(());
     }
-    fs::remove_file(path).map_err(|source| InitError::FileSystem {
+    io_call!(path, Remove, fs::remove_file(path)).map_err(|source| InitError::FileSystem {
         operation: "remove a journaled initialization file",
         path: path.to_path_buf(),
         source,
@@ -1447,7 +1492,7 @@ fn require_init_directory(journal_path: &Path, path: &Path) -> Result<(), InitEr
 }
 
 fn remove_init_directory(journal_path: &Path, path: &Path) -> Result<(), InitError> {
-    match fs::remove_dir(path) {
+    match io_call!(path, Remove, fs::remove_dir(path)) {
         Ok(()) => Ok(()),
         Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(source) if source.kind() == io::ErrorKind::DirectoryNotEmpty => {
@@ -1488,7 +1533,7 @@ fn complete_init_journal(path: &Path, expected: &[u8]) -> Result<(), InitError> 
             message: "initialization recovery journal changed before cleanup".to_owned(),
         });
     }
-    fs::remove_file(path).map_err(|source| InitError::FileSystem {
+    io_call!(path, Remove, fs::remove_file(path)).map_err(|source| InitError::FileSystem {
         operation: "remove the completed initialization recovery journal",
         path: path.to_path_buf(),
         source,
@@ -1591,20 +1636,26 @@ fn replace_registry_if_unchanged(
     }
 
     let stage = create_registry_stage(path, replacement)?;
-    fs::set_permissions(&stage.path, metadata.permissions()).map_err(|source| {
-        InitError::FileSystem {
-            operation: "preserve project registry permissions",
-            path: stage.path.clone(),
-            source,
-        }
+    io_call!(
+        path,
+        Permissions,
+        fs::set_permissions(&stage.path, metadata.permissions())
+    )
+    .map_err(|source| InitError::FileSystem {
+        operation: "preserve project registry permissions",
+        path: stage.path.clone(),
+        source,
     })?;
-    File::open(&stage.path)
-        .and_then(|file| file.sync_all())
-        .map_err(|source| InitError::FileSystem {
-            operation: "sync staged project registry permissions",
-            path: stage.path.clone(),
-            source,
-        })?;
+    io_call!(
+        path,
+        FileSync,
+        File::open(&stage.path).and_then(|file| file.sync_all())
+    )
+    .map_err(|source| InitError::FileSystem {
+        operation: "sync staged project registry permissions",
+        path: stage.path.clone(),
+        source,
+    })?;
 
     let current = fs::read(path).map_err(|source| InitError::FileSystem {
         operation: "verify the project registry before replacement",
@@ -1618,10 +1669,12 @@ fn replace_registry_if_unchanged(
         });
     }
 
-    fs::rename(&stage.path, path).map_err(|source| InitError::FileSystem {
-        operation: "atomically publish the project registry",
-        path: path.to_path_buf(),
-        source,
+    io_call!(path, Publish, fs::rename(&stage.path, path)).map_err(|source| {
+        InitError::FileSystem {
+            operation: "atomically publish the project registry",
+            path: path.to_path_buf(),
+            source,
+        }
     })?;
     Ok(())
 }
@@ -1744,7 +1797,7 @@ impl CreatedPaths {
         for (path, expected) in self.files.iter().rev() {
             match fs::read(path) {
                 Ok(current) if current == *expected => {
-                    if let Err(source) = fs::remove_file(path) {
+                    if let Err(source) = io_call!(path, Remove, fs::remove_file(path)) {
                         failures.push(format!("could not remove {}: {source}", path.display()));
                     } else if let Some(parent) = path.parent()
                         && let Err(source) = sync_directory(parent)
@@ -1767,7 +1820,7 @@ impl CreatedPaths {
             }
         }
         for path in self.directories.iter().rev() {
-            match fs::remove_dir(path) {
+            match io_call!(path, Remove, fs::remove_dir(path)) {
                 Ok(()) => {
                     if let Some(parent) = path.parent()
                         && let Err(source) = sync_directory(parent)

@@ -19,6 +19,7 @@ pub(crate) enum Stage {
 
 pub(crate) struct Fault {
     path: PathBuf,
+    file_name_prefix: bool,
     stage: Stage,
     skip: usize,
     remaining: usize,
@@ -30,6 +31,7 @@ impl Fault {
     pub(crate) fn new(path: impl Into<PathBuf>, stage: Stage, kind: io::ErrorKind) -> Self {
         Self {
             path: path.into(),
+            file_name_prefix: false,
             stage,
             skip: 0,
             remaining: 1,
@@ -46,6 +48,28 @@ impl Fault {
     pub(crate) fn persistent(mut self) -> Self {
         self.remaining = usize::MAX;
         self
+    }
+
+    // Match a unique fixture directory's generated registry-stage filename.
+    pub(crate) fn file_name_prefix(mut self) -> Self {
+        self.file_name_prefix = true;
+        self
+    }
+
+    fn matches(&self, path: &Path) -> bool {
+        if self.file_name_prefix {
+            path.parent() == self.path.parent()
+                && path.file_name().is_some_and(|name| {
+                    name.as_encoded_bytes().starts_with(
+                        self.path
+                            .file_name()
+                            .expect("fault prefix filename")
+                            .as_encoded_bytes(),
+                    )
+                })
+        } else {
+            self.path == path
+        }
     }
 }
 
@@ -78,7 +102,7 @@ impl Drop for Guard {
 pub(crate) fn check(path: &Path, stage: Stage) -> io::Result<()> {
     FAULTS.with_borrow_mut(|faults| {
         for fault in faults {
-            if fault.path != path || fault.stage != stage || fault.remaining == 0 {
+            if !fault.matches(path) || fault.stage != stage || fault.remaining == 0 {
                 continue;
             }
             if fault.skip > 0 {
@@ -96,7 +120,7 @@ pub(crate) fn check(path: &Path, stage: Stage) -> io::Result<()> {
 pub(crate) fn partial_write(file: &mut File, path: &Path, contents: &[u8]) -> io::Result<()> {
     let selected = FAULTS.with_borrow(|faults| {
         faults.iter().any(|fault| {
-            fault.path == path
+            fault.matches(path)
                 && fault.stage == Stage::PartialWrite
                 && fault.remaining > 0
                 && fault.skip == 0

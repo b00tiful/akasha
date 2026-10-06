@@ -98,3 +98,10 @@ Recovery never starts a new project. After rollback, prepare a separate `/init`
 review; after finalization, refresh/select and validate the existing project.
 This works before a project can load. F5 and `/recovery` concern note journals.
 See [the initialization recovery procedure](recovery.md#interrupted-project-initialization).
+
+An initialization I/O error can occur after a file became visible. The initializer
+tracks a published pointer before syncing its directory so rollback retains ownership.
+Recovery retries surviving directory syncs before removing its journal; persistent
+filesystem failures keep returning an error. Inspect the remaining state, correct
+the failure and obtain a fresh recovery review. An error after journal removal can
+leave a completed result without a journal, so validate before starting another init.

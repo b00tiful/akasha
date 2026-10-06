@@ -125,7 +125,7 @@ fn init_recovery_child() {
 }
 
 // Include directories, links, file bytes and Unix modes. Never follow a symlink.
-fn snapshot(base: &Path) -> BTreeMap<PathBuf, (Vec<u8>, u32)> {
+pub(super) fn snapshot(base: &Path) -> BTreeMap<PathBuf, (Vec<u8>, u32)> {
     fn walk(base: &Path, path: &Path, result: &mut BTreeMap<PathBuf, (Vec<u8>, u32)>) {
         let metadata = fs::symlink_metadata(path).unwrap();
         #[cfg(unix)]
