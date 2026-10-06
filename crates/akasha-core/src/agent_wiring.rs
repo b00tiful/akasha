@@ -13,8 +13,8 @@ use crate::resolution::{
 };
 use crate::state::content_fingerprint;
 use crate::writes::{
-    AtomicCreateError, CheckedReplaceError, create_file_atomically, replace_file_if_unchanged,
-    sync_directory,
+    AtomicCreateError, CheckedReplaceError, create_file_atomically, io_call,
+    replace_file_if_unchanged, sync_directory,
 };
 
 const MANAGED_START_TOKEN: &str = "<!-- akasha-agent-wiring:v1:start";
@@ -1026,7 +1026,7 @@ fn remove_file_if_unchanged(path: &Path, expected: &[u8]) -> Result<(), AgentWir
     if current != expected {
         return Err(stale_plan_conflict(path));
     }
-    fs::remove_file(path).map_err(|source| AgentWiringError::FileSystem {
+    io_call!(path, Remove, fs::remove_file(path)).map_err(|source| AgentWiringError::FileSystem {
         operation: "remove an exact Akasha-created instruction file",
         path: path.to_path_buf(),
         source,
@@ -1066,6 +1066,13 @@ fn recover_agent_wiring_locked(
             reason: "journaled agent instruction target contains unexpected bytes; automatic recovery refused".to_owned(),
         });
     };
+    // Matching bytes do not prove a prior target publication sync completed.
+    // Keep recovery authority until that directory entry has been synced.
+    sync_directory(agent_home).map_err(|source| AgentWiringError::FileSystem {
+        operation: "sync the recovered agent instruction directory",
+        path: agent_home.to_path_buf(),
+        source,
+    })?;
     complete_journal(&journal_path, &source, agent_home)?;
     Ok(RecoveredAgentWiring {
         recovery,
@@ -1178,10 +1185,12 @@ fn complete_journal(
             reason: "the agent-wiring recovery journal changed before cleanup".to_owned(),
         });
     }
-    fs::remove_file(path).map_err(|source| AgentWiringError::FileSystem {
-        operation: "remove the completed agent-wiring recovery journal",
-        path: path.to_path_buf(),
-        source,
+    io_call!(path, Remove, fs::remove_file(path)).map_err(|source| {
+        AgentWiringError::FileSystem {
+            operation: "remove the completed agent-wiring recovery journal",
+            path: path.to_path_buf(),
+            source,
+        }
     })?;
     sync_directory(agent_home).map_err(|source| AgentWiringError::FileSystem {
         operation: "sync agent-wiring journal cleanup",

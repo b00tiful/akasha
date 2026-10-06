@@ -15,8 +15,8 @@ use crate::resolution::{
 };
 use crate::state::content_fingerprint;
 use crate::writes::{
-    AtomicCreateError, CheckedReplaceError, create_file_atomically, replace_file_if_unchanged,
-    sync_directory,
+    AtomicCreateError, CheckedReplaceError, create_file_atomically, io_call,
+    replace_file_if_unchanged, sync_directory,
 };
 
 const HOOK_COMMAND: &str = "akasha breadcrumb --optional";
@@ -907,10 +907,12 @@ fn remove_file_if_unchanged(path: &Path, expected: &[u8]) -> Result<(), SessionH
     if current != expected {
         return Err(stale_plan_conflict(path));
     }
-    fs::remove_file(path).map_err(|source| SessionHookWiringError::FileSystem {
-        operation: "remove an exact managed-only session-hook file",
-        path: path.to_path_buf(),
-        source,
+    io_call!(path, Remove, fs::remove_file(path)).map_err(|source| {
+        SessionHookWiringError::FileSystem {
+            operation: "remove an exact managed-only session-hook file",
+            path: path.to_path_buf(),
+            source,
+        }
     })
 }
 
@@ -946,6 +948,12 @@ fn recover_session_hook_locked(
                 .to_owned(),
         });
     };
+    // Recovery must retry a possibly failed publication sync before losing its journal.
+    sync_directory(agent_home).map_err(|source| SessionHookWiringError::FileSystem {
+        operation: "sync the recovered session hook configuration directory",
+        path: agent_home.to_path_buf(),
+        source,
+    })?;
     complete_journal(&journal_path, &source, agent_home)?;
     Ok(RecoveredSessionHookWiring {
         recovery,
@@ -1052,10 +1060,12 @@ fn complete_journal(
             reason: "the session-hook recovery journal changed before cleanup".to_owned(),
         });
     }
-    fs::remove_file(path).map_err(|source| SessionHookWiringError::FileSystem {
-        operation: "remove the completed session-hook recovery journal",
-        path: path.to_path_buf(),
-        source,
+    io_call!(path, Remove, fs::remove_file(path)).map_err(|source| {
+        SessionHookWiringError::FileSystem {
+            operation: "remove the completed session-hook recovery journal",
+            path: path.to_path_buf(),
+            source,
+        }
     })?;
     sync_directory(agent_home).map_err(|source| SessionHookWiringError::FileSystem {
         operation: "sync session-hook journal cleanup",

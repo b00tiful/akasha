@@ -231,6 +231,38 @@ this residue. Symlinks, directories using the reserved pattern, malformed names
 and unrelated non-Markdown files still cause validation errors. Preserve and
 investigate those errors instead of broadening the ignore rule.
 
+## Client instruction and session-hook recovery
+
+Instruction wiring and hook wiring each have their own single-target transaction in the
+selected client home. The persistent empty lock and hash-only journal sit beside `AGENTS.md`
+or `CLAUDE.md` for instructions, and `hooks.json` or `settings.json` for hooks. These journals
+contain before/after fingerprints, not recoverable copies of your personal instructions/settings.
+
+After a returned filesystem error, stop other writers and back up the client home, including
+hidden journals and staging files. Inspect the exact target and journal before retrying:
+
+| Observed state | Recovery behavior |
+|---|---|
+| Journal and exact before image | Sync the client-home directory, then discard the unused transaction. A separately reviewed plan can then apply. |
+| Journal and exact after image, including expected absence after removal | Sync the client-home directory, then finalize the published transition. |
+| Changed target bytes, symlink/nonregular target, or invalid journal | Refuse with class 5 and preserve the artifacts. Reconcile against your backup; fingerprints cannot reconstruct the old text. |
+| Persistent directory-sync or journal-unlink failure before journal removal | Return class 6 and retain the journal until the supporting directory sync and unlink can complete. |
+| Error after journal unlink | The complete transition can be visible without a journal. Inspect the target and prepare a fresh review before further mutation. |
+
+Once the filesystem problem is corrected, obtain a fresh read-only review using
+`prepare-agent-wiring CLIENT --home PATH` or `prepare-session-hook CLIENT --home PATH`, with
+the intended `--root` and optional `--remove`. In the TUI, use the corresponding
+`/integration apply|remove instructions|hook CLIENT HOME` review. Confirm the exact displayed
+plan through the existing apply/remove command or `/confirm PLAN_ID`. The checked writer
+recovers a matching pending transaction under its target lock before validating the new plan.
+An already published operation can be finalized from its original bound identifier; after an
+uncertain result, inspect and review rather than blindly replaying it. Cancellation writes nothing.
+
+A fresh no-change plan does not bypass pending recovery or its sync requirements. Errors release
+the lock, allowing a later checked retry. Unrelated personal bytes and existing file modes stay
+exact; created locks, journals and files use private Unix permissions. Retained staging residue
+is preserved and is never adopted as a target, lock or journal.
+
 ## Verified boundary
 
 Disposable Rust fixtures cover repeated refusal with exact byte preservation,

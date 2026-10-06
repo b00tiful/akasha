@@ -21,6 +21,9 @@ pub mod validation;
 mod wikilink;
 pub mod writes;
 
+#[cfg(test)]
+mod wiring_error_tests;
+
 pub use agent_wiring::{
     AgentClient, AgentWiringAction, AgentWiringError, AgentWiringOperation, AgentWiringPatch,
     AgentWiringPlan, AgentWiringRecovery, AgentWiringResult, apply_agent_wiring,
