@@ -1,6 +1,40 @@
 use akasha_core::{
-    InitPlan, InitRequest, ResolveRequest, apply_project_init, prepare_project_init,
+    InitPlan, InitRecoveryPlan, InitRecoveryResult, InitRequest, ResolveRequest,
+    apply_init_recovery, apply_project_init, prepare_init_recovery, prepare_project_init,
 };
+
+pub(super) struct RecoveryReview {
+    pub request: ResolveRequest,
+    pub plan: InitRecoveryPlan,
+    pub body: String,
+}
+
+impl RecoveryReview {
+    pub fn prepare(mut request: ResolveRequest) -> Result<Option<Self>, String> {
+        let Some(plan) = prepare_init_recovery(&request).map_err(|error| error.to_string())? else {
+            return Ok(None);
+        };
+        request.root_override = Some(plan.root.clone());
+        request.project_override = None;
+        let body = format!(
+            "{}\nTo authorize only this recovery, enter:\n/confirm {}\n\n/discard cancels without writing. F5 does not recover root initialization.\n",
+            crate::render::init_recovery_plan_text(&plan),
+            plan.plan_id,
+        );
+        Ok(Some(Self {
+            request,
+            plan,
+            body,
+        }))
+    }
+
+    pub fn commit(
+        request: &ResolveRequest,
+        plan: &InitRecoveryPlan,
+    ) -> Result<InitRecoveryResult, String> {
+        apply_init_recovery(request, plan).map_err(|error| error.to_string())
+    }
+}
 
 pub(super) struct Review {
     pub request: InitRequest,
@@ -82,7 +116,7 @@ impl Review {
             ));
         }
         body.push_str(&format!(
-            "\nCreate pointer: {:?}\n{}\n\nReplace registry: {:?}\nBefore:\n{}\nAfter (canonical formatting):\n{}\n\nPlan ID: {}\n\nTo authorize only this plan, enter:\n/confirm {}\n\n/discard cancels without writing. Configuration, templates, registry and destinations must still match. Apply uses the existing registry lock and init journal; a persistent lock file may remain even on refusal. Pending init journals refuse without recovery. Named init handles checked recovery; /recovery and F5 concern only the selected project's note journal. The scaffold is empty; no repository knowledge is inferred. After success use F5 to refresh, then /project {} to select it.\n",
+            "\nCreate pointer: {:?}\n{}\n\nReplace registry: {:?}\nBefore:\n{}\nAfter (canonical formatting):\n{}\n\nPlan ID: {}\n\nTo authorize only this plan, enter:\n/confirm {}\n\n/discard cancels without writing. Configuration, templates, registry and destinations must still match. Apply uses the existing registry lock and init journal; a persistent lock file may remain even on refusal. Pending init journals refuse without recovery. Use /recover-init for a separate recovery-only review; /recovery and F5 concern only the selected project's note journal. The scaffold is empty; no repository knowledge is inferred. After success use F5 to refresh, then /project {} to select it.\n",
             destination.pointer, exact_bytes(&plan.pointer_source), destination.registry,
             exact_bytes(&plan.registry_before), exact_bytes(&plan.registry_after), plan.plan_id,
             plan.plan_id, destination.project,

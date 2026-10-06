@@ -27,6 +27,17 @@ const MAX_REGISTRY_STAGING_ATTEMPTS: u64 = 128;
 const INIT_JOURNAL_SCHEMA_VERSION: u32 = 1;
 static NEXT_REGISTRY_STAGE_ID: AtomicU64 = AtomicU64::new(0);
 
+#[path = "init_recovery.rs"]
+mod recovery;
+pub use recovery::{
+    InitRecoveryDirectory, InitRecoveryFile, InitRecoveryPlan, InitRecoveryResult,
+    apply_init_recovery, prepare_init_recovery,
+};
+
+#[cfg(test)]
+#[path = "init_recovery_tests.rs"]
+mod recovery_tests;
+
 /// Inputs for initializing one repository as a new Akasha project.
 #[derive(Debug, Clone)]
 pub struct InitRequest {
@@ -115,7 +126,7 @@ pub fn apply_project_init(request: &InitRequest, plan: &InitPlan) -> Result<Init
 fn reject_pending_init(registry: &Path) -> Result<(), InitError> {
     reject_existing_target(
         &init_journal_path(registry),
-        "pending initialization journal; review/apply never recover it; use the named init command for checked recovery before a fresh review",
+        "pending initialization journal; review/apply never recover it; use recover-init for a separately confirmed recovery before a fresh init review",
     )
 }
 
@@ -929,26 +940,44 @@ fn write_init_journal(
 fn recover_init_locked(
     target: &InitTarget,
 ) -> Result<(InitRecovery, Option<InitJournal>), InitError> {
-    let path = init_journal_path(&target.registry);
-    let Some((journal, source)) = read_init_journal(&path)? else {
+    let Some(checked) = check_init_recovery(&target.registry, &target.projects_dir)? else {
         return Ok((InitRecovery::None, None));
     };
-    validate_init_journal(target, &path, &journal)?;
+    finish_checked_init_recovery(&target.registry, &checked)?;
+    let finalized = (checked.recovery == InitRecovery::Finalized).then_some(checked.journal);
+    Ok((checked.recovery, finalized))
+}
 
-    let registry = read_regular_init_file(&target.registry, "read the journaled project registry")?;
+struct CheckedInitRecovery {
+    journal: InitJournal,
+    source: Vec<u8>,
+    registry_fingerprint: String,
+    recovery: InitRecovery,
+}
+
+fn check_init_recovery(
+    registry_path: &Path,
+    projects_dir: &Path,
+) -> Result<Option<CheckedInitRecovery>, InitError> {
+    let path = init_journal_path(registry_path);
+    let Some((journal, source)) = read_init_journal(&path)? else {
+        return Ok(None);
+    };
+    validate_init_journal(projects_dir, &path, &journal)?;
+
+    let registry = read_regular_init_file(registry_path, "read the journaled project registry")?;
     let registry_fingerprint = content_fingerprint(&registry);
     let pointer = journal.repository_dir.join(POINTER_FILE);
-    let (recovery, finalized) = if registry_fingerprint == journal.registry_before {
+    let recovery = if registry_fingerprint == journal.registry_before {
         let changed = preflight_uncommitted_init(&path, &journal, &pointer)?;
-        rollback_uncommitted_init(&path, &journal, &pointer)?;
         if changed {
-            (InitRecovery::RolledBack, None)
+            InitRecovery::RolledBack
         } else {
-            (InitRecovery::Discarded, None)
+            InitRecovery::Discarded
         }
     } else if registry_fingerprint == journal.registry_after {
         verify_committed_init(&path, &journal, &pointer)?;
-        (InitRecovery::Finalized, Some(journal))
+        InitRecovery::Finalized
     } else {
         return Err(InitError::Conflict {
             path,
@@ -957,8 +986,27 @@ fn recover_init_locked(
                     .to_owned(),
         });
     };
-    complete_init_journal(&init_journal_path(&target.registry), &source)?;
-    Ok((recovery, finalized))
+    Ok(Some(CheckedInitRecovery {
+        journal,
+        source,
+        registry_fingerprint,
+        recovery,
+    }))
+}
+
+fn finish_checked_init_recovery(
+    registry: &Path,
+    checked: &CheckedInitRecovery,
+) -> Result<(), InitError> {
+    let path = init_journal_path(registry);
+    if checked.recovery == InitRecovery::RolledBack || checked.recovery == InitRecovery::Discarded {
+        rollback_uncommitted_init(
+            &path,
+            &checked.journal,
+            &checked.journal.repository_dir.join(POINTER_FILE),
+        )?;
+    }
+    complete_init_journal(&path, &checked.source)
 }
 
 fn read_init_journal(path: &Path) -> Result<Option<(InitJournal, Vec<u8>)>, InitError> {
@@ -993,7 +1041,7 @@ fn read_init_journal(path: &Path) -> Result<Option<(InitJournal, Vec<u8>)>, Init
 }
 
 fn validate_init_journal(
-    target: &InitTarget,
+    projects_dir: &Path,
     path: &Path,
     journal: &InitJournal,
 ) -> Result<(), InitError> {
@@ -1010,7 +1058,7 @@ fn validate_init_journal(
         path: path.to_path_buf(),
         message: format!("invalid journaled project identity: {error}"),
     })?;
-    let expected_project_dir = target.projects_dir.join(&journal.project);
+    let expected_project_dir = projects_dir.join(&journal.project);
     if journal.project_dir != expected_project_dir {
         return Err(InitError::Validation {
             path: path.to_path_buf(),

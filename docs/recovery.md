@@ -13,8 +13,68 @@ Esc returns to retained drafts; `/discard` explicitly cancels them without writi
 F5 refuses while a draft or unfinished form remains. Drafts are only in memory:
 preserve wanted text separately before closing the process or discarding.
 Inspection reports a point-in-time location/presence; it does not establish that
-the project is consistent or clear a refused load. The named CLI currently has no
-recovery command.
+the project is consistent or clear a refused load. The named CLI has no shared
+note-journal recovery command; `recover-init` below handles root initialization only.
+
+## Interrupted project initialization
+
+Root initialization uses a separate version-1 journal beside the configured project
+registry, such as `Meta/.projects.yaml.akasha-init-journal.json`. The new project may
+not yet be registered or loadable. Recovery does not require selecting that project,
+running from its repository, or having the current root template tree available.
+
+Stop other writers and make a private backup of the complete data root and journaled
+repository, including its pointer. Keep the original journal unchanged. Review with:
+
+```sh
+akasha --root "$AKASHA_ROOT" recover-init
+```
+
+The read-only review lists the exact project/repository identities, registry and
+journal hashes, each planned artifact's expected hash and presence, and the proposed
+outcome. No journal produces an explicit no-change result (`null` with `--json`).
+Preview/cancellation create no lock or files. `--project` is rejected: this journal
+is root-wide. In the TUI use `/recover-init`, inspect the scrollable review, then
+`/discard` to cancel or `/confirm PLAN_ID` with its complete displayed identifier.
+Drafts and unfinished reviews must be resolved before entering this operation.
+
+To apply from the shell, copy the complete freshly reviewed ID into
+`INIT_RECOVERY_PLAN_ID` and run:
+
+```sh
+akasha --root "$AKASHA_ROOT" recover-init --plan-id "$INIT_RECOVERY_PLAN_ID"
+```
+
+The core takes the existing registry lock, revalidates the complete review, and
+performs only recovery. A busy lock is a wait/retry condition; retain the idle lock
+file. Changed configuration/journal/registry bytes or artifact presence require
+fresh review. Changed scaffold/pointer bytes, unexpected uncommitted paths, symlinks,
+malformed journals and unknown versions refuse without removing artifacts.
+
+- `discarded`: no initialization artifacts were published; remove the unused journal.
+- `rolled-back`: remove only exact recognized uncommitted files/pointer and empty
+  planned directories, then the journal. Registry bytes are retained. Create the
+  project only through a **separate fresh init review** afterward.
+- `finalized`: retain the exact committed scaffold/pointer/registry and remove the
+  journal. Refresh/select the project and run normal project validation.
+
+No outcome starts another initialization. A TUI apply attempt consumes its review,
+including refusal; prepare again before retrying. F5 and `/recovery` keep their
+selected-project note-journal scope. Root setup instead resumes through a fresh
+`setup-root PATH` or `/setup PATH` review as described in [first run](first-run.md).
+
+Init journals contain hashes, **not restorable source images**. Preserve unexpected
+edits and investigate; use only independently verified original bytes/backups for
+manual reconciliation. Do not infer old files from changed templates, edit journal
+hashes, or delete a journal to make the root load. After an I/O failure, inspect the
+remaining state and obtain a fresh review rather than replaying an old ID. A failure
+after journal unlink can leave completed recovery visible without its journal.
+
+Five actual process exits verify journal/directory/file/pointer/registry publication,
+exact snapshots and modes, lock release, recovery-only completion and stale replay
+refusal. CLI and TUI fixtures also verify human-byte retention and fresh retry; the
+keyboard walkthrough passes at 110×32 and 40×12. Physical/device durability,
+in-kernel interruption, and root-init returned-I/O matrices remain separate limits.
 
 ## When an operation reports an I/O failure
 

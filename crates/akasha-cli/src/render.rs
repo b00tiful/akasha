@@ -111,12 +111,106 @@ pub(crate) fn render_init(result: &InitResult, output: OutputMode) -> io::Result
     write_stdout(&rendered)
 }
 
-fn init_recovery_name(recovery: InitRecovery) -> &'static str {
+pub(crate) fn init_recovery_name(recovery: InitRecovery) -> &'static str {
     match recovery {
         InitRecovery::None => "none",
         InitRecovery::Discarded => "discarded",
         InitRecovery::RolledBack => "rolled-back",
         InitRecovery::Finalized => "finalized",
+    }
+}
+
+pub(crate) fn init_recovery_plan_text(plan: &akasha_core::InitRecoveryPlan) -> String {
+    let finalized = plan.recovery == InitRecovery::Finalized;
+    let mut text = format!(
+        "INITIALIZATION RECOVERY REVIEW · NO FILES CHANGED\n\nPlan ID: {}\nOutcome: {}\nProject: {:?}\nRoot: {:?}\nRepository: {:?}\nRepository present: {}\nProject directory: {:?}\nRegistry (retained): {:?}\nRegistry SHA-256: {}\nConfiguration SHA-256: {}\nJournal (removed on success): {:?}\nJournal SHA-256: {}\n\nFiles (absolute paths, exact expected hashes):\n",
+        plan.plan_id,
+        init_recovery_name(plan.recovery),
+        plan.project,
+        plan.root,
+        plan.repository_dir,
+        plan.repository_present,
+        plan.project_dir,
+        plan.registry,
+        plan.registry_fingerprint,
+        plan.configuration_fingerprint,
+        plan.journal_path,
+        plan.journal_fingerprint,
+    );
+    for file in &plan.files {
+        let action = if !file.present {
+            "absent"
+        } else if finalized {
+            "retain"
+        } else {
+            "remove"
+        };
+        text.push_str(&format!(
+            "  {action}: {:?}\n    {}\n",
+            file.path, file.expected_fingerprint
+        ));
+    }
+    text.push_str("\nDirectories (absolute paths):\n");
+    for directory in &plan.directories {
+        let action = if !directory.present {
+            "absent"
+        } else if finalized {
+            "retain"
+        } else {
+            "remove when empty"
+        };
+        text.push_str(&format!("  {action}: {:?}\n", directory.path));
+    }
+    text.push_str(&format!(
+        "\nPlan ID: {}\n\nRecovery removes only exact uncommitted artifacts or finalizes the committed transaction. Registry bytes are retained. No new project is initialized. Stop other writers and make a private backup before applying. Changed bytes, paths or presence require a fresh review; keep the journal on refusal and consult docs/recovery.md. A persistent registry lock file may remain after apply/refusal.\n",
+        plan.plan_id,
+    ));
+    text
+}
+
+pub(crate) fn init_recovery_result_text(result: &akasha_core::InitRecoveryResult) -> String {
+    format!(
+        "Initialization recovery completed.\nOutcome: {}\nProject: {:?}\nRoot: {:?}\nRepository: {:?}\nProject directory: {:?}\nJournal removed: {:?}\nRegistry retained: {:?}\n\nNo new project was initialized. {}\n",
+        init_recovery_name(result.recovery),
+        result.project,
+        result.root,
+        result.repository_dir,
+        result.project_dir,
+        result.journal_path,
+        result.registry,
+        if result.recovery == InitRecovery::Finalized {
+            "Refresh and select the finalized project."
+        } else {
+            "Prepare a fresh init review to create the project."
+        },
+    )
+}
+
+pub(crate) fn render_init_recovery_plan(
+    plan: Option<&akasha_core::InitRecoveryPlan>,
+    output: OutputMode,
+) -> io::Result<()> {
+    if output.json {
+        write_stdout(&json_line(serde_json::to_string_pretty(&plan))?)
+    } else if let Some(plan) = plan {
+        write_stdout(&format!(
+            "{}\nTo apply only this recovery: akasha --root PATH recover-init --plan-id {}\nUse the exact reviewed root for PATH. Omitting apply cancels without writing.\n",
+            init_recovery_plan_text(plan),
+            plan.plan_id
+        ))
+    } else {
+        write_stdout("No pending initialization journal. No files changed.\n")
+    }
+}
+
+pub(crate) fn render_init_recovery_result(
+    result: &akasha_core::InitRecoveryResult,
+    output: OutputMode,
+) -> io::Result<()> {
+    if output.json {
+        write_stdout(&json_line(serde_json::to_string_pretty(result))?)
+    } else {
+        write_stdout(&init_recovery_result_text(result))
     }
 }
 

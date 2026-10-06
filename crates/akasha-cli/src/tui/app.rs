@@ -5,7 +5,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use super::editor::{Editor, safe_text};
-use super::init::{self, Review as InitReview};
+use super::init::{self, RecoveryReview as InitRecoveryReview, Review as InitReview};
 use super::integration::{Operation as IntegrationOperation, Review as IntegrationReview};
 use super::link::{self, Review as LinkReview};
 use super::state::{NavigationLocation, NavigationState};
@@ -72,6 +72,11 @@ const COMMANDS: &[Completion] = &[
         command: "recovery",
         argument: "",
         description: "Inspect pending recovery without writing",
+    },
+    Completion {
+        command: "recover-init",
+        argument: "",
+        description: "Review recovery of interrupted project initialization",
     },
     Completion {
         command: "integration",
@@ -231,7 +236,7 @@ fn prompt_area(text: String) -> TextArea<'static> {
     prompt_area_with_placeholder(text, PROMPT_PLACEHOLDER)
 }
 
-pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nsetup PATH      review a new private data root (first run)\nonboard         prepare external-agent onboarding instructions\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       edit and review the open record/entity and its projection\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff         guided multiline handoff authoring and exact review\nhandoff PATH | NAME=VALUE | ...\n                inline capture from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE      guided multiline event authoring and exact review\nevent TYPE PATH | NAME=VALUE | ...\n                inline configured immutable event creation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\ninit PROJECT [REPOSITORY]\n                review an empty project scaffold and registry update\nlink PROJECT [REPOSITORY]\n                review an exclusive repository pointer creation\nconfirm PLAN_ID authorize the displayed administration plan\nrecovery        inspect journal presence without writing; Esc returns\nrefresh         retry core recovery and reload validated data (F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and lifecycle forms show exact configured templates and\nmaintained projections. Creation and lifecycle use Ctrl-N to review the exact note and projection\nbefore Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. All guided template fields support multiline text;\nCtrl-N/Ctrl-P navigate and Ctrl-S publishes only after exact source review.\nIntegration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nFirst run: /setup PATH, /confirm PLAN_ID, /init PROJECT [REPOSITORY], then /onboard.\nOtherwise open from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
+pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nsetup PATH      review a new private data root (first run)\nonboard         prepare external-agent onboarding instructions\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       edit and review the open record/entity and its projection\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff         guided multiline handoff authoring and exact review\nhandoff PATH | NAME=VALUE | ...\n                inline capture from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE      guided multiline event authoring and exact review\nevent TYPE PATH | NAME=VALUE | ...\n                inline configured immutable event creation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\ninit PROJECT [REPOSITORY]\n                review an empty project scaffold and registry update\nlink PROJECT [REPOSITORY]\n                review an exclusive repository pointer creation\nconfirm PLAN_ID authorize the displayed administration plan\nrecovery        inspect note journal presence without writing; Esc returns\nrecover-init    review root initialization recovery; confirm PLAN_ID applies\nrefresh         retry core recovery and reload validated data (F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and lifecycle forms show exact configured templates and\nmaintained projections. Creation and lifecycle use Ctrl-N to review the exact note and projection\nbefore Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. All guided template fields support multiline text;\nCtrl-N/Ctrl-P navigate and Ctrl-S publishes only after exact source review.\nIntegration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nFirst run: /setup PATH, /confirm PLAN_ID, /init PROJECT [REPOSITORY], then /onboard.\nOtherwise open from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Focus {
@@ -372,6 +377,8 @@ pub(super) enum Job {
     Onboard(ResolveRequest),
     PrepareInit(InitRequest),
     CommitInit(InitRequest, Box<InitPlan>),
+    PrepareInitRecovery(ResolveRequest),
+    CommitInitRecovery(ResolveRequest, Box<akasha_core::InitRecoveryPlan>),
     PrepareLink(LinkRequest),
     CommitLink(LinkRequest, LinkPlan),
 }
@@ -403,6 +410,8 @@ pub(super) enum Response {
     SetupCommitted(Result<akasha_core::RootSetupResult, String>),
     InitPrepared(Box<InitReview>),
     InitCommitted(Result<String, String>),
+    InitRecoveryPrepared(Result<Option<Box<InitRecoveryReview>>, String>),
+    InitRecoveryCommitted(Result<akasha_core::InitRecoveryResult, String>),
     LinkPrepared(Box<LinkReview>),
     LinkCommitted(Result<String, String>),
 }
@@ -509,6 +518,12 @@ fn execute_job_inner(job: Job) -> WorkResult {
             .map(|review| Response::InitPrepared(Box::new(review))),
         Job::CommitInit(request, plan) =>
             Ok(Response::InitCommitted(InitReview::commit(&request, &plan))),
+        Job::PrepareInitRecovery(request) => Ok(Response::InitRecoveryPrepared(
+            InitRecoveryReview::prepare(request).map(|review| review.map(Box::new)),
+        )),
+        Job::CommitInitRecovery(request, plan) => Ok(Response::InitRecoveryCommitted(
+            InitRecoveryReview::commit(&request, &plan),
+        )),
         Job::PrepareLink(request) => LinkReview::prepare(request)
             .map(|review| Response::LinkPrepared(Box::new(review))),
         Job::CommitLink(request, plan) =>
@@ -797,6 +812,7 @@ pub(super) struct App {
     integration_review: Option<IntegrationReview>,
     setup_review: Option<akasha_core::RootSetupPlan>,
     init_review: Option<InitReview>,
+    init_recovery_review: Option<InitRecoveryReview>,
     link_review: Option<LinkReview>,
     pending_open: Option<String>,
     recovery_return: Option<(Focus, u16, TextArea<'static>)>,
@@ -858,6 +874,7 @@ impl App {
             integration_review: None,
             setup_review: None,
             init_review: None,
+            init_recovery_review: None,
             link_review: None,
             pending_open: None,
             recovery_return: None,
@@ -1073,6 +1090,7 @@ impl App {
         self.integration_review.is_some()
             || self.link_review.is_some()
             || self.init_review.is_some()
+            || self.init_recovery_review.is_some()
             || self.setup_review.is_some()
     }
     pub fn creation_input_active(&self) -> bool {
@@ -2032,8 +2050,45 @@ impl App {
                 self.init_review = None;
                 self.body_title = "PROJECT INITIALIZATION RESULT".into();
                 self.body = result.unwrap_or_else(|error| format!(
-                    "Operation failed: {error}\n\nInspect the destination, then prepare a fresh /init review before retrying. Pending init journals require the named init command's checked recovery; F5 does not recover root initialization."
+                    "Operation failed: {error}\n\nInspect the destination, then prepare a fresh /init review before retrying. Pending init journals require /recover-init and fresh confirmation; F5 does not recover root initialization."
                 ));
+                self.scroll = 0;
+                self.focus = Focus::Reader;
+            }
+            Ok(Response::InitRecoveryPrepared(result)) => {
+                self.body_title = "INITIALIZATION RECOVERY REVIEW".into();
+                self.body = match result {
+                    Ok(Some(review)) => {
+                        let body = review.body.clone();
+                        self.init_recovery_review = Some(*review);
+                        body
+                    }
+                    Ok(None) => "No pending initialization journal. No files changed. Root setup recovery uses /setup PATH and fresh confirmation.".into(),
+                    Err(error) => format!("Recovery review refused: {error}\n\nNo recovery was performed. Stop other writers and make a private backup of the complete data root and journaled repository. Keep the journal and consult docs/recovery.md. After reconciliation, prepare a fresh /recover-init review."),
+                };
+                self.document = None;
+                self.editor = None;
+                self.editing = false;
+                self.scroll = 0;
+                self.focus = Focus::Reader;
+            }
+            Ok(Response::InitRecoveryCommitted(result)) => {
+                self.init_recovery_review = None;
+                self.body_title = "INITIALIZATION RECOVERY RESULT".into();
+                self.body = match result {
+                    Ok(result) => {
+                        self.request.root_override = Some(result.root.clone());
+                        if self.projection.is_none()
+                            && result.recovery == akasha_core::InitRecovery::Finalized
+                        {
+                            self.request.project_override = Some(result.project.clone());
+                        }
+                        crate::render::init_recovery_result_text(&result)
+                    }
+                    Err(error) => format!(
+                        "Operation failed: {error}\n\nKeep the journal and inspect changed artifacts. Consult docs/recovery.md, then prepare a fresh /recover-init review before retrying."
+                    ),
+                };
                 self.scroll = 0;
                 self.focus = Focus::Reader;
             }
@@ -2412,6 +2467,12 @@ impl App {
                     } else {
                         self.message("Confirmation must match the complete displayed plan ID.");
                     }
+                } else if let Some(review) = &self.init_recovery_review {
+                    if argument == review.plan.plan_id {
+                        self.submit(Job::CommitInitRecovery(review.request.clone(), Box::new(review.plan.clone())));
+                    } else {
+                        self.message("Confirmation must match the complete displayed plan ID.");
+                    }
                 } else if let Some(review) = &self.link_review {
                     if argument == review.plan.plan_id {
                         self.submit(Job::CommitLink(review.request.clone(), review.plan.clone()));
@@ -2454,6 +2515,12 @@ impl App {
                 if self.init_review.take().is_some() {
                     self.close_reader();
                     self.message("Initialization review discarded; no files changed.");
+                    self.finish_recovery_discard();
+                    return;
+                }
+                if self.init_recovery_review.take().is_some() {
+                    self.close_reader();
+                    self.message("Initialization recovery review discarded; no files changed.");
                     self.finish_recovery_discard();
                     return;
                 }
@@ -2502,6 +2569,8 @@ impl App {
                 Ok(request) => self.submit(Job::PrepareInit(request)),
                 Err(error) => self.message(&error),
             },
+            "recover-init" if !argument.is_empty() => self.message("Usage: /recover-init. Recovery uses this session's data root."),
+            "recover-init" => self.submit(Job::PrepareInitRecovery(self.request.clone())),
             "link" => match link::arguments(&self.request, argument) {
                 Ok(request) => self.submit(Job::PrepareLink(request)),
                 Err(error) => self.message(&error),
@@ -4342,6 +4411,184 @@ mod tests {
         assert_eq!(fs::read(home.join("AGENTS.md")).unwrap(), instructions);
         assert_eq!(fs::read(home.join("hooks.json")).unwrap(), hooks);
         assert_eq!(fs::read_dir(&home).unwrap().count(), 2);
+    }
+
+    mod init_recovery_fixture {
+        include!("../../tests/support/init_recovery.rs");
+    }
+
+    #[test]
+    fn init_recovery_review_cancel_guards_and_compact_rollback() {
+        let mut f = Fixture::new();
+        let init = init_recovery_fixture::stage(
+            &f.root(),
+            &f.temp.join("recovery repository 世界"),
+            "interrupted",
+            false,
+        );
+        let before = root_snapshot(&f.temp);
+        f.app.command("recover-init");
+        f.finish();
+        let plan = f.app.init_recovery_review.as_ref().unwrap().plan.clone();
+        assert!(f.app.body.contains("Outcome: rolled-back"));
+        assert!(
+            f.app
+                .body
+                .contains(&format!("{:?}", init.destination.pointer))
+        );
+        assert_eq!(root_snapshot(&f.temp), before);
+        for command in [
+            "confirm wrong",
+            "save",
+            "quit",
+            "refresh",
+            "init other",
+            "global",
+            "recover-init",
+        ] {
+            f.app.command(command);
+            assert!(f.jobs.try_recv().is_err(), "{command}");
+            assert!(f.app.init_recovery_review.is_some());
+        }
+        let backend = ratatui::backend::TestBackend::new(40, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::super::view::draw(frame, &mut f.app))
+            .unwrap();
+        assert!(f.app.max_scroll > 0);
+        f.app.command("discard");
+        assert!(f.app.init_recovery_review.is_none());
+        assert_eq!(root_snapshot(&f.temp), before);
+        f.app.command("recover-init");
+        f.finish();
+        assert_eq!(f.app.init_recovery_review.as_ref().unwrap().plan, plan);
+        // Read-only project-journal inspection retains the root recovery review underneath.
+        f.app.command("recovery");
+        f.finish();
+        f.app.command("back");
+        assert_eq!(f.app.init_recovery_review.as_ref().unwrap().plan, plan);
+        f.app.command(&format!("confirm {}", plan.plan_id));
+        f.finish();
+        assert!(f.app.init_recovery_review.is_none());
+        assert!(f.app.body.contains("No new project was initialized"));
+        assert!(!init.destination.project_dir.exists());
+        assert!(!init.destination.pointer.exists());
+        assert_eq!(
+            fs::read(init.destination.registry).unwrap(),
+            init.registry_before
+        );
+        validate_project(&f.app.request).unwrap();
+    }
+
+    #[test]
+    fn init_recovery_after_review_drift_preserves_bytes_then_allows_fresh_retry() {
+        let mut f = Fixture::new();
+        let init = init_recovery_fixture::stage(
+            &f.root(),
+            &f.temp.join("recovery-repo"),
+            "interrupted",
+            false,
+        );
+        f.app.command("recover-init");
+        f.finish();
+        let plan = f.app.init_recovery_review.as_ref().unwrap().plan.clone();
+        let index = init.destination.project_dir.join("index.md");
+        fs::write(&index, "human 世界\r\n  ").unwrap();
+        let before = root_snapshot(&f.temp);
+        f.app.command(&format!("confirm {}", plan.plan_id));
+        f.finish();
+        assert!(f.app.init_recovery_review.is_none());
+        assert!(f.app.body.contains("Operation failed:"));
+        assert_eq!(root_snapshot(&f.temp), before);
+        f.app.command("recover-init");
+        f.finish();
+        assert!(f.app.body.contains("Recovery review refused:"));
+        assert!(f.app.body.contains("Keep the journal"));
+        assert!(f.app.init_recovery_review.is_none());
+        assert_eq!(root_snapshot(&f.temp), before);
+        fs::write(&index, []).unwrap(); // Fixture-only restoration of the recognized image.
+        f.app.command("recover-init");
+        f.finish();
+        let id = f
+            .app
+            .init_recovery_review
+            .as_ref()
+            .unwrap()
+            .plan
+            .plan_id
+            .clone();
+        f.app.command(&format!("confirm {id}"));
+        f.finish();
+        assert!(f.app.body.contains("Outcome: rolled-back"));
+        assert!(!init.destination.project_dir.exists());
+        f.app.command("init interrupted recovery-repo");
+        f.finish();
+        let id = f.app.init_review.as_ref().unwrap().plan.plan_id.clone();
+        f.app.command(&format!("confirm {id}"));
+        f.finish();
+        assert!(f.app.body.contains("Project initialized."));
+    }
+
+    #[test]
+    fn init_recovery_without_loaded_project_finalizes_and_selects_fresh_data() {
+        let mut f = Fixture::new();
+        init_recovery_fixture::stage(
+            &f.root(),
+            &f.temp.join("finalized-repo"),
+            "interrupted",
+            true,
+        );
+        let mut request = f.app.request.clone();
+        request.project_override = None;
+        let (sender, jobs) = mpsc::channel();
+        f.app = App::new(request, sender, true, false, false);
+        f.jobs = jobs;
+        f.app.load();
+        f.finish();
+        assert!(f.app.projection.is_none());
+        let before = root_snapshot(&f.temp);
+        f.app.command("recover-init");
+        f.finish();
+        let plan = f.app.init_recovery_review.as_ref().unwrap().plan.clone();
+        assert_eq!(plan.recovery, akasha_core::InitRecovery::Finalized);
+        assert_eq!(root_snapshot(&f.temp), before);
+        f.app.command(&format!("confirm {}", plan.plan_id));
+        f.finish();
+        let mut expected = before;
+        expected.remove(plan.journal_path.strip_prefix(&f.temp).unwrap());
+        assert_eq!(root_snapshot(&f.temp), expected);
+        assert_eq!(
+            f.app.request.project_override.as_deref(),
+            Some("interrupted")
+        );
+        f.app.command("refresh");
+        f.finish();
+        assert_eq!(
+            f.app.projection.as_ref().unwrap().selected_project,
+            "interrupted"
+        );
+        validate_project(&f.app.request).unwrap();
+    }
+
+    #[test]
+    fn init_recovery_draft_guards_preserve_editor_undo_and_empty_review_writes_nothing() {
+        let mut f = Fixture::new();
+        f.open_editor();
+        f.app.paste("\nretained 世界  ");
+        let draft = f.app.editor.as_ref().unwrap().source();
+        let before = root_snapshot(&f.temp);
+        f.app.command("recover-init");
+        assert!(f.jobs.try_recv().is_err());
+        assert_eq!(f.app.editor.as_ref().unwrap().source(), draft);
+        assert_eq!(root_snapshot(&f.temp), before);
+        f.app.command("discard");
+        f.app.command("recover-init");
+        f.finish();
+        assert!(f.app.init_recovery_review.is_none());
+        assert!(f.app.body.contains("No pending initialization journal"));
+        assert_eq!(root_snapshot(&f.temp), before);
+        f.app.command("confirm wrong");
+        assert!(f.jobs.try_recv().is_err());
     }
 
     fn first_run_fixture() -> Fixture {

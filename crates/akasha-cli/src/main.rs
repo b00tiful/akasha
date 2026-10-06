@@ -78,6 +78,11 @@ enum Command {
     },
     /// Prepare a read-only handoff for an external onboarding agent.
     Onboard,
+    /// Review pending root initialization recovery; recover only a reviewed full plan ID.
+    RecoverInit {
+        #[arg(long, value_name = "SHA256")]
+        plan_id: Option<String>,
+    },
     /// Open the persistent human terminal interface (also the interactive default).
     Tui {
         /// Freeze decorative animation.
@@ -319,6 +324,7 @@ fn run(cli: Cli) -> Result<(), u8> {
         let positional = match &command {
             Command::Init { slug } | Command::Link { slug, .. } => Some(slug),
             Command::SetupRoot { .. }
+            | Command::RecoverInit { .. }
             | Command::Onboard
             | Command::CreateEvent { .. }
             | Command::Search { .. }
@@ -390,6 +396,27 @@ fn run(cli: Cli) -> Result<(), u8> {
                 finish_output(render::render_setup_result(&result, output))?;
             } else {
                 finish_output(render::render_setup_plan(&plan, output))?;
+            }
+        }
+        Command::RecoverInit { plan_id } => {
+            if project.is_some() {
+                eprintln!("akasha: recover-init is root-wide; omit --project");
+                return Err(3);
+            }
+            let request = ResolveRequest::from_process(root, None).map_err(report_resolution)?;
+            let plan = akasha_core::prepare_init_recovery(&request).map_err(report_init)?;
+            if let Some(id) = plan_id {
+                let Some(plan) = plan.filter(|plan| plan.plan_id == id) else {
+                    eprintln!(
+                        "akasha: initialization recovery plan changed or confirmation does not match; prepare a fresh review"
+                    );
+                    return Err(5);
+                };
+                let result =
+                    akasha_core::apply_init_recovery(&request, &plan).map_err(report_init)?;
+                finish_output(render::render_init_recovery_result(&result, output))?;
+            } else {
+                finish_output(render::render_init_recovery_plan(plan.as_ref(), output))?;
             }
         }
         Command::Onboard => {

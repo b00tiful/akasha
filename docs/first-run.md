@@ -84,3 +84,17 @@ Do not remove a journal to bypass the check. A completed root refuses repeat set
 Process-exit tests cover publication boundaries and lock release. Physical power loss, device
 flush behavior and interruption within kernel calls are not covered. Existing project mutation
 recovery is described separately in [the recovery runbook](recovery.md).
+
+## Interrupted project initialization
+
+Use `/recover-init` in the TUI, or `akasha --root PATH recover-init` in the shell,
+to review the root's pending initialization transaction without changing files.
+Back up the root and journaled repository first. The review lists exact paths,
+hashes, presence and the discard/rollback/finalize outcome. `/discard` cancels;
+`/confirm PLAN_ID` or `recover-init --plan-id PLAN_ID` applies only a matching fresh
+review under the registry lock. Changed or unexpected artifacts refuse safely.
+
+Recovery never starts a new project. After rollback, prepare a separate `/init`
+review; after finalization, refresh/select and validate the existing project.
+This works before a project can load. F5 and `/recovery` concern note journals.
+See [the initialization recovery procedure](recovery.md#interrupted-project-initialization).

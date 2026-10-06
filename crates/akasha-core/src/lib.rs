@@ -38,8 +38,9 @@ pub use event::{
     prepare_handoff_creation, preview_event_creation,
 };
 pub use init::{
-    InitError, InitPlan, InitRecovery, InitRequest, InitResult, apply_project_init,
-    initialize_project, prepare_project_init,
+    InitError, InitPlan, InitRecovery, InitRecoveryDirectory, InitRecoveryFile, InitRecoveryPlan,
+    InitRecoveryResult, InitRequest, InitResult, apply_init_recovery, apply_project_init,
+    initialize_project, prepare_init_recovery, prepare_project_init,
 };
 pub use library::{
     LibraryBook, LibraryCategory, LibraryCollection, LibraryDashboard, LibraryDocument,
