@@ -254,7 +254,7 @@ mod tests {
         let body = "[[Projects/example/entities/core|Core]] and \\[[escaped]]\n\
                     `inline\n[[inline-code]]\ncode`\n\
                     ```md\n[[fenced-code]]\n```\n\
-                    <!-- multiline\n[[html-comment]]\n--> %% multiline\n[[obsidian-comment]]\n%%\n\
+                    <!-- multiline\n[[html-comment]]\n--> %% multiline\n[[percent-comment]]\n%%\n\
                     ![[Projects/example/entities/core.md#Details]] [[#Local heading]]\n";
 
         let links = parse_wikilinks(body).expect("parse links");

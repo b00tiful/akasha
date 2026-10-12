@@ -31,7 +31,7 @@ reviewed: 2026-07-15
 > [!note] Callout syntax remains canonical.
 
 <!-- **comment markup** -->
-%% [[obsidian-comment]] %%
+%% [[percent-comment]] %%
 
   trailing spaces stay here.  
 `;

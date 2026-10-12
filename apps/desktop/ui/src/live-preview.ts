@@ -122,7 +122,7 @@ function collectWikilinks(
   }
 }
 
-type CommentKind = "html" | "obsidian";
+type CommentKind = "html" | "percent";
 
 interface SourceRange {
   from: number;
@@ -149,10 +149,10 @@ function protectedRanges(
 
   while (offset < line.length) {
     const html = line.indexOf("<!--", offset);
-    const obsidian = line.indexOf("%%", offset);
+    const percent = line.indexOf("%%", offset);
     const candidates = [
       html >= 0 ? { index: html, kind: "html" as const } : null,
-      obsidian >= 0 ? { index: obsidian, kind: "obsidian" as const } : null,
+      percent >= 0 ? { index: percent, kind: "percent" as const } : null,
     ].filter((candidate): candidate is { index: number; kind: CommentKind } => candidate !== null);
     candidates.sort((left, right) => left.index - right.index);
     const next = candidates[0];

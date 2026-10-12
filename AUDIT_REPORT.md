@@ -638,6 +638,10 @@ Two tracked scripts instruct the user to "copy `.env.example` to `.env`"
 clone cannot follow that instruction. Affects the legacy development workbench only, not the
 product.
 
+Disposition, 2026-10-12: the human removed the external-editor integration. Both legacy bridge
+scripts, their dedicated environment example/credentials and project registrations are deleted;
+this setup finding is retired with that removed surface, not repaired by shipping the bridge.
+
 ---
 
 ## 7. Informational / design observations

@@ -1,6 +1,5 @@
 .env
 .codegraph/
-.env.example
 
 # Local agent state.
 .agents/
@@ -8,10 +7,8 @@
 .claude/
 .codex/
 
-# Obsidian machine-local state and generated REST credentials.
-akasha/.obsidian/workspace.json
-akasha/.obsidian/workspace-mobile.json
-akasha/.obsidian/plugins/obsidian-local-rest-api/data.json
+# Personal editor state is separate from the product.
+**/.obsidian/
 akasha/.trash/
 
 # Python/tool caches for the future implementation.

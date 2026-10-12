@@ -22,7 +22,7 @@ See [[Global/entities/pattern|shared pattern]].
 
 \`**inline literal** [[inline-link]]\`
 <!-- **HTML comment** -->
-%% [[Obsidian/comment]] %%
+%% [[Comments/percent]] %%
 \\**escaped strong** and \\[[escaped-link]]
 `;
 
@@ -40,7 +40,7 @@ describe("first live-preview fidelity subset", () => {
     for (const literal of [
       "**inline literal** [[inline-link]]",
       "**HTML comment**",
-      "[[Obsidian/comment]]",
+      "[[Comments/percent]]",
       "**escaped strong**",
       "[[escaped-link]]",
     ]) {

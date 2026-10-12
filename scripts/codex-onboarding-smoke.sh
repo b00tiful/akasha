@@ -61,7 +61,6 @@ probe_codex() {
         -c "${CODEX_MCP_COMMAND}" \
         -c "${CODEX_MCP_ARGS}" \
         -c 'mcp_servers.codegraph.enabled=false' \
-        -c 'mcp_servers.obsidian.enabled=false' \
         -c 'mcp_servers.akasha_onboarding.required=true' \
         -c 'mcp_servers.akasha_onboarding.default_tools_approval_mode="writes"'
 }
@@ -82,7 +81,6 @@ run_codex() {
         -c "${CODEX_MCP_COMMAND}" \
         -c "${CODEX_MCP_ARGS}" \
         -c 'mcp_servers.codegraph.enabled=false' \
-        -c 'mcp_servers.obsidian.enabled=false' \
         -c 'mcp_servers.akasha_onboarding.required=true' \
         -c 'mcp_servers.akasha_onboarding.default_tools_approval_mode="writes"' \
         "${prompt}"
