@@ -69,6 +69,50 @@ pub(crate) fn render_search(
     write_stdout(&rendered)
 }
 
+pub(crate) fn render_note_links(
+    result: &akasha_core::NoteLinksResult,
+    output: OutputMode,
+) -> io::Result<()> {
+    if output.json {
+        return write_stdout(&json_line(serde_json::to_string_pretty(result))?);
+    }
+    write_stdout(&note_links_text(result))
+}
+
+fn note_links_text(result: &akasha_core::NoteLinksResult) -> String {
+    let display = |id: &str| {
+        id.chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect::<String>()
+    };
+    let direction = match result.direction {
+        akasha_core::NoteLinkDirection::Outgoing => "Outgoing links",
+        akasha_core::NoteLinkDirection::Incoming => "Backlinks",
+    };
+    let mut text = format!(
+        "{direction}: {}\nScanned {} canonical notes and {} project projections across all registered projects and global knowledge.\n{} matches; showing {}{}\n",
+        display(&result.note),
+        result.scanned_canonical_notes,
+        result.scanned_projections,
+        result.total_matches,
+        result.links.len(),
+        if result.truncated {
+            " (truncated; increase --limit)"
+        } else {
+            ""
+        },
+    );
+    for link in &result.links {
+        let kind = match link.kind {
+            akasha_core::NoteLinkKind::Canonical => "canonical",
+            akasha_core::NoteLinkKind::Projection => "projection",
+            akasha_core::NoteLinkKind::Other => "other",
+        };
+        writeln!(text, "{} [{kind}]", display(&link.id)).expect("writing to a string cannot fail");
+    }
+    text
+}
+
 pub(crate) fn render_init(result: &InitResult, output: OutputMode) -> io::Result<()> {
     let mut rendered = String::new();
     if output.json {

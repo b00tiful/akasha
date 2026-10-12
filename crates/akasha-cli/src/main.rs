@@ -104,6 +104,20 @@ enum Command {
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u16).range(1..=100))]
         limit: u16,
     },
+    /// Inspect distinct outgoing targets from an exact canonical note or project projection.
+    Links {
+        #[arg(value_name = "NOTE")]
+        note: String,
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u16).range(1..=100))]
+        limit: u16,
+    },
+    /// Inspect incoming links across canonical notes and configured project projections.
+    Backlinks {
+        #[arg(value_name = "NOTE")]
+        note: String,
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u16).range(1..=100))]
+        limit: u16,
+    },
     /// Create, register, and link a new empty Akasha project.
     Init {
         /// New project slug for the current repository.
@@ -328,6 +342,8 @@ fn run(cli: Cli) -> Result<(), u8> {
             | Command::Onboard
             | Command::CreateEvent { .. }
             | Command::Search { .. }
+            | Command::Links { .. }
+            | Command::Backlinks { .. }
             | Command::Tui { .. }
             | Command::CaptureHandoff { .. }
             | Command::CreateNote { .. }
@@ -354,6 +370,26 @@ fn run(cli: Cli) -> Result<(), u8> {
 
     match command {
         Command::Tui { .. } => unreachable!("interactive dispatch handled above"),
+        Command::Links { note, limit } => {
+            inspect_links(
+                root,
+                project,
+                note,
+                limit,
+                akasha_core::NoteLinkDirection::Outgoing,
+                output,
+            )?;
+        }
+        Command::Backlinks { note, limit } => {
+            inspect_links(
+                root,
+                project,
+                note,
+                limit,
+                akasha_core::NoteLinkDirection::Incoming,
+                output,
+            )?;
+        }
         Command::Search {
             query,
             all,
@@ -618,6 +654,23 @@ fn run(cli: Cli) -> Result<(), u8> {
     }
 
     Ok(())
+}
+
+fn inspect_links(
+    root: Option<PathBuf>,
+    project: Option<String>,
+    note: String,
+    limit: u16,
+    direction: akasha_core::NoteLinkDirection,
+    output: OutputMode,
+) -> Result<(), u8> {
+    let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
+    let result = akasha_core::inspect_note_links(&request, &note, direction, usize::from(limit))
+        .map_err(|error| {
+            eprintln!("akasha: {error}");
+            error.exit_code()
+        })?;
+    finish_output(render::render_note_links(&result, output))
 }
 
 fn report_resolution(error: akasha_core::ResolveError) -> u8 {

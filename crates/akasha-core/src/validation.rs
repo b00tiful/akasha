@@ -277,6 +277,15 @@ fn validate_identity_field(
     Ok(())
 }
 
+/// Split optional projection headers without imposing a canonical-note metadata schema.
+pub(crate) fn optional_frontmatter_body(source: &str) -> Result<&str, ValidationError> {
+    if source.starts_with("---\n") || source.starts_with("---\r\n") {
+        Ok(&source[split_frontmatter(source)?.raw_end..])
+    } else {
+        Ok(source)
+    }
+}
+
 struct FrontmatterSlices<'a> {
     raw_end: usize,
     yaml: &'a str,

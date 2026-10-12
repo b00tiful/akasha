@@ -9,6 +9,7 @@ pub mod library;
 pub mod link;
 pub mod note_creation;
 pub mod note_edit;
+pub mod note_links;
 pub mod note_template;
 pub mod onboarding;
 pub mod onboarding_handoff;
@@ -67,6 +68,9 @@ pub use note_edit::{
     apply_mutable_note_lifecycle, apply_mutable_note_lifecycle_preview, inspect_pending_note_edit,
     prepare_mutable_note_lifecycle, prepare_task_lifecycle, preview_mutable_note_lifecycle,
     recover_pending_note_edit, replace_library_document, update_entity, update_record,
+};
+pub use note_links::{
+    NoteLink, NoteLinkDirection, NoteLinkKind, NoteLinksError, NoteLinksResult, inspect_note_links,
 };
 pub use note_template::{
     NoteTemplateError, NoteTemplateScope, ResolvedNoteTemplate, resolve_note_template,

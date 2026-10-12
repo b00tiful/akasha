@@ -15,9 +15,10 @@ temporary Markdown workbench accessed directly; they are not automatically migra
 a configured product root.
 
 Akasha's core already parses and validates its supported exact vault-relative wikilinks
-and exposes outgoing note identities. Clickable inline links and bounded backlink lists
-inside Akasha are subsequent implementation work. Their absence does not require another
-application or justify an external-editor integration.
+and exposes outgoing note identities. The bounded named CLI commands `links NOTE` and
+`backlinks NOTE` inspect canonical notes and configured project indexes/roadmaps through
+the shared core; see [note-link inspection](note-links.md). Clickable inline links and
+interactive backlink panels remain subsequent interface work.
 
 The former REST/MCP bridge, launcher, fallback logger, dedicated credentials and native
 backlink prototype have been removed. Historical development evidence remains archived

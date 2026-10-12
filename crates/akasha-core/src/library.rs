@@ -715,7 +715,7 @@ fn invalid_library_layout(path: &Path, message: &str) -> ProjectValidationError 
     )
 }
 
-fn vault_id(root: &Path, path: &Path) -> Result<String, ProjectValidationError> {
+pub(crate) fn vault_id(root: &Path, path: &Path) -> Result<String, ProjectValidationError> {
     let relative = path
         .strip_prefix(root)
         .map_err(|_| invalid_library_layout(path, "canonical note escapes the data root"))?;

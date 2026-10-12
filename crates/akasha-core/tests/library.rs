@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use akasha_core::{
-    LibraryScope, ResolutionEnvironment, ResolveRequest, build_library_projection,
-    load_library_document, render_library_markdown,
+    LibraryScope, NoteLinkDirection, NoteLinkKind, ResolutionEnvironment, ResolveRequest,
+    build_library_projection, inspect_note_links, load_library_document, render_library_markdown,
 };
 
 mod support;
@@ -477,4 +477,468 @@ fn library_display_fields_neutralize_controls_without_changing_source_or_identit
 
     let document = load_library_document(&fixture.request, &book.id).unwrap();
     assert_eq!(document.source, source);
+}
+
+#[test]
+fn note_links_skip_optional_projection_headers_without_canonical_schema_and_reject_invalid_source()
+{
+    let fixture = fixture("note-links-projection-header");
+    let project = fixture.root.join("Projects/alpha");
+    fs::write(project.join("index.md"),
+        "---\r\nproject: alpha\r\nexample: '[[missing-header-target]]'\r\n---\r\n[[Projects/alpha/entities/core]]\r\n").unwrap();
+    support::write_project_state(
+        &project,
+        &[],
+        &["entities/core.md"],
+        &["records/tasks/ship-mvp.md"],
+    );
+    let result = inspect_note_links(
+        &fixture.request,
+        "Projects/alpha/entities/core.md",
+        NoteLinkDirection::Incoming,
+        30,
+    )
+    .unwrap();
+    assert_eq!(result.total_matches, 2);
+    assert!(
+        result
+            .links
+            .iter()
+            .any(|link| link.id == "Projects/alpha/index.md")
+    );
+    for invalid in [
+        b"\xff".as_slice(),
+        b"[[]]\n".as_slice(),
+        b"---\nunterminated: header\n".as_slice(),
+    ] {
+        fs::write(project.join("index.md"), invalid).unwrap();
+        support::write_project_state(
+            &project,
+            &[],
+            &["entities/core.md"],
+            &["records/tasks/ship-mvp.md"],
+        );
+        let before = link_fixture_snapshot(&fixture.root);
+        assert_eq!(
+            inspect_note_links(
+                &fixture.request,
+                "Projects/alpha/entities/core.md",
+                NoteLinkDirection::Incoming,
+                30
+            )
+            .unwrap_err()
+            .exit_code(),
+            4
+        );
+        assert_eq!(link_fixture_snapshot(&fixture.root), before);
+    }
+}
+
+fn append_link_source(root: &Path, id: &str, body: &str) {
+    let path = root.join(id);
+    let source = fs::read_to_string(&path).unwrap();
+    fs::write(path, format!("{source}{body}")).unwrap();
+}
+
+fn link_fixture_snapshot(
+    directory: &Path,
+) -> Vec<(PathBuf, fs::FileType, fs::Permissions, Vec<u8>)> {
+    let mut paths = fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    paths.sort();
+    let mut result = Vec::new();
+    for path in paths {
+        let metadata = fs::symlink_metadata(&path).unwrap();
+        let bytes = if metadata.file_type().is_symlink() {
+            fs::read_link(&path)
+                .unwrap()
+                .as_os_str()
+                .as_encoded_bytes()
+                .to_vec()
+        } else if metadata.is_file() {
+            fs::read(&path).unwrap()
+        } else {
+            Vec::new()
+        };
+        result.push((
+            path.clone(),
+            metadata.file_type(),
+            metadata.permissions(),
+            bytes,
+        ));
+        if metadata.is_dir() {
+            result.extend(link_fixture_snapshot(&path));
+        }
+    }
+    result
+}
+
+#[test]
+fn note_links_cover_all_canonical_classes_projects_global_and_projections_without_writes() {
+    let fixture = fixture("note-links-coverage");
+    let target = "Projects/alpha/entities/core.md";
+    for (id, body) in [
+        (
+            target,
+            "[[#Local]] [[Projects/alpha/entities/core.md#^block]]\n",
+        ),
+        (
+            "Projects/alpha/index.md",
+            "[[Projects/alpha/entities/core|Core]] [[Projects/alpha/entities/core.md]]\n",
+        ),
+        (
+            "Projects/alpha/records/tasks/ship-mvp.md",
+            "[[Projects/alpha/entities/core]]\n",
+        ),
+        (
+            "Projects/zeta/entities/renderer.md",
+            "[[Projects/alpha/entities/core]]\n",
+        ),
+        (
+            "Projects/zeta/roadmap.md",
+            "![[Projects/alpha/entities/core#Heading]]\n",
+        ),
+    ] {
+        append_link_source(&fixture.root, id, body);
+    }
+    fs::write(fixture.root.join("Projects/alpha/events/sessions/touch.md"),
+        "---\nschema_version: 1\nproject: alpha\ntype: session\ndate: 2026-10-12\n---\n[[Projects/alpha/entities/core]]\n").unwrap();
+    support::write_project_state(
+        &fixture.root.join("Projects/alpha"),
+        &["events/sessions/touch.md"],
+        &["entities/core.md"],
+        &["records/tasks/ship-mvp.md"],
+    );
+    support::write_project_state(
+        &fixture.root.join("Projects/zeta"),
+        &[],
+        &["entities/renderer.md"],
+        &[],
+    );
+    let before = link_fixture_snapshot(&fixture.root);
+    let incoming =
+        inspect_note_links(&fixture.request, target, NoteLinkDirection::Incoming, 100).unwrap();
+    assert_eq!(incoming.scanned_canonical_notes, 5);
+    assert_eq!(incoming.scanned_projections, 4);
+    assert_eq!(incoming.total_matches, 7);
+    assert!(!incoming.truncated);
+    assert_eq!(
+        incoming
+            .links
+            .iter()
+            .map(|link| link.id.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "Global/entities/rust-pattern.md",
+            target,
+            "Projects/alpha/events/sessions/touch.md",
+            "Projects/alpha/index.md",
+            "Projects/alpha/records/tasks/ship-mvp.md",
+            "Projects/zeta/entities/renderer.md",
+            "Projects/zeta/roadmap.md",
+        ]
+    );
+    assert_eq!(incoming.links[3].kind, NoteLinkKind::Projection);
+    let limited =
+        inspect_note_links(&fixture.request, target, NoteLinkDirection::Incoming, 1).unwrap();
+    assert_eq!(limited.total_matches, 7);
+    assert!(limited.truncated);
+    assert_eq!(limited.links, incoming.links[..1]);
+    let outgoing = inspect_note_links(
+        &fixture.request,
+        "Projects/alpha/index.md",
+        NoteLinkDirection::Outgoing,
+        30,
+    )
+    .unwrap();
+    assert_eq!(outgoing.links.len(), 1);
+    assert_eq!(outgoing.links[0].id, target);
+    let self_link =
+        inspect_note_links(&fixture.request, target, NoteLinkDirection::Outgoing, 30).unwrap();
+    assert_eq!(self_link.links, outgoing.links);
+    assert_eq!(link_fixture_snapshot(&fixture.root), before);
+}
+
+#[test]
+fn note_links_ignore_nonsemantic_regions_and_preserve_exact_unicode_identities() {
+    let fixture = fixture("note-links-syntax");
+    let id = "Global/entities/двигатель.md";
+    fs::write(fixture.root.join(id),
+        "---\nschema_version: 1\nentity: двигатель\nkind: pattern\nstatus: stable\nreviewed: 2026-10-12\nexample: '[[missing-frontmatter]]'\n---\n[[Projects/alpha/entities/core|Локальный]]\n\
+         `[[missing-inline]]`\n```md\n[[missing-fence]]\n```\n\
+         <!--\n[[missing-html]]\n-->\n%%\n[[missing-percent]]\n%%\n\\[[missing-escaped]]\n").unwrap();
+    let result = inspect_note_links(&fixture.request, id, NoteLinkDirection::Outgoing, 30).unwrap();
+    assert_eq!(result.note, id);
+    assert_eq!(result.links.len(), 1);
+    assert_eq!(result.links[0].id, "Projects/alpha/entities/core.md");
+    let zero = inspect_note_links(&fixture.request, id, NoteLinkDirection::Incoming, 30).unwrap();
+    assert_eq!(zero.total_matches, 0);
+    assert!(!zero.truncated);
+    assert!(zero.links.is_empty());
+    // Noncanonical Markdown can be a valid outgoing target but never expands source coverage.
+    fs::write(fixture.root.join("Inbox/other.md"), format!("[[{id}]]\n")).unwrap();
+    append_link_source(&fixture.root, id, "![[Inbox/other]]\n");
+    let result = inspect_note_links(&fixture.request, id, NoteLinkDirection::Outgoing, 30).unwrap();
+    assert_eq!(result.links[0].id, "Inbox/other.md");
+    assert_eq!(result.links[0].kind, NoteLinkKind::Other);
+    assert_eq!(
+        inspect_note_links(&fixture.request, id, NoteLinkDirection::Incoming, 30)
+            .unwrap()
+            .total_matches,
+        0
+    );
+    assert_eq!(
+        inspect_note_links(
+            &fixture.request,
+            "Inbox/other.md",
+            NoteLinkDirection::Incoming,
+            30
+        )
+        .unwrap_err()
+        .exit_code(),
+        4
+    );
+}
+
+#[test]
+fn note_links_use_configured_folders_and_projection_filenames() {
+    let fixture = fixture("note-links-configured");
+    fs::write(
+        fixture.root.join("akasha.toml"),
+        root_config()
+            .replace("projects = \"Projects\"", "projects = \"Workspaces\"")
+            .replace("global = \"Global\"", "global = \"Shared\"")
+            .replace("folder = \"entities\"", "folder = \"knowledge\"")
+            .replace("index = \"index.md\"", "index = \"maps/catalog.md\"")
+            .replace("roadmap = \"roadmap.md\"", "roadmap = \"maps/plan.md\""),
+    )
+    .unwrap();
+    fs::rename(
+        fixture.root.join("Global/entities"),
+        fixture.root.join("Global/knowledge"),
+    )
+    .unwrap();
+    fs::rename(fixture.root.join("Global"), fixture.root.join("Shared")).unwrap();
+    fs::write(
+        fixture.root.join("Shared/knowledge/rust-pattern.md"),
+        fs::read_to_string(fixture.root.join("Shared/knowledge/rust-pattern.md"))
+            .unwrap()
+            .replace(
+                "Projects/alpha/entities/core",
+                "Workspaces/alpha/knowledge/core",
+            ),
+    )
+    .unwrap();
+    for (project, entity, records) in [
+        ("alpha", "core", vec!["records/tasks/ship-mvp.md"]),
+        ("zeta", "renderer", vec![]),
+    ] {
+        let directory = fixture.root.join("Projects").join(project);
+        fs::rename(directory.join("entities"), directory.join("knowledge")).unwrap();
+        fs::write(
+            directory.join("index.md"),
+            "[[Workspaces/alpha/knowledge/core]]\n",
+        )
+        .unwrap();
+        support::write_project_state(
+            &directory,
+            &[],
+            &[&format!("knowledge/{entity}.md")],
+            &records,
+        );
+        fs::create_dir(directory.join("maps")).unwrap();
+        fs::rename(
+            directory.join("index.md"),
+            directory.join("maps/catalog.md"),
+        )
+        .unwrap();
+        fs::rename(directory.join("roadmap.md"), directory.join("maps/plan.md")).unwrap();
+    }
+    fs::rename(
+        fixture.root.join("Projects"),
+        fixture.root.join("Workspaces"),
+    )
+    .unwrap();
+    let result = inspect_note_links(
+        &fixture.request,
+        "Workspaces/alpha/knowledge/core.md",
+        NoteLinkDirection::Incoming,
+        30,
+    )
+    .unwrap();
+    assert_eq!(
+        result
+            .links
+            .iter()
+            .map(|link| link.id.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "Shared/knowledge/rust-pattern.md",
+            "Workspaces/alpha/maps/catalog.md",
+            "Workspaces/zeta/maps/catalog.md",
+        ]
+    );
+    assert_eq!(result.scanned_projections, 4);
+    assert!(
+        inspect_note_links(
+            &fixture.request,
+            "Workspaces/alpha/maps/plan.md",
+            NoteLinkDirection::Outgoing,
+            30
+        )
+        .unwrap()
+        .links
+        .is_empty()
+    );
+}
+
+#[test]
+fn note_links_refuse_unknown_unsafe_noncanonical_and_invalid_limits_without_writes() {
+    let fixture = fixture("note-links-invalid");
+    let before = link_fixture_snapshot(&fixture.root);
+    for id in [
+        "",
+        "core.md",
+        "/Projects/alpha/entities/core.md",
+        "../core.md",
+        "Projects//alpha/entities/core.md",
+        "Projects/alpha/./entities/core.md",
+        "Projects\\alpha\\entities\\core.md",
+        "Projects/alpha/entities/core",
+        "Projects/alpha/entities/core.md#Heading",
+        "Projects/alpha/entities/core.md|Core",
+        "Projects/alpha/entities/Core.md",
+        "Projects/alpha/entities/missing.md",
+        "Meta/projects.yaml",
+        "Projects/alpha/templates/entity.md",
+    ] {
+        assert_eq!(
+            inspect_note_links(&fixture.request, id, NoteLinkDirection::Incoming, 30)
+                .unwrap_err()
+                .exit_code(),
+            4,
+            "{id}"
+        );
+    }
+    for limit in [0, 101, usize::MAX] {
+        assert_eq!(
+            inspect_note_links(
+                &fixture.request,
+                "Projects/alpha/entities/core.md",
+                NoteLinkDirection::Outgoing,
+                limit
+            )
+            .unwrap_err()
+            .exit_code(),
+            4
+        );
+    }
+    assert_eq!(link_fixture_snapshot(&fixture.root), before);
+}
+
+#[test]
+fn note_links_revalidate_stale_projections_missing_targets_and_pending_journals() {
+    let fixture = fixture("note-links-stale");
+    let id = "Projects/alpha/entities/core.md";
+    assert!(inspect_note_links(&fixture.request, id, NoteLinkDirection::Incoming, 30).is_ok());
+    append_link_source(&fixture.root, "Projects/alpha/index.md", "external draft\n");
+    let before = link_fixture_snapshot(&fixture.root);
+    let error =
+        inspect_note_links(&fixture.request, id, NoteLinkDirection::Incoming, 30).unwrap_err();
+    assert_eq!(error.exit_code(), 4);
+    assert!(error.to_string().contains("project state"));
+    assert_eq!(link_fixture_snapshot(&fixture.root), before);
+    support::write_project_state(
+        &fixture.root.join("Projects/alpha"),
+        &[],
+        &["entities/core.md"],
+        &["records/tasks/ship-mvp.md"],
+    );
+    for journal_project in ["alpha", "zeta"] {
+        let journal = fixture
+            .root
+            .join("Projects")
+            .join(journal_project)
+            .join(akasha_core::NOTE_EDIT_JOURNAL_FILE);
+        fs::write(&journal, b"unfinished journal, never parsed or recovered").unwrap();
+        let before = link_fixture_snapshot(&fixture.root);
+        let error =
+            inspect_note_links(&fixture.request, id, NoteLinkDirection::Incoming, 30).unwrap_err();
+        assert_eq!(error.exit_code(), 5);
+        assert!(error.to_string().contains("pending note recovery journal"));
+        assert_eq!(link_fixture_snapshot(&fixture.root), before);
+        fs::remove_file(journal).unwrap();
+    }
+    append_link_source(
+        &fixture.root,
+        "Projects/zeta/roadmap.md",
+        "[[Projects/alpha/entities/missing]]\n",
+    );
+    support::write_project_state(
+        &fixture.root.join("Projects/zeta"),
+        &[],
+        &["entities/renderer.md"],
+        &[],
+    );
+    let before = link_fixture_snapshot(&fixture.root);
+    let error =
+        inspect_note_links(&fixture.request, id, NoteLinkDirection::Incoming, 30).unwrap_err();
+    assert_eq!(error.exit_code(), 4);
+    assert!(error.to_string().contains("invalid wikilink"));
+    assert_eq!(link_fixture_snapshot(&fixture.root), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn note_links_refuse_symlink_sources_targets_and_journals_without_changes() {
+    use std::os::unix::fs::symlink;
+    let fixture = fixture("note-links-symlinks");
+    let id = "Projects/alpha/entities/core.md";
+    for (entry, target) in [
+        ("Projects/zeta/index.md", "../alpha/index.md"),
+        (
+            "Global/entities/rust-pattern.md",
+            "../../Projects/alpha/entities/core.md",
+        ),
+        (
+            "Projects/zeta/.akasha-edit-journal.json",
+            "../alpha/index.md",
+        ),
+    ] {
+        let path = fixture.root.join(entry);
+        let original = fs::read(&path).ok();
+        if original.is_some() {
+            fs::remove_file(&path).unwrap();
+        }
+        symlink(target, &path).unwrap();
+        let before = link_fixture_snapshot(&fixture.root);
+        assert_eq!(
+            inspect_note_links(&fixture.request, id, NoteLinkDirection::Incoming, 30)
+                .unwrap_err()
+                .exit_code(),
+            4
+        );
+        assert_eq!(link_fixture_snapshot(&fixture.root), before);
+        fs::remove_file(&path).unwrap();
+        if let Some(original) = original {
+            fs::write(path, original).unwrap();
+        }
+    }
+    let external = fixture.root.join("Inbox/alias.md");
+    symlink("../Projects/alpha/entities/core.md", &external).unwrap();
+    append_link_source(
+        &fixture.root,
+        "Global/entities/rust-pattern.md",
+        "[[Inbox/alias]]\n",
+    );
+    let before = link_fixture_snapshot(&fixture.root);
+    assert_eq!(
+        inspect_note_links(&fixture.request, id, NoteLinkDirection::Incoming, 30)
+            .unwrap_err()
+            .exit_code(),
+        4
+    );
+    assert_eq!(link_fixture_snapshot(&fixture.root), before);
 }
