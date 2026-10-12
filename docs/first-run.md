@@ -63,6 +63,73 @@ blindly replay apply. Finish with `akasha --root PATH --project SLUG validate`.
 The synthetic tests exercise populated memory and the existing approval binding without invoking
 a model. This release slice does not add observed acceptance for another live agent client.
 
+## Disposable Codex acceptance
+
+The development harness uses the actual `setup-root`, `init` and `onboard` commands from an
+empty root, with synthetic repository sources and a private client home. It never resets an
+existing run. Node.js 22 and a locally installed Codex CLI are needed in addition to both binaries.
+
+```sh
+cargo build --offline -p akasha-cli -p akasha-mcp
+AKASHA_FIRST_RUN_DIR="/tmp/akasha-first-run-acceptance"
+node scripts/first-run-onboarding.mjs setup "$AKASHA_FIRST_RUN_DIR"
+node scripts/first-run-onboarding.mjs probe "$AKASHA_FIRST_RUN_DIR"
+```
+
+Choose a new run directory with an existing canonical parent, outside existing repositories
+and ancestor agent instructions/configuration; probe and run refuse inherited project context.
+Codex 0.162.1 warns that helper aliases cannot be created beneath temporary homes; the actual
+model-free preflight passes there, while live runtime acceptance remains pending. Setup saves
+the exact root review, results, handoff and baseline hashes/types/modes. Its root confirmation is
+deterministic harness setup, not observed human review. Probe checks the disposable MCP
+registration and launches the real stdio server to discover four tools and seven templates,
+without invoking a model or writing project memory. Codex's `mcp list` does not support
+`--strict-config` in 0.162.1; the interactive launch uses that flag.
+
+If authentication is needed, sign in explicitly to this disposable client home:
+
+```sh
+CODEX_HOME="$AKASHA_FIRST_RUN_DIR/client-home" codex login
+```
+
+The harness does not copy credentials or settings from your normal home. In an interactive
+terminal, run the first walkthrough and **deny** the destructive `akasha_onboarding_apply`
+prompt, then exit the client. Inspect the exact approval summary and proposed fact, inference
+and unknown before making the choice. The supplied prompt tells the agent to stop after denial.
+
+```sh
+node scripts/first-run-onboarding.mjs run "$AKASHA_FIRST_RUN_DIR"
+node scripts/first-run-onboarding.mjs verify "$AKASHA_FIRST_RUN_DIR" cancel
+```
+
+The cancellation check compares all memory bytes, entries and modes with the baseline and
+checks exact repository preservation. Start a fresh second walkthrough, inspect its new
+proposal/preview identifiers and summary, and **approve** only that exact apply call:
+
+```sh
+node scripts/first-run-onboarding.mjs run "$AKASHA_FIRST_RUN_DIR"
+node scripts/first-run-onboarding.mjs verify "$AKASHA_FIRST_RUN_DIR" apply
+```
+
+The application check requires exactly the proposed `core.md` entity, persisted fact/inference/
+unknown evidence, unchanged supporting files/modes and repository sources, core evidence and
+projection validation, an unchanged fresh preview and successful project validation. Verification
+is read-only and never calls apply. The isolated launch disables the shared daemon, uses the
+read-only shell sandbox, selects the human reviewer and explicitly prompts for apply.
+
+A passing filesystem check cannot prove that the host displayed a prompt or that a human made
+the choice. Reports therefore retain `host_approval: "not_observed"` and require human claim
+review. Record the client version, visible allow/deny choices, exact preview details and claim
+review separately before closing live acceptance. Keep the private run for evidence; there is no
+automatic deletion. The previous `codex-onboarding-smoke.sh` remains the historical configured-root
+fixture. No additional client acceptance is implied.
+
+Run the model-free harness regressions with:
+
+```sh
+node --test scripts/first-run-onboarding.test.mjs
+```
+
 ## Interrupted setup
 
 Apply creates a private persistent sibling `.NAME.akasha-setup.lock` and a temporary
