@@ -147,3 +147,25 @@ test("preflight refuses inherited project configuration before launching Codex",
   await assert.rejects(probe(f.directory), /Inherited project context/);
   assert.deepEqual(snapshot(f.root), before);
 });
+
+test("observed one-time TUI marker preserves review without admitting policy drift", async (t) => {
+  const f = fixture(t);
+  const path = join(f.clientHome, "config.toml");
+  const original = readFileSync(path, "utf8");
+  const marker = '\n[tui]\nscreen_reader_detection_done = true\n';
+  writeFileSync(path, original + marker);
+  const before = snapshot(f.root);
+  assert.equal((await verify(f.directory, "cancel")).filesystem_verification, "passed");
+  assert.equal(readFileSync(path, "utf8"), original + marker);
+  assert.deepEqual(snapshot(f.root), before);
+  for (const changed of [
+    original.replace('approvals_reviewer = "user"', 'approvals_reviewer = "auto_review"') + marker,
+    original.replace('approval_mode = "prompt"', 'approval_mode = "auto"') + marker,
+    original + marker + '\n[mcp_servers.foreign]\ncommand = "foreign-server"\n',
+    original + marker.replace('true', 'false'),
+  ]) {
+    writeFileSync(path, changed);
+    await assert.rejects(verify(f.directory, "cancel"), /Client policy changed/);
+    assert.deepEqual(snapshot(f.root), before);
+  }
+});

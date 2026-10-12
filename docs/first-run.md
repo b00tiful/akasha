@@ -103,13 +103,25 @@ node scripts/first-run-onboarding.mjs verify "$AKASHA_FIRST_RUN_DIR" cancel
 ```
 
 The cancellation check compares all memory bytes, entries and modes with the baseline and
-checks exact repository preservation. Start a fresh second walkthrough, inspect its new
+checks exact repository preservation. The long initial onboarding message is the request to
+the agent; wait for the actual `akasha_onboarding_apply` host dialog before denying it. Exit
+Codex with `/quit` afterward, keeping the terminal open for any wrapper checks.
+Codex 0.162.1 appends a one-time `[tui]` screen-reader detection marker on interactive launch.
+The harness preserves and accepts only that exact observed suffix; approval/reviewer/sandbox/
+server bytes remain bound and other configuration changes refuse.
+Start a fresh second walkthrough, inspect its new
 proposal/preview identifiers and summary, and **approve** only that exact apply call:
 
 ```sh
 node scripts/first-run-onboarding.mjs run "$AKASHA_FIRST_RUN_DIR"
 node scripts/first-run-onboarding.mjs verify "$AKASHA_FIRST_RUN_DIR" apply
 ```
+
+After approving, keep the client open until successful application and project validation are
+reported. Approval starts the request; it does not mean the write has finished. If you exit while
+the result is pending, inspect current state before any retry: the approved batch can still finish.
+An empty snapshot at one instant does not establish that a pending request was cancelled. Obtain
+a fresh preview only when the prior outcome is understood, and never replay an old approval.
 
 The application check requires exactly the proposed `core.md` entity, persisted fact/inference/
 unknown evidence, unchanged supporting files/modes and repository sources, core evidence and

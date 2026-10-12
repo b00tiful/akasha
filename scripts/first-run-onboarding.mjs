@@ -89,7 +89,13 @@ function load(directory) {
   for (const [key, value] of Object.entries(expected)) assert.equal(fixture[key], value, `Changed ${key}`);
   assert.deepEqual(snapshot(fixture.repository), fixture.repositoryBefore, "Source repository changed");
   assert.deepEqual(akasha(fixture, ["onboard"]), fixture.handoff, "Handoff changed");
-  assert.equal(readFileSync(join(fixture.clientHome, "config.toml"), "utf8"), config(fixture.handoff), "Client policy changed");
+  const clientConfig = readFileSync(join(fixture.clientHome, "config.toml"), "utf8");
+  const expectedConfig = config(fixture.handoff);
+  // Codex 0.162.1 persists this one-time TUI marker on first interactive launch.
+  // Permit only that exact observed suffix; approval and server bytes stay bound.
+  const detectionMarker = '\n[tui]\nscreen_reader_detection_done = true\n';
+  assert(clientConfig === expectedConfig || clientConfig === expectedConfig + detectionMarker,
+    "Client policy changed");
   return fixture;
 }
 
