@@ -515,6 +515,10 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             wait_for(b'Unsaved changes')
             command('digest --limit 100')
             wait_for(b'Unsaved changes')
+            command('search core --limit 1')
+            wait_for(b'Unsaved changes')
+            command('search-all core --limit 100')
+            wait_for(b'Unsaved changes')
             command('discard')
             assert graph_snapshot() == baseline, 'refusal and discard must preserve bytes/types/modes'
             command('back')
@@ -557,6 +561,56 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             assert graph_snapshot() == baseline, 'resolution inspection must preserve bytes/types/modes'
             print(f'PASS resolution TERM={term} {size[1]}x{size[0]}: named plain parity, '
                   'all provenance fields, keyboard scroll/return, invalid arguments and no writes', flush=True)
+            for navigation, search_command, scope_args, entity in [
+                ('project example', 'search', [], 'core'),
+                ('global', 'search', ['--global'], 'rust-pattern'),
+                ('project example', 'search-all', ['--all'], 'rust-pattern'),
+            ]:
+                command(navigation)
+                for limit in (1, 100, None):
+                    cli_limit = 100 if limit is None else limit
+                    expected = json.loads(subprocess.check_output([
+                        str(binary), '--root', str(root), '--project', 'example', '--json',
+                        'search', 'schema_version', '--limit', str(cli_limit), *scope_args,
+                    ]))
+                    suffix = '' if limit is None else f' --limit {limit}'
+                    command(f'{search_command} schema_version{suffix}')
+                    wait_for(b'SEARCH')
+                    message = f'{expected["total_matches"]} matches'
+                    if expected['truncated']:
+                        message += f'; showing first {len(expected["hits"])}.'
+                    wait_for(message.encode())
+                    assert graph_snapshot() == baseline
+                # Open an exact core-derived entity result; the compact reader
+                # exposes its canonical entity metadata through existing scrolling.
+                query = f'entity: {entity}'
+                expected = json.loads(subprocess.check_output([
+                    str(binary), '--root', str(root), '--project', 'example', '--json',
+                    'search', query, '--limit', '1', *scope_args,
+                ]))
+                assert len(expected['hits']) == 1
+                command(f'{search_command} {query} --limit 1')
+                wait_for(b'SEARCH')
+                wait_for(f'{expected["total_matches"]} matches'.encode())
+                command('open 1')
+                wait_for(b'READ ONLY' if entity == 'rust-pattern' else b'READING')
+                expect_followed_entity(expected['hits'][0]['id'], entity)
+                command('back')
+                wait_for(b'SEARCH')
+                command(f'{search_command} {query} --limit 0')
+                wait_for(b'Limit must be an integer')
+                assert 'SEARCH' in screen.text()
+                command('back')
+                command(navigation)
+                assert graph_snapshot() == baseline
+            command('search -- schema_version --limit 1')
+            wait_for(b'0 matches')
+            command('back')
+            command('home')
+            assert graph_snapshot() == baseline, 'search and navigation must preserve bytes/types/modes'
+            print(f'PASS search limits TERM={term} {size[1]}x{size[0]}: project/global/all '
+                  'core parity, 100 default, 1/100 limits, exact entity open/return, literal text, '
+                  'invalid/dirty retention and no writes', flush=True)
         if full:
             idle_before = len(output)
             drain(0.7)

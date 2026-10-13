@@ -34,6 +34,7 @@ use ratatui::widgets::ListState;
 use ratatui_textarea::{CursorMove, TextArea};
 
 const PROMPT_PLACEHOLDER: &str = "Type / for commands; /search words to find notes";
+const SEARCH_DEFAULT_LIMIT: usize = 100;
 
 pub(super) struct Completion {
     pub command: &'static str,
@@ -126,8 +127,8 @@ const COMMANDS: &[Completion] = &[
     },
     Completion {
         command: "search",
-        argument: "TEXT",
-        description: "Search the current project or global scope",
+        argument: "TEXT [--limit N]",
+        description: "Search current scope; 100 default hits, explicit 1..100",
     },
     Completion {
         command: "links",
@@ -146,8 +147,8 @@ const COMMANDS: &[Completion] = &[
     },
     Completion {
         command: "search-all",
-        argument: "TEXT",
-        description: "Search every project and shared knowledge",
+        argument: "TEXT [--limit N]",
+        description: "Search every project and global notes; explicit 1..100 hits",
     },
     Completion {
         command: "context",
@@ -267,7 +268,7 @@ fn prompt_area(text: String) -> TextArea<'static> {
     prompt_area_with_placeholder(text, PROMPT_PLACEHOLDER)
 }
 
-pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nsetup PATH      review a new private data root (first run)\nonboard         prepare external-agent onboarding instructions\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to report / previous list\nfollow NUMBER   open a bound canonical graph result\nlinks [NOTE] [--limit N]\n                saved outgoing files (open note by default)\nbacklinks [NOTE] [--limit N]\n                saved incoming files; 30 default, 1..100 explicit\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       edit and review the open record/entity and its projection\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\nstatus [--limit N]\n                all-project metrics; 30 default, 1..100 explicit\ndigest [--limit N]\n                all-project metrics by latest canonical note date\nresolve         inspect root, project and pointer selection\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff         guided multiline handoff authoring and exact review\nhandoff PATH | NAME=VALUE | ...\n                inline capture from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE      guided multiline event authoring and exact review\nevent TYPE PATH | NAME=VALUE | ...\n                inline configured immutable event creation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\ninit PROJECT [REPOSITORY]\n                review an empty project scaffold and registry update\nlink PROJECT [REPOSITORY]\n                review an exclusive repository pointer creation\nconfirm PLAN_ID authorize the displayed administration plan\nrecovery        inspect note journal presence without writing; Esc returns\nrecover-init    review root initialization recovery; confirm PLAN_ID applies\nrefresh         retry core recovery and reload validated data (F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and lifecycle forms show exact configured templates and\nmaintained projections. Creation and lifecycle use Ctrl-N to review the exact note and projection\nbefore Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. All guided template fields support multiline text;\nCtrl-N/Ctrl-P navigate and Ctrl-S publishes only after exact source review.\nIntegration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nFirst run: /setup PATH, /confirm PLAN_ID, /init PROJECT [REPOSITORY], then /onboard.\nOtherwise open from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
+pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nsetup PATH      review a new private data root (first run)\nonboard         prepare external-agent onboarding instructions\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to report / previous list\nfollow NUMBER   open a bound canonical graph result\nlinks [NOTE] [--limit N]\n                saved outgoing files (open note by default)\nbacklinks [NOTE] [--limit N]\n                saved incoming files; 30 default, 1..100 explicit\nsearch TEXT [--limit N]\n                current scope; 100 default, 1..100 explicit\nsearch-all TEXT [--limit N]\n                every project and global notes\nsearch -- TEXT  literal query, including --limit words\ncreate TYPE     guided configured record/entity creation\nlifecycle       edit and review the open record/entity and its projection\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\nstatus [--limit N]\n                all-project metrics; 30 default, 1..100 explicit\ndigest [--limit N]\n                all-project metrics by latest canonical note date\nresolve         inspect root, project and pointer selection\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff         guided multiline handoff authoring and exact review\nhandoff PATH | NAME=VALUE | ...\n                inline capture from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE      guided multiline event authoring and exact review\nevent TYPE PATH | NAME=VALUE | ...\n                inline configured immutable event creation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\ninit PROJECT [REPOSITORY]\n                review an empty project scaffold and registry update\nlink PROJECT [REPOSITORY]\n                review an exclusive repository pointer creation\nconfirm PLAN_ID authorize the displayed administration plan\nrecovery        inspect note journal presence without writing; Esc returns\nrecover-init    review root initialization recovery; confirm PLAN_ID applies\nrefresh         retry core recovery and reload validated data (F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\n/search memory --limit 10 bounds displayed results.\n/search -- memory --limit 10 searches that entire literal text.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and lifecycle forms show exact configured templates and\nmaintained projections. Creation and lifecycle use Ctrl-N to review the exact note and projection\nbefore Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. All guided template fields support multiline text;\nCtrl-N/Ctrl-P navigate and Ctrl-S publishes only after exact source review.\nIntegration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nFirst run: /setup PATH, /confirm PLAN_ID, /init PROJECT [REPOSITORY], then /onboard.\nOtherwise open from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Focus {
@@ -373,7 +374,7 @@ pub(super) enum Job {
     InspectRecovery(ResolveRequest),
     Check(ResolveRequest, Box<LibraryProjection>, Vec<WatchedSource>),
     Open(ResolveRequest, String),
-    Search(ResolveRequest, String, Option<LibraryScope>),
+    Search(ResolveRequest, String, LibraryScope, bool, usize),
     Context(ResolveRequest),
     Breadcrumb(ResolveRequest),
     Resolve(ResolveRequest),
@@ -427,7 +428,7 @@ pub(super) enum Response {
     ),
     Checked(Result<RefreshCheck, String>),
     Opened(LibraryDocument),
-    Found(LibrarySearchResult),
+    Found(ResolveRequest, LibraryScope, LibrarySearchResult),
     NoteLinks(LinkReport),
     LibraryReport(akasha_core::LibraryReport),
     Resolved(ResolveRequest, Box<akasha_core::ResolvedProject>),
@@ -498,7 +499,7 @@ fn execute_job(job: Job) -> WorkResult {
     let request = match &job {
         Job::Load(request)
         | Job::Open(request, _)
-        | Job::Search(request, _, _)
+        | Job::Search(request, ..)
         | Job::Onboard(request)
         | Job::Context(request)
         | Job::Breadcrumb(request)
@@ -613,8 +614,11 @@ fn execute_job_inner(job: Job) -> WorkResult {
             recover_pending_note_edit(&request).map_err(|e| err(&e))?;
             load_library_document(&request, &id).map(Response::Opened).map_err(|e| err(&e))
         }
-        Job::Search(request, query, scope) => search_library(&request, &query, scope.as_ref(), 100)
-            .map(Response::Found).map_err(|e| err(&e)),
+        Job::Search(request, query, scope, all, limit) => {
+            let result = search_library(&request, &query, if all { None } else { Some(&scope) }, limit)
+                .map_err(|e| err(&e))?;
+            Ok(Response::Found(request, scope, result))
+        }
         Job::Context(request) => assemble_context(&request)
             .map(|bundle| Response::Text("PROJECT CONTEXT".into(), render_context_markdown(&bundle)))
             .map_err(|e| err(&e)),
@@ -768,6 +772,44 @@ fn integration_arguments(argument: &str) -> Result<(AgentClient, PathBuf), Strin
     discover_agent_home(client, explicit_home)
         .map(|home| (client, home))
         .map_err(|error| format!("{error}; pass an explicit HOME path."))
+}
+
+fn search_arguments(argument: &str) -> Result<(&str, usize), &'static str> {
+    const USAGE: &str = "Usage: /search TEXT [--limit N] or /search-all TEXT [--limit N]. Use -- before literal text containing --limit.";
+    let argument = argument.trim();
+    if let Some(query) = argument
+        .strip_prefix("--")
+        .filter(|rest| rest.starts_with(char::is_whitespace))
+    {
+        let query = query.trim();
+        return if query.is_empty() {
+            Err("Type words to search after --")
+        } else {
+            Ok((query, SEARCH_DEFAULT_LIMIT))
+        };
+    }
+    if !argument.split_whitespace().any(|word| word == "--limit") {
+        return Ok((argument, SEARCH_DEFAULT_LIMIT));
+    }
+    let (prefix, value) = argument.rsplit_once(char::is_whitespace).ok_or(USAGE)?;
+    let query = prefix.trim_end().strip_suffix("--limit").ok_or(USAGE)?;
+    if !query.is_empty() && !query.ends_with(char::is_whitespace) {
+        return Err(USAGE);
+    }
+    let query = query.trim_end();
+    if query.is_empty() || query.split_whitespace().any(|word| word == "--limit") {
+        return Err(USAGE);
+    }
+    let limit = if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+        value
+            .parse::<usize>()
+            .ok()
+            .filter(|limit| (1..=100).contains(limit))
+    } else {
+        None
+    }
+    .ok_or("Limit must be an integer from 1 to 100")?;
+    Ok((query, limit))
 }
 
 fn note_link_arguments(argument: &str, current: Option<&str>) -> Result<(String, usize), String> {
@@ -2053,6 +2095,7 @@ impl App {
             &response,
             Err(_)
                 | Ok(Response::NoteLinks(_)
+                    | Response::Found(..)
                     | Response::LibraryReport(_)
                     | Response::Resolved(..)
                     | Response::LinkFollowed(_)
@@ -2318,7 +2361,26 @@ impl App {
                 self.scroll = 0;
                 self.focus = Focus::Reader;
             }
-            Ok(Response::Found(result)) => {
+            Ok(Response::Found(request, scope, result)) => {
+                if self.dirty() || self.editing || self.recovery_visible || self.recovery_blocked {
+                    self.message("Search finished; unfinished work or recovery view retained. Retry after resolving it.");
+                    return true;
+                }
+                if scope != self.scope
+                    || request.root_override != self.request.root_override
+                    || request.project_override != self.request.project_override
+                    || request.cwd != self.request.cwd
+                    || request.environment.akasha_root != self.request.environment.akasha_root
+                    || request.environment.xdg_config_home
+                        != self.request.environment.xdg_config_home
+                    || request.environment.home != self.request.environment.home
+                {
+                    self.message("Search reply is obsolete; current view retained. Search again.");
+                    return true;
+                }
+                self.link_report = None;
+                self.link_return = None;
+                let shown = result.hits.len();
                 self.remember();
                 self.set_rows(
                     format!("SEARCH · {}", result.query),
@@ -2342,9 +2404,9 @@ impl App {
                     "{} matches{}",
                     result.total_matches,
                     if result.truncated {
-                        "; showing first 100. Narrow the query."
+                        format!("; showing first {shown}. Narrow the query.")
                     } else {
-                        ""
+                        String::new()
                     }
                 ));
             }
@@ -2849,15 +2911,16 @@ impl App {
                 self.focus = Focus::Prompt;
                 self.message("Type words to find in note titles or contents, then Enter. Example: /search memory");
             }
-            "search" | "search-all" => self.submit(Job::Search(
-                self.request.clone(),
-                argument.to_owned(),
-                if command == "search-all" {
-                    None
-                } else {
-                    Some(self.scope.clone())
-                },
-            )),
+            "search" | "search-all" => match search_arguments(argument) {
+                Ok((query, limit)) => self.submit(Job::Search(
+                    self.request.clone(),
+                    query.to_owned(),
+                    self.scope.clone(),
+                    command == "search-all",
+                    limit,
+                )),
+                Err(error) => self.message(error),
+            },
             "create" if argument.is_empty() => {
                 self.prompt = prompt_area("/create ".into());
                 self.prompt_changed();
@@ -4693,6 +4756,328 @@ mod tests {
             fs::read_to_string(fixture.root().join(TASK_ID)).unwrap(),
             external
         );
+    }
+
+    #[test]
+    fn search_limit_parser_preserves_literal_unicode_and_rejects_ambiguous_bounds() {
+        for (input, query, limit) in [
+            ("memory", "memory", 100),
+            ("  Привет  世界  ", "Привет  世界", 100),
+            ("Привет  世界 --limit 1", "Привет  世界", 1),
+            ("a\tb\t--limit\t100", "a\tb", 100),
+            ("words --limit 001", "words", 1),
+            ("-- words --limit 5", "words --limit 5", 100),
+            ("-- --limit", "--limit", 100),
+            ("words --limitless", "words --limitless", 100),
+            ("words --limit=5", "words --limit=5", 100),
+        ] {
+            assert_eq!(search_arguments(input), Ok((query, limit)), "{input}");
+        }
+        for input in [
+            "--limit",
+            "--limit 1",
+            "words --limit",
+            "words --limit 0",
+            "words --limit 101",
+            "words --limit -1",
+            "words --limit +1",
+            "words --limit 1.5",
+            "words --limit ١",
+            "words --limit nope",
+            "words --limit 99999999999999999999999999999999999999999",
+            "words --limit 1 extra",
+            "--limit 1 words",
+            "words --limit 1 --limit 2",
+        ] {
+            assert!(search_arguments(input).is_err(), "{input}");
+        }
+    }
+
+    #[test]
+    fn search_limits_match_core_scopes_counts_and_exact_open_return() {
+        let mut fixture = Fixture::new();
+        let before = link_snapshot(&fixture.root());
+        for navigation in ["project example", "global"] {
+            fixture.app.command(navigation);
+            let scope = fixture.app.scope.clone();
+            for (command, all, limit) in [
+                ("search schema_version", false, 100),
+                ("search schema_version --limit 1", false, 1),
+                ("search schema_version --limit 100", false, 100),
+                ("search-all schema_version --limit 2", true, 2),
+                ("search no_such_match --limit 1", false, 1),
+            ] {
+                let query = if command.contains("no_such_match") {
+                    "no_such_match"
+                } else {
+                    "schema_version"
+                };
+                let expected = search_library(
+                    &fixture.app.request,
+                    query,
+                    if all { None } else { Some(&scope) },
+                    limit,
+                )
+                .unwrap();
+                fixture.app.command(command);
+                fixture.finish();
+                let ids: Vec<_> = fixture
+                    .app
+                    .rows
+                    .iter()
+                    .map(|row| match &row.target {
+                        Target::Note(id) => id.clone(),
+                        _ => panic!("search row lost exact identity"),
+                    })
+                    .collect();
+                assert_eq!(
+                    ids,
+                    expected
+                        .hits
+                        .iter()
+                        .map(|hit| hit.id.clone())
+                        .collect::<Vec<_>>()
+                );
+                assert_eq!(fixture.app.scope, scope);
+                let message = fixture.app.messages.back().unwrap();
+                assert!(message.starts_with(&format!("{} matches", expected.total_matches)));
+                assert_eq!(message.contains("showing first"), expected.truncated);
+                if expected.truncated {
+                    assert!(message.contains(&format!("showing first {}.", expected.hits.len())));
+                }
+                if let Some(id) = ids.first() {
+                    fixture.app.command("open 1");
+                    fixture.finish();
+                    let document = fixture.app.document.as_ref().unwrap();
+                    assert_eq!(&document.id, id);
+                    assert_eq!(
+                        document.source,
+                        fs::read_to_string(fixture.root().join(id)).unwrap()
+                    );
+                    fixture.app.command("back");
+                    assert_eq!(fixture.app.rows.len(), ids.len());
+                    assert!(fixture.app.document.is_none());
+                    assert_eq!(fixture.app.title, format!("SEARCH · {query}"));
+                }
+                fixture.app.command("back");
+                assert_eq!(fixture.app.scope, scope);
+                assert_eq!(link_snapshot(&fixture.root()), before);
+            }
+        }
+    }
+
+    #[test]
+    fn search_default_stays_100_and_literal_limit_text_reaches_core() {
+        let mut fixture = Fixture::new();
+        let original = fs::read_to_string(fixture.root().join(GLOBAL_ID)).unwrap();
+        for number in 0..105 {
+            fs::write(
+                fixture
+                    .root()
+                    .join(format!("Global/entities/limit-{number:03}.md")),
+                original.replace(
+                    "entity: rust-pattern",
+                    &format!("entity: limit-{number:03}"),
+                ),
+            )
+            .unwrap();
+        }
+        fs::write(
+            fixture.root().join(GLOBAL_ID),
+            format!("{original}\nПривет  世界 --limit 5\n"),
+        )
+        .unwrap();
+        let before = link_snapshot(&fixture.root());
+        fixture.app.command("global");
+        for (command, count, message) in [
+            (
+                "search schema_version",
+                100,
+                "106 matches; showing first 100.",
+            ),
+            (
+                "search schema_version --limit 1",
+                1,
+                "106 matches; showing first 1.",
+            ),
+            (
+                "search schema_version --limit 100",
+                100,
+                "106 matches; showing first 100.",
+            ),
+            ("search -- Привет  世界 --limit 5", 1, "1 matches"),
+        ] {
+            fixture.app.command(command);
+            fixture.finish();
+            assert_eq!(fixture.app.rows.len(), count);
+            assert!(fixture.app.messages.back().unwrap().starts_with(message));
+        }
+        assert_eq!(fixture.app.title, "SEARCH · Привет  世界 --limit 5");
+        assert!(matches!(&fixture.app.rows[0].target, Target::Note(id) if id == GLOBAL_ID));
+        assert_eq!(link_snapshot(&fixture.root()), before);
+    }
+
+    #[test]
+    fn search_invalid_limits_and_core_refusal_retain_graph_and_scroll_without_writes() {
+        let mut fixture = Fixture::new();
+        fixture.app.command(&format!("backlinks {ID}"));
+        fixture.finish();
+        fixture.app.scroll = 2;
+        let body = fixture.app.body.clone();
+        let report = fixture.app.link_report.clone();
+        let before = link_snapshot(&fixture.root());
+        for command in [
+            "search core --limit 0",
+            "search-all core --limit 101",
+            "search core --limit",
+            "search core --limit 1 extra",
+        ] {
+            fixture.app.command(command);
+            assert!(fixture.jobs.try_recv().is_err());
+            assert_eq!(fixture.app.body, body);
+            assert_eq!(fixture.app.scroll, 2);
+            assert!(fixture.app.link_report == report);
+        }
+        assert_eq!(link_snapshot(&fixture.root()), before);
+        fixture
+            .app
+            .command(&format!("search {} --limit 1", "x".repeat(257)));
+        fixture.finish();
+        assert!(
+            fixture
+                .app
+                .messages
+                .back()
+                .unwrap()
+                .starts_with("Operation failed:")
+        );
+        assert_eq!(fixture.app.body, body);
+        assert_eq!(fixture.app.scroll, 2);
+        assert!(fixture.app.link_report == report);
+        assert_eq!(link_snapshot(&fixture.root()), before);
+        let journal = fixture
+            .root()
+            .join("Projects/example/.akasha-edit-journal.json");
+        fs::write(&journal, b"Do not parse or recover\xff").unwrap();
+        let interrupted = link_snapshot(&fixture.root());
+        // Existing search checks journals when an operation fails; journal presence
+        // alone is not a new search policy in this option-only slice.
+        fixture
+            .app
+            .command(&format!("search {} --limit 1", "x".repeat(257)));
+        fixture.finish();
+        assert!(fixture.app.recovery_visible && fixture.app.recovery_blocked);
+        assert_eq!(link_snapshot(&fixture.root()), interrupted);
+    }
+
+    #[test]
+    fn search_guards_retain_dirty_undo_forms_reviews_and_busy_work() {
+        let mut fixture = Fixture::new();
+        fixture.open_editor();
+        let response = execute_job(Job::Search(
+            fixture.app.request.clone(),
+            "schema_version".into(),
+            fixture.app.scope.clone(),
+            false,
+            1,
+        ));
+        fixture.app.paste("\nUnsaved Привет 世界");
+        let draft = fixture.app.editor.as_ref().unwrap().source();
+        let before = link_snapshot(&fixture.root());
+        fixture.app.receive(response);
+        assert_eq!(fixture.app.editor.as_ref().unwrap().source(), draft);
+        assert!(fixture.app.editing && fixture.app.dirty());
+        for command in ["search core --limit 1", "search-all core --limit 100"] {
+            fixture.app.command(command);
+            assert!(fixture.jobs.try_recv().is_err());
+        }
+        control(&mut fixture.app, 'z');
+        assert!(!fixture.app.dirty());
+        control(&mut fixture.app, 'y');
+        assert_eq!(fixture.app.editor.as_ref().unwrap().source(), draft);
+        assert_eq!(link_snapshot(&fixture.root()), before);
+        for command in ["create task", "link example repository"] {
+            let mut fixture = Fixture::new();
+            let response = execute_job(Job::Search(
+                fixture.app.request.clone(),
+                "schema_version".into(),
+                fixture.app.scope.clone(),
+                true,
+                1,
+            ));
+            fixture.app.command(command);
+            fixture.finish();
+            let body = fixture.app.body.clone();
+            let before = link_snapshot(&fixture.root());
+            fixture.app.receive(response);
+            fixture.app.command("search core --limit 1");
+            assert!(fixture.jobs.try_recv().is_err());
+            assert!(fixture.app.dirty());
+            assert_eq!(fixture.app.body, body);
+            assert_eq!(link_snapshot(&fixture.root()), before);
+        }
+        let mut fixture = Fixture::new();
+        fixture.app.command("search core --limit 1");
+        fixture.app.command("search-all core --limit 100");
+        fixture.finish();
+        assert!(
+            fixture.jobs.try_recv().is_err(),
+            "busy guard must retain one operation"
+        );
+    }
+
+    #[test]
+    fn search_obsolete_scope_request_and_recovery_replies_retain_current_graph() {
+        for change in [
+            "scope",
+            "root",
+            "project",
+            "cwd",
+            "environment",
+            "config-home",
+            "home",
+            "recovery",
+            "blocked",
+            "editing",
+        ] {
+            let mut fixture = Fixture::new();
+            fixture.app.command(&format!("backlinks {ID}"));
+            fixture.finish();
+            fixture.app.scroll = 2;
+            let body = fixture.app.body.clone();
+            let report = fixture.app.link_report.clone();
+            let response = execute_job(Job::Search(
+                fixture.app.request.clone(),
+                "schema_version".into(),
+                fixture.app.scope.clone(),
+                true,
+                1,
+            ));
+            match change {
+                "scope" => fixture.app.scope = LibraryScope::Global,
+                "root" => fixture.app.request.root_override = None,
+                "project" => fixture.app.request.project_override = None,
+                "cwd" => fixture.app.request.cwd = fixture.temp.join("other"),
+                "environment" => {
+                    fixture.app.request.environment.akasha_root = Some(fixture.temp.clone().into())
+                }
+                "config-home" => {
+                    fixture.app.request.environment.xdg_config_home =
+                        Some(fixture.temp.clone().into())
+                }
+                "home" => fixture.app.request.environment.home = Some(fixture.temp.clone().into()),
+                "recovery" => fixture.app.recovery_visible = true,
+                "blocked" => fixture.app.recovery_blocked = true,
+                "editing" => fixture.app.editing = true,
+                _ => unreachable!(),
+            }
+            let before = link_snapshot(&fixture.root());
+            fixture.app.receive(response);
+            assert_eq!(fixture.app.body, body, "{change}");
+            assert_eq!(fixture.app.scroll, 2, "{change}");
+            assert!(fixture.app.link_report == report, "{change}");
+            assert_eq!(link_snapshot(&fixture.root()), before);
+        }
     }
 
     #[test]
@@ -8009,7 +8394,7 @@ mod tests {
         press(&mut f.app, KeyCode::Enter);
         assert!(f.app.busy);
         assert!(
-            matches!(f.jobs.try_recv().unwrap(), Job::Search(_, query, Some(_)) if query == "Synthetic")
+            matches!(f.jobs.try_recv().unwrap(), Job::Search(_, query, LibraryScope::Project { .. }, false, 100) if query == "Synthetic")
         );
     }
 

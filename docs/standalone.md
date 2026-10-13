@@ -35,3 +35,6 @@ named commands and matching guarded TUI readers. See [status/digest usage](statu
 
 Named `resolve` and terminal `/resolve` inspect the current root/project selection and its
 provenance without changing files. See [resolution inspection](resolution.md).
+
+Named and terminal search share core matching, scopes and exact identities. The terminal now
+accepts explicit 1..100 limits while keeping its 100-hit default. See [search usage](search.md).
