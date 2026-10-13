@@ -2,6 +2,7 @@ import "./styles.css";
 
 import {
   followDocumentLink,
+  followDocumentBacklink,
   inspectRecovery,
   loadDocumentWithRecovery,
   loadLibraryWithRecovery,
@@ -11,6 +12,7 @@ import {
   searchProject,
 } from "./api";
 import { NoteViewer, type ViewerMode } from "./editor";
+import { BacklinkPanel, type BacklinkBinding } from "./backlinks";
 import { renderFallback, renderLocalFallback } from "./fallback";
 import { localAkashaModel } from "./local-akasha-model";
 import { mountLocalAkasha, type LocalNavigation, type LocalSceneHandle } from "./local-akasha-scene";
@@ -32,7 +34,7 @@ import type { SpatialDirection } from "./scene-model";
 import { runtimeProbeEnabled } from "./runtime-metrics";
 import { scheduleRuntimeProbe } from "./runtime-probe";
 import { recoveryProbeEnabled, recoveryProbeRoot, scheduleRecoveryProbe } from "./recovery-probe";
-import type { CommandError, DesktopLibrary, LibraryBook, LibraryDocumentLink, LinkedLibraryDocument, LibrarySearchResult } from "./types";
+import type { CommandError, DesktopLibrary, LibraryBook, LibraryDocumentLink, LinkedLibraryDocument, LibrarySearchResult, NoteLink } from "./types";
 
 const form = required<HTMLFormElement>("library-form");
 const rootInput = required<HTMLInputElement>("root-input");
@@ -88,6 +90,8 @@ const reducedMotion = required<HTMLInputElement>("reduced-motion");
 const modeButtons = [...document.querySelectorAll<HTMLButtonElement>("[data-mode]")];
 
 let viewer: NoteViewer;
+const backlinks = new BacklinkPanel(required<HTMLDetailsElement>("backlinks"),
+  (binding, link, limit) => void activateBacklink(binding, link, limit));
 viewer = new NoteViewer(required<HTMLElement>("note-viewer"), updateEditActions,
   (link) => void activateInlineLink(link));
 
@@ -167,7 +171,7 @@ for (const button of modeButtons) {
 window.addEventListener("keydown", (event) => {
   if (localMode) {
     if (event.key === "Tab" && !noteOverlay.hidden) {
-      const controls = [...noteOverlay.querySelectorAll<HTMLElement>('button:not(:disabled), [tabindex="0"], .cm-content')]
+      const controls = [...noteOverlay.querySelectorAll<HTMLElement>('button:not(:disabled), summary, [tabindex="0"], .cm-content')]
         .filter((node) => node.getClientRects().length > 0);
       const first = controls[0];
       const last = controls.at(-1);
@@ -186,6 +190,7 @@ window.addEventListener("keydown", (event) => {
   if (isTypingTarget(event.target)) {
     return;
   }
+  if (!noteOverlay.hidden && event.key !== "Escape") return;
   if (event.key === "Tab") {
     event.preventDefault();
     toggleDrawer(inventoryPanel, inventoryToggle);
@@ -232,6 +237,7 @@ async function openLibrary(
 ): Promise<void> {
   setStatus("Checking pending recovery and validating through Akasha Core…");
   documentRequest++;
+  backlinks.bind(null);
   clearSearch();
   form.classList.add("is-loading");
   try {
@@ -590,12 +596,39 @@ async function activateInlineLink(link: LibraryDocumentLink): Promise<void> {
   }
 }
 
+async function activateBacklink(binding: BacklinkBinding, link: NoteLink, limit: number): Promise<void> {
+  if (viewer.dirty) { requireDirtyDecision("opening a backlink"); return; }
+  if (!library || !activeResolution || !backlinks.isCurrent(binding) || selectedId !== binding.id) return;
+  const book = allBooks(library.projection).find((book) => book.id === link.id);
+  if (!book) { setStatus("Backlink source is absent from this library. Refresh before retrying.", "error"); return; }
+  if (localMode && (book.scope.kind !== "project" || book.scope.project !== library.projection.selected_project)) {
+    setStatus("This note belongs to the global archive. Switch to Global library to open it.", "warning");
+    return;
+  }
+  const resolution = activeResolution;
+  const request = ++documentRequest;
+  try {
+    const document = await followDocumentBacklink(binding.root, binding.project, binding.id, binding.source, link.id, limit);
+    if (request !== documentRequest || activeResolution !== resolution || !backlinks.isCurrent(binding) || selectedId !== binding.id) return;
+    if (viewer.dirty) { requireDirtyDecision("opening a backlink"); return; }
+    if (viewer.savedSource !== binding.source || viewer.source !== binding.source) return;
+    if (document.id !== link.id) throw new Error("the loaded identity does not match the backlink source");
+    await openBookFromInventory(book, document);
+    setStatus(`Opened ${document.id}.`, "success");
+  } catch (error) {
+    if (request === documentRequest && activeResolution === resolution && backlinks.isCurrent(binding)) {
+      setStatus(`Backlink unavailable: ${errorMessage(error)}`, "error");
+    }
+  }
+}
+
 async function selectBook(book: LibraryBook, loadedDocument?: LinkedLibraryDocument): Promise<void> {
   if (viewer.dirty) {
     requireDirtyDecision("selecting another note");
     return;
   }
   selectedId = book.id;
+  backlinks.bind(null);
   const request = ++documentRequest;
   viewer.setDocument("", false);
   scene?.select(book.id);
@@ -612,6 +645,7 @@ async function selectBook(book: LibraryBook, loadedDocument?: LinkedLibraryDocum
     if (selectedId === requestedId && request === documentRequest) {
       viewer.setDocument(document.source, isEditable(book));
       viewer.setLinks(document.links ?? []);
+      backlinks.bind({ root: resolution.root, project: resolution.project, id: requestedId, source: document.source });
       if (localMode) noteClose.focus();
     }
   } catch (error) {
@@ -628,6 +662,7 @@ function closeNote(): void {
     return;
   }
   noteOverlay.hidden = true;
+  backlinks.bind(null);
   documentRequest++;
   selectedId = null;
   scene?.select(null);
@@ -986,6 +1021,8 @@ function isEditable(book: LibraryBook): boolean {
 }
 
 function updateEditActions(): void {
+  if (!selectedId) backlinks.bind(null);
+  backlinks.setDirty(viewer.dirty);
   saveButton.disabled = !viewer.editable || !viewer.dirty;
   discardButton.disabled = !viewer.dirty;
   editState.textContent = viewer.dirty ? "Unsaved changes" : "";

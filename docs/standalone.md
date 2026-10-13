@@ -19,7 +19,8 @@ and exposes outgoing note identities. The bounded named CLI commands `links NOTE
 `backlinks NOTE` inspect canonical notes and configured project indexes/roadmaps through
 the shared core; see [note-link inspection](note-links.md). The desktop now provides
 [guarded inline navigation](inline-navigation.md) using core-bound occurrences and exact-source
-checks. Interactive backlink panels remain subsequent interface work.
+checks. Its [Backlinks panel](backlinks.md) now shows bounded incoming identities, exact
+totals/coverage and checked canonical source opening while retaining dirty and stale views.
 
 The former REST/MCP bridge, launcher, fallback logger, dedicated credentials and native
 backlink prototype have been removed. Historical development evidence remains archived

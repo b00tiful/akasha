@@ -9,10 +9,10 @@ use std::os::unix::fs::PermissionsExt;
 #[cfg(feature = "runtime-probe")]
 use akasha_desktop::write_runtime_probe_report_file;
 use akasha_desktop::{
-    LocalNavigationState, activate_document_link, library_document_with_recovery,
-    library_projection_with_recovery, linked_library_document_with_recovery,
-    load_local_navigation_file, recovery_inspection, save_library_document,
-    save_local_navigation_file, search_project_library,
+    LocalNavigationState, activate_document_backlink, activate_document_link, document_backlinks,
+    library_document_with_recovery, library_projection_with_recovery,
+    linked_library_document_with_recovery, load_local_navigation_file, recovery_inspection,
+    save_library_document, save_local_navigation_file, search_project_library,
 };
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -130,6 +130,156 @@ fn inline_adapter_refuses_pending_recovery_without_parsing_or_writes() {
         .unwrap_err();
     assert_eq!(error.code, 5);
     assert_eq!(fs::read(&journal).unwrap(), bytes);
+    assert_eq!(fs::read_to_string(root.join(id)).unwrap(), source);
+}
+
+#[test]
+fn backlink_adapter_delegates_bound_inspection_and_checked_book_activation() {
+    let temp = TempDir::new("backlink-inspection");
+    let root = temp.path().join("valid-root");
+    copy_tree(&fixture_root(), &root);
+    fs::create_dir_all(temp.path().join("repository")).unwrap();
+    let id = "Projects/example/entities/core.md";
+    let source = fs::read_to_string(root.join(id)).unwrap();
+    let state = fs::read(root.join("Projects/example/.akasha-state.toml")).unwrap();
+    let request =
+        akasha_core::ResolveRequest::from_process(Some(root.clone()), Some("example".into()))
+            .unwrap();
+    let result =
+        document_backlinks(Some(root.clone()), Some("example".into()), id, &source, 30).unwrap();
+    assert_eq!(
+        result,
+        akasha_core::inspect_library_backlinks(&request, id, &source, 30).unwrap()
+    );
+    assert!(
+        result
+            .links
+            .iter()
+            .any(|link| link.id == "Global/entities/rust-pattern.md")
+    );
+    let target = activate_document_backlink(
+        Some(root.clone()),
+        Some("example".into()),
+        id,
+        &source,
+        "Global/entities/rust-pattern.md",
+        30,
+    )
+    .unwrap();
+    assert_eq!(target.document.id, "Global/entities/rust-pattern.md");
+    for limit in [0, 101] {
+        assert_eq!(
+            document_backlinks(
+                Some(root.clone()),
+                Some("example".into()),
+                id,
+                &source,
+                limit
+            )
+            .unwrap_err()
+            .code,
+            4
+        );
+    }
+    assert_eq!(fs::read_to_string(root.join(id)).unwrap(), source);
+    assert_eq!(
+        fs::read(root.join("Projects/example/.akasha-state.toml")).unwrap(),
+        state
+    );
+}
+
+#[test]
+fn backlink_adapter_refuses_stale_baselines_and_nonbook_sources_without_writes() {
+    let temp = TempDir::new("backlink-stale");
+    let root = temp.path().join("valid-root");
+    copy_tree(&fixture_root(), &root);
+    fs::create_dir_all(temp.path().join("repository")).unwrap();
+    let id = "Projects/example/entities/core.md";
+    let source = fs::read_to_string(root.join(id)).unwrap();
+    let state = fs::read(root.join("Projects/example/.akasha-state.toml")).unwrap();
+    assert_eq!(
+        activate_document_backlink(
+            Some(root.clone()),
+            Some("example".into()),
+            id,
+            &source,
+            "Projects/example/index.md",
+            30
+        )
+        .unwrap_err()
+        .code,
+        4
+    );
+    save_library_document(
+        Some(root.clone()),
+        Some("example".into()),
+        id,
+        &source,
+        &format!("{source}\nFresh source.\n"),
+    )
+    .unwrap();
+    let fresh_state = fs::read(root.join("Projects/example/.akasha-state.toml")).unwrap();
+    assert_eq!(
+        document_backlinks(Some(root.clone()), Some("example".into()), id, &source, 30)
+            .unwrap_err()
+            .code,
+        5
+    );
+    assert_eq!(
+        activate_document_backlink(
+            Some(root.clone()),
+            Some("example".into()),
+            id,
+            &source,
+            "Global/entities/rust-pattern.md",
+            30
+        )
+        .unwrap_err()
+        .code,
+        5
+    );
+    assert_eq!(
+        fs::read_to_string(root.join(id)).unwrap(),
+        format!("{source}\nFresh source.\n")
+    );
+    assert_ne!(fresh_state, state);
+    assert_eq!(
+        fs::read(root.join("Projects/example/.akasha-state.toml")).unwrap(),
+        fresh_state
+    );
+}
+
+#[test]
+fn backlink_adapter_refuses_pending_journals_without_recovery() {
+    let temp = TempDir::new("backlink-journal");
+    let root = temp.path().join("valid-root");
+    copy_tree(&fixture_root(), &root);
+    fs::create_dir_all(temp.path().join("repository")).unwrap();
+    let id = "Projects/example/entities/core.md";
+    let source = fs::read_to_string(root.join(id)).unwrap();
+    let journal = root.join("Projects/example/.akasha-edit-journal.json");
+    let bytes = b"unfinished; never recover";
+    fs::write(&journal, bytes).unwrap();
+    assert_eq!(
+        document_backlinks(Some(root.clone()), Some("example".into()), id, &source, 30)
+            .unwrap_err()
+            .code,
+        5
+    );
+    assert_eq!(
+        activate_document_backlink(
+            Some(root.clone()),
+            Some("example".into()),
+            id,
+            &source,
+            "Global/entities/rust-pattern.md",
+            30
+        )
+        .unwrap_err()
+        .code,
+        5
+    );
+    assert_eq!(fs::read(journal).unwrap(), bytes);
     assert_eq!(fs::read_to_string(root.join(id)).unwrap(), source);
 }
 

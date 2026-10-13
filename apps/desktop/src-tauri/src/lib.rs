@@ -9,10 +9,11 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use akasha_core::{
     LibraryDocument, LibraryProjection, LibraryScope, LibrarySearchResult, LinkedLibraryDocument,
-    NoteEditRecovery, NoteEditResult, PendingNoteEditInspection, ResolveRequest,
-    activate_library_document_link, build_library_projection, inspect_pending_note_edit,
-    load_library_document, load_linked_library_document, recover_pending_note_edit,
-    render_library_markdown, replace_library_document, search_library,
+    NoteEditRecovery, NoteEditResult, NoteLinksResult, PendingNoteEditInspection, ResolveRequest,
+    activate_library_backlink, activate_library_document_link, build_library_projection,
+    inspect_library_backlinks, inspect_pending_note_edit, load_library_document,
+    load_linked_library_document, recover_pending_note_edit, render_library_markdown,
+    replace_library_document, search_library,
 };
 use serde::{Deserialize, Serialize};
 
@@ -312,6 +313,38 @@ pub fn activate_document_link(
     })
 }
 
+/// Read-only panel inspection bound to the loaded canonical source.
+pub fn document_backlinks(
+    root: Option<PathBuf>,
+    project: Option<String>,
+    id: &str,
+    expected_source: &str,
+    limit: usize,
+) -> Result<NoteLinksResult, DesktopError> {
+    let request = request(root, project)?;
+    inspect_library_backlinks(&request, id, expected_source, limit).map_err(|error| DesktopError {
+        code: error.exit_code(),
+        message: error.to_string(),
+    })
+}
+
+pub fn activate_document_backlink(
+    root: Option<PathBuf>,
+    project: Option<String>,
+    id: &str,
+    expected_source: &str,
+    source_id: &str,
+    limit: usize,
+) -> Result<LinkedLibraryDocument, DesktopError> {
+    let request = request(root, project)?;
+    activate_library_backlink(&request, id, expected_source, source_id, limit).map_err(|error| {
+        DesktopError {
+            code: error.exit_code(),
+            message: error.to_string(),
+        }
+    })
+}
+
 pub fn search_project_library(
     root: Option<PathBuf>,
     project: String,
@@ -415,6 +448,31 @@ fn follow_document_link(
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
+fn inspect_document_backlinks(
+    root: Option<PathBuf>,
+    project: Option<String>,
+    id: String,
+    expected_source: String,
+    limit: usize,
+) -> Result<NoteLinksResult, DesktopError> {
+    document_backlinks(root, project, &id, &expected_source, limit)
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn follow_document_backlink(
+    root: Option<PathBuf>,
+    project: Option<String>,
+    id: String,
+    expected_source: String,
+    source_id: String,
+    limit: usize,
+) -> Result<LinkedLibraryDocument, DesktopError> {
+    activate_document_backlink(root, project, &id, &expected_source, &source_id, limit)
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
 fn save_document(
     root: Option<PathBuf>,
     project: Option<String>,
@@ -510,6 +568,8 @@ pub fn run() {
         load_document_with_recovery,
         load_linked_document_with_recovery,
         follow_document_link,
+        inspect_document_backlinks,
+        follow_document_backlink,
         search_project,
         save_document,
         load_local_navigation,
@@ -523,6 +583,8 @@ pub fn run() {
         load_document_with_recovery,
         load_linked_document_with_recovery,
         follow_document_link,
+        inspect_document_backlinks,
+        follow_document_backlink,
         search_project,
         save_document,
         load_local_navigation,

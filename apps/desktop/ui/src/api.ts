@@ -6,6 +6,7 @@ import type {
   LibrarySearchResult,
   LocalNavigationState,
   NoteEditResult,
+  NoteLinksResult,
   PendingNoteEditInspection,
 } from "./types";
 
@@ -60,6 +61,24 @@ export function searchProject(
     root: optional(root),
     project,
     query,
+  });
+}
+
+/** Saved-file inspection bound to the displayed baseline; never recovers or writes. */
+export function inspectDocumentBacklinks(
+  root: string, project: string, id: string, expectedSource: string, limit: number,
+): Promise<NoteLinksResult> {
+  return invoke<NoteLinksResult>("inspect_document_backlinks", {
+    root: optional(root), project: optional(project), id, expectedSource, limit,
+  });
+}
+
+/** Revalidates the displayed baseline and incoming edge; loads only a canonical book. */
+export function followDocumentBacklink(
+  root: string, project: string, id: string, expectedSource: string, sourceId: string, limit: number,
+): Promise<LinkedLibraryDocument> {
+  return invoke<LinkedLibraryDocument>("follow_document_backlink", {
+    root: optional(root), project: optional(project), id, expectedSource, sourceId, limit,
   });
 }
 

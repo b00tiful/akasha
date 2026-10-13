@@ -40,7 +40,8 @@ These commands perform no recovery or writes and do not read editor drafts. Each
 validates current saved data, without a cache or atomic filesystem snapshot. Later document
 navigation must still validate the identity and respect dirty-editor guards. The desktop's
 [inline activation](inline-navigation.md) now supplies source-bound core checks and keeps
-non-book targets visibly unavailable. Interactive backlink panels remain subsequent work.
+non-book targets visibly unavailable. The [desktop Backlinks panel](backlinks.md) adds bounded
+incoming inspection and baseline/edge-checked canonical opening in the shared note inspector.
 
 Plain output replaces control characters in displayed identities with spaces. Opt-in JSON
 preserves exact identities as escaped data. Akasha needs no external editor, plugin or model

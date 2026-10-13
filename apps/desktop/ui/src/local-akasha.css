@@ -88,6 +88,8 @@
 .is-local .inspector-heading { flex-wrap: wrap; gap: .6em; }
 .is-local .inspector-heading > div:first-child { display: none; }
 .is-local .mode-tabs, .is-local .edit-actions { font-size: .8em; }
+.is-local .book-sidebar { max-height: 17em; border-right: 0; }
+.is-local .backlink-panel { max-height: 10em; }
 .is-local .book-meta { max-height: 7.5em; border-right: 0; border-bottom: 1px solid #373139; padding: .8em 0; font-size: .8em; }
 .is-local .book-meta p { margin-bottom: .4em; }
 .local-reduced-motion *, .reduced-motion .local-akasha * { transition: none !important; animation: none !important; }

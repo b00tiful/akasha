@@ -102,6 +102,21 @@ export interface LinkedLibraryDocument extends LibraryDocument {
   links: LibraryDocumentLink[];
 }
 
+export interface NoteLink {
+  id: string;
+  kind: LibraryDocumentLink["kind"];
+}
+
+export interface NoteLinksResult {
+  note: string;
+  direction: "incoming" | "outgoing";
+  scanned_canonical_notes: number;
+  scanned_projections: number;
+  total_matches: number;
+  truncated: boolean;
+  links: NoteLink[];
+}
+
 export interface LibrarySearchHit {
   id: string;
   label: string;

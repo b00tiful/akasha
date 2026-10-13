@@ -1296,6 +1296,32 @@ kbd {
   animation: materialize 260ms steps(5);
 }
 
+.book-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  border-right: 1px solid rgba(232, 227, 216, 0.24);
+}
+
+.backlink-panel {
+  flex: 0 1 auto;
+  min-height: 2.8em;
+  max-height: 55%;
+  overflow: auto;
+  padding: 0.6em 1em;
+  border-top: 1px solid var(--dim);
+  font-size: 0.75em;
+}
+
+.backlink-panel summary { cursor: pointer; }
+.backlink-panel summary:focus-visible { outline: 1px solid var(--purple); }
+.backlink-controls { display: flex; gap: 0.6em; margin-top: 0.6em; }
+.backlink-panel p { margin: 0.5em 0; color: var(--dim); }
+.backlink-list { margin: 0.5em 0; padding-left: 1.5em; }
+.backlink-list li { margin: 0.4em 0; overflow-wrap: anywhere; }
+.backlink-list button { text-align: left; overflow-wrap: anywhere; max-width: 100%; }
+
 .note-book {
   position: relative;
   display: grid;
@@ -1348,9 +1374,9 @@ kbd {
 }
 
 .book-meta {
+  flex: 1 1 auto;
   overflow: auto;
   padding: 1.2em;
-  border-right: 1px solid rgba(232, 227, 216, 0.24);
   color: var(--dim);
   line-height: 1.55;
 }

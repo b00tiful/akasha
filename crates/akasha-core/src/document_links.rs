@@ -8,7 +8,10 @@ use crate::library::{
     LibraryDocument, LibraryProjection, build_library_projection, document_from_projection,
     vault_id,
 };
-use crate::note_links::{NoteLinkKind, NoteLinksError, refuse_pending_journals};
+use crate::note_links::{
+    NoteLinkDirection, NoteLinkKind, NoteLinksError, NoteLinksResult, inspect_note_links,
+    refuse_pending_journals,
+};
 use crate::project_validation::{ProjectValidationError, wikilink_target_path};
 use crate::resolution::{ResolveRequest, load_project_registry, load_root_config, resolve_project};
 use crate::validation::{ValidationError, parse_leading_frontmatter};
@@ -79,6 +82,64 @@ pub fn activate_library_document_link(
     }
     refuse_pending_journals(&requests)?;
     Ok(target)
+}
+
+/// Inspect incoming saved-file edges, bound to the displayed canonical document.
+pub fn inspect_library_backlinks(
+    request: &ResolveRequest,
+    id: &str,
+    expected_source: &str,
+    limit: usize,
+) -> Result<NoteLinksResult, NoteLinksError> {
+    let (projection, requests) = checked_projection(request)?;
+    check_baseline(&projection, id, expected_source)?;
+    let result = inspect_note_links(request, id, NoteLinkDirection::Incoming, limit)?;
+    check_baseline(&projection, id, expected_source)?;
+    refuse_pending_journals(&requests)?;
+    Ok(result)
+}
+
+/// Revalidate the incoming edge and displayed source before opening a canonical source book.
+/// The chosen source must still be in the current bounded result. Never recover or write.
+pub fn activate_library_backlink(
+    request: &ResolveRequest,
+    id: &str,
+    expected_source: &str,
+    source_id: &str,
+    limit: usize,
+) -> Result<LinkedLibraryDocument, NoteLinksError> {
+    let (projection, requests) = checked_projection(request)?;
+    check_baseline(&projection, id, expected_source)?;
+    let result = inspect_note_links(request, id, NoteLinkDirection::Incoming, limit)?;
+    if !result
+        .links
+        .iter()
+        .any(|link| link.id == source_id && link.kind == NoteLinkKind::Canonical)
+    {
+        return Err(invalid_link(
+            id,
+            "the requested source is not a canonical backlink in the current bounded result",
+        )
+        .into());
+    }
+    let document = linked_document(&projection, source_id)?;
+    if !document.links.iter().any(|link| link.target_id == id) {
+        return Err(invalid_link(id, "the incoming edge changed while loading its source").into());
+    }
+    check_baseline(&projection, id, expected_source)?;
+    refuse_pending_journals(&requests)?;
+    Ok(document)
+}
+
+fn check_baseline(
+    projection: &LibraryProjection,
+    id: &str,
+    expected_source: &str,
+) -> Result<(), NoteLinksError> {
+    if document_from_projection(projection, id)?.source != expected_source {
+        return Err(NoteLinksError::StaleSource(id.to_owned()));
+    }
+    Ok(())
 }
 
 fn checked_projection(
