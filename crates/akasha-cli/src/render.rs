@@ -766,53 +766,67 @@ pub(crate) fn render_entity_update(
 }
 
 pub(crate) fn render_resolution(resolved: &ResolvedProject, output: OutputMode) -> io::Result<()> {
-    let mut rendered = String::new();
     if output.json {
-        rendered = json_line(serde_json::to_string_pretty(resolved))?;
+        write_stdout(&json_line(serde_json::to_string_pretty(resolved))?)
     } else {
-        print_field(&mut rendered, "root", resolved.root.display(), output);
-        print_field(
-            &mut rendered,
-            "root source",
-            root_source_name(resolved.root_source),
-            output,
-        );
-        print_field(&mut rendered, "project", &resolved.project, output);
-        print_field(
-            &mut rendered,
-            "project source",
-            project_source_name(resolved.project_source),
-            output,
-        );
-        match &resolved.pointer {
-            Some(pointer) => print_field(&mut rendered, "pointer", pointer.display(), output),
-            None => print_field(
-                &mut rendered,
-                "pointer",
-                "none (project selected explicitly)",
-                output,
-            ),
-        }
-        print_field(
-            &mut rendered,
-            "registry",
-            resolved.registry.display(),
-            output,
-        );
-        print_field(
-            &mut rendered,
-            "repository",
-            resolved.repository_dir.display(),
-            output,
-        );
-        print_field(
-            &mut rendered,
-            "project directory",
-            resolved.project_dir.display(),
-            output,
-        );
+        write_stdout(&resolution_text_with_mode(resolved, output))
     }
-    write_stdout(&rendered)
+}
+
+pub(crate) fn resolution_text(resolved: &ResolvedProject) -> String {
+    resolution_text_with_mode(
+        resolved,
+        OutputMode {
+            json: false,
+            color: false,
+        },
+    )
+}
+
+fn resolution_text_with_mode(resolved: &ResolvedProject, output: OutputMode) -> String {
+    let mut rendered = String::new();
+    print_field(&mut rendered, "root", resolved.root.display(), output);
+    print_field(
+        &mut rendered,
+        "root source",
+        root_source_name(resolved.root_source),
+        output,
+    );
+    print_field(&mut rendered, "project", &resolved.project, output);
+    print_field(
+        &mut rendered,
+        "project source",
+        project_source_name(resolved.project_source),
+        output,
+    );
+    match &resolved.pointer {
+        Some(pointer) => print_field(&mut rendered, "pointer", pointer.display(), output),
+        None => print_field(
+            &mut rendered,
+            "pointer",
+            "none (project selected explicitly)",
+            output,
+        ),
+    }
+    print_field(
+        &mut rendered,
+        "registry",
+        resolved.registry.display(),
+        output,
+    );
+    print_field(
+        &mut rendered,
+        "repository",
+        resolved.repository_dir.display(),
+        output,
+    );
+    print_field(
+        &mut rendered,
+        "project directory",
+        resolved.project_dir.display(),
+        output,
+    );
+    rendered
 }
 
 pub(crate) fn render_validation(

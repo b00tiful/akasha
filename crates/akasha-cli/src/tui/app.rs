@@ -249,6 +249,11 @@ const COMMANDS: &[Completion] = &[
         argument: "[--limit N]",
         description: "Cross-project metrics by latest canonical note date",
     },
+    Completion {
+        command: "resolve",
+        argument: "",
+        description: "Inspect current root, project and pointer selection",
+    },
 ];
 
 fn prompt_area_with_placeholder(text: String, placeholder: &str) -> TextArea<'static> {
@@ -262,7 +267,7 @@ fn prompt_area(text: String) -> TextArea<'static> {
     prompt_area_with_placeholder(text, PROMPT_PLACEHOLDER)
 }
 
-pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nsetup PATH      review a new private data root (first run)\nonboard         prepare external-agent onboarding instructions\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to report / previous list\nfollow NUMBER   open a bound canonical graph result\nlinks [NOTE] [--limit N]\n                saved outgoing files (open note by default)\nbacklinks [NOTE] [--limit N]\n                saved incoming files; 30 default, 1..100 explicit\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       edit and review the open record/entity and its projection\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\nstatus [--limit N]\n                all-project metrics; 30 default, 1..100 explicit\ndigest [--limit N]\n                all-project metrics by latest canonical note date\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff         guided multiline handoff authoring and exact review\nhandoff PATH | NAME=VALUE | ...\n                inline capture from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE      guided multiline event authoring and exact review\nevent TYPE PATH | NAME=VALUE | ...\n                inline configured immutable event creation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\ninit PROJECT [REPOSITORY]\n                review an empty project scaffold and registry update\nlink PROJECT [REPOSITORY]\n                review an exclusive repository pointer creation\nconfirm PLAN_ID authorize the displayed administration plan\nrecovery        inspect note journal presence without writing; Esc returns\nrecover-init    review root initialization recovery; confirm PLAN_ID applies\nrefresh         retry core recovery and reload validated data (F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and lifecycle forms show exact configured templates and\nmaintained projections. Creation and lifecycle use Ctrl-N to review the exact note and projection\nbefore Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. All guided template fields support multiline text;\nCtrl-N/Ctrl-P navigate and Ctrl-S publishes only after exact source review.\nIntegration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nFirst run: /setup PATH, /confirm PLAN_ID, /init PROJECT [REPOSITORY], then /onboard.\nOtherwise open from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
+pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nsetup PATH      review a new private data root (first run)\nonboard         prepare external-agent onboarding instructions\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to report / previous list\nfollow NUMBER   open a bound canonical graph result\nlinks [NOTE] [--limit N]\n                saved outgoing files (open note by default)\nbacklinks [NOTE] [--limit N]\n                saved incoming files; 30 default, 1..100 explicit\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       edit and review the open record/entity and its projection\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\nstatus [--limit N]\n                all-project metrics; 30 default, 1..100 explicit\ndigest [--limit N]\n                all-project metrics by latest canonical note date\nresolve         inspect root, project and pointer selection\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff         guided multiline handoff authoring and exact review\nhandoff PATH | NAME=VALUE | ...\n                inline capture from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE      guided multiline event authoring and exact review\nevent TYPE PATH | NAME=VALUE | ...\n                inline configured immutable event creation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\ninit PROJECT [REPOSITORY]\n                review an empty project scaffold and registry update\nlink PROJECT [REPOSITORY]\n                review an exclusive repository pointer creation\nconfirm PLAN_ID authorize the displayed administration plan\nrecovery        inspect note journal presence without writing; Esc returns\nrecover-init    review root initialization recovery; confirm PLAN_ID applies\nrefresh         retry core recovery and reload validated data (F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and lifecycle forms show exact configured templates and\nmaintained projections. Creation and lifecycle use Ctrl-N to review the exact note and projection\nbefore Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. All guided template fields support multiline text;\nCtrl-N/Ctrl-P navigate and Ctrl-S publishes only after exact source review.\nIntegration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nFirst run: /setup PATH, /confirm PLAN_ID, /init PROJECT [REPOSITORY], then /onboard.\nOtherwise open from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Focus {
@@ -371,6 +376,7 @@ pub(super) enum Job {
     Search(ResolveRequest, String, Option<LibraryScope>),
     Context(ResolveRequest),
     Breadcrumb(ResolveRequest),
+    Resolve(ResolveRequest),
     LibraryReport(ResolveRequest, akasha_core::LibraryReportKind, usize),
     NoteLinks(ResolveRequest, String, NoteLinkDirection, usize, bool),
     FollowLink(ResolveRequest, Box<LinkReport>, usize, u16),
@@ -424,6 +430,7 @@ pub(super) enum Response {
     Found(LibrarySearchResult),
     NoteLinks(LinkReport),
     LibraryReport(akasha_core::LibraryReport),
+    Resolved(ResolveRequest, Box<akasha_core::ResolvedProject>),
     LinkFollowed(Box<(LinkReport, u16, LibraryDocument)>),
     Text(String, String),
     Saved(String),
@@ -616,6 +623,9 @@ fn execute_job_inner(job: Job) -> WorkResult {
             .map_err(|e| err(&e)),
         Job::LibraryReport(request, kind, limit) => akasha_core::inspect_library_report(&request, kind, limit)
             .map(Response::LibraryReport).map_err(|error| err(&error)),
+        Job::Resolve(request) => akasha_core::resolve_project(&request)
+            .map(|resolved| Response::Resolved(request, Box::new(resolved)))
+            .map_err(|error| err(&error)),
         // Keep read-only inspection failures in the current view. In particular,
         // do not route pending journals through a recovery/load response.
         Job::NoteLinks(request, id, direction, limit, canonical) => LinkReport::inspect(&request, &id, direction, limit, canonical)
@@ -2044,6 +2054,7 @@ impl App {
             Err(_)
                 | Ok(Response::NoteLinks(_)
                     | Response::LibraryReport(_)
+                    | Response::Resolved(..)
                     | Response::LinkFollowed(_)
                     | Response::Checked(_)
                     | Response::Saved(_)
@@ -2398,6 +2409,34 @@ impl App {
                 }
                 .into();
                 self.body = crate::render::library_report_text(&report);
+                self.scroll = 0;
+                self.document = None;
+                self.editor = None;
+                self.editing = false;
+                self.focus = Focus::Reader;
+            }
+            Ok(Response::Resolved(request, resolved)) => {
+                if self.dirty() || self.editing || self.recovery_visible || self.recovery_blocked {
+                    self.message("Resolution finished; unfinished work or recovery view retained. Retry after resolving it.");
+                    return true;
+                }
+                if request.root_override != self.request.root_override
+                    || request.project_override != self.request.project_override
+                    || request.cwd != self.request.cwd
+                    || request.environment.akasha_root != self.request.environment.akasha_root
+                    || request.environment.xdg_config_home
+                        != self.request.environment.xdg_config_home
+                    || request.environment.home != self.request.environment.home
+                {
+                    self.message(
+                        "Resolution reply is obsolete; current view retained. Inspect again.",
+                    );
+                    return true;
+                }
+                self.link_report = None;
+                self.link_return = None;
+                self.body_title = "PROJECT RESOLUTION".into();
+                self.body = crate::render::resolution_text(&resolved);
                 self.scroll = 0;
                 self.document = None;
                 self.editor = None;
@@ -2854,6 +2893,8 @@ impl App {
                 ));
             }
             "context" => self.submit(Job::Context(self.request.clone())),
+            "resolve" if !argument.is_empty() => self.message("Usage: /resolve"),
+            "resolve" => self.submit(Job::Resolve(self.request.clone())),
             "status" | "digest" => {
                 let limit = if argument.is_empty() {
                     Some(akasha_core::DEFAULT_LIBRARY_REPORT_LIMIT)
@@ -6135,6 +6176,206 @@ mod tests {
             }
         }
         assert_eq!(link_snapshot(&fixture.root()), before);
+    }
+
+    #[test]
+    fn resolution_inspection_discovery_provenance_and_pending_note_journal_are_read_only() {
+        let mut fixture = Fixture::new();
+        fixture.app.focus = Focus::Prompt;
+        fixture.app.prompt = prompt_area("/resolve".into());
+        fixture.app.prompt_changed();
+        assert_eq!(fixture.app.completions()[0].command, "resolve");
+        for argument in ["example", "--root /tmp", "--json"] {
+            fixture.app.command(&format!("resolve {argument}"));
+            assert!(!fixture.app.busy && fixture.jobs.try_recv().is_err());
+            assert!(
+                fixture
+                    .app
+                    .messages
+                    .back()
+                    .unwrap()
+                    .contains("Usage: /resolve")
+            );
+        }
+        let journal = fixture
+            .root()
+            .join("Projects/example")
+            .join(akasha_core::NOTE_EDIT_JOURNAL_FILE);
+        fs::write(&journal, b"retained pending note transaction").unwrap();
+        let before = link_snapshot(&fixture.temp);
+        fixture.app.command("resolve");
+        fixture.finish();
+        let resolved = akasha_core::resolve_project(&fixture.app.request).unwrap();
+        assert_eq!(fixture.app.body, crate::render::resolution_text(&resolved));
+        assert_eq!(fixture.app.body_title, "PROJECT RESOLUTION");
+        assert!(fixture.app.body.contains("project source: command-line\n"));
+        assert!(
+            fixture
+                .app
+                .body
+                .contains("pointer: none (project selected explicitly)\n")
+        );
+        assert!(fixture.app.document.is_none() && fixture.app.editor.is_none());
+        assert_eq!(link_snapshot(&fixture.temp), before);
+        fixture.app.command("back");
+        assert_eq!(fixture.app.body_title, "WELCOME TO AKASHA");
+
+        let repository = fixture.temp.join("repository");
+        fs::create_dir(repository.join("nested")).unwrap();
+        let pointer = repository.join(".akasha.toml");
+        fs::write(&pointer, b"schema_version = 1\nproject = \"example\"\n").unwrap();
+        fixture.app.request.project_override = None;
+        fixture.app.request.cwd = repository.join("nested");
+        fixture.app.request.environment.akasha_root = Some(fixture.root().into_os_string());
+        fixture.app.request.root_override = None;
+        let before = link_snapshot(&fixture.temp);
+        fixture.app.command("resolve");
+        fixture.finish();
+        assert!(fixture.app.body.contains("root source: environment\n"));
+        assert!(fixture.app.body.contains("project source: pointer\n"));
+        assert!(
+            fixture
+                .app
+                .body
+                .contains(&format!("pointer: {}\n", pointer.display()))
+        );
+        assert_eq!(link_snapshot(&fixture.temp), before);
+    }
+
+    #[test]
+    fn resolution_inspection_guards_and_delayed_replies_retain_editors_forms_and_reviews() {
+        let mut fixture = Fixture::new();
+        fixture.open_editor();
+        for dirty in [false, true] {
+            if dirty {
+                fixture.app.paste("\nRetained draft 世界  \n");
+            }
+            let draft = fixture.app.editor.as_ref().unwrap().source();
+            let response = execute_job(Job::Resolve(fixture.app.request.clone()));
+            fixture.app.receive(response);
+            assert_eq!(fixture.app.editor.as_ref().unwrap().source(), draft);
+            assert!(fixture.app.editing);
+            if dirty {
+                fixture.app.command("resolve");
+                assert!(fixture.jobs.try_recv().is_err());
+            }
+        }
+        fixture.app.command("discard");
+        fixture.app.command("create task");
+        fixture.finish();
+        let body = fixture.app.body.clone();
+        fixture.app.command("resolve");
+        assert!(fixture.jobs.try_recv().is_err());
+        let response = execute_job(Job::Resolve(fixture.app.request.clone()));
+        fixture.app.receive(response);
+        assert!(fixture.app.in_workflow() && fixture.app.body == body);
+        fixture.app.command("discard");
+        fixture.app.command(&format!(
+            "link example {}",
+            fixture.temp.join("repository").display()
+        ));
+        fixture.finish();
+        assert!(fixture.app.reviewing_administration());
+        let body = fixture.app.body.clone();
+        let before = link_snapshot(&fixture.temp);
+        fixture.app.command("resolve");
+        assert!(fixture.jobs.try_recv().is_err());
+        let response = execute_job(Job::Resolve(fixture.app.request.clone()));
+        fixture.app.receive(response);
+        assert!(fixture.app.reviewing_administration() && fixture.app.body == body);
+        fixture.app.command("discard");
+        fixture.app.command("resolve");
+        fixture.app.command("resolve");
+        fixture.finish();
+        assert!(fixture.jobs.try_recv().is_err());
+        assert_eq!(link_snapshot(&fixture.temp), before);
+    }
+
+    #[test]
+    fn resolution_inspection_errors_retain_graph_bindings_without_recovery_or_writes() {
+        let mut fixture = Fixture::new();
+        fixture.app.command(&format!("links {ID}"));
+        fixture.finish();
+        let body = fixture.app.body.clone();
+        let report = fixture.app.link_report.clone();
+        let config = fixture.root().join("akasha.toml");
+        let source = fs::read(&config).unwrap();
+        for failure in ["unknown", "malformed", "setup"] {
+            match failure {
+                "unknown" => fixture.app.request.project_override = Some("missing".into()),
+                "malformed" => fs::write(&config, b"malformed [").unwrap(),
+                "setup" => {
+                    fs::write(fixture.root().join(".akasha-setup.json"), b"pending setup").unwrap()
+                }
+                _ => unreachable!(),
+            }
+            let before = link_snapshot(&fixture.temp);
+            fixture.app.command("resolve");
+            fixture.finish();
+            assert_eq!(fixture.app.body, body);
+            assert!(fixture.app.link_report == report);
+            assert!(!fixture.app.recovery_visible && !fixture.app.recovery_blocked);
+            assert!(
+                fixture
+                    .app
+                    .messages
+                    .back()
+                    .unwrap()
+                    .starts_with("Operation failed:")
+            );
+            assert_eq!(link_snapshot(&fixture.temp), before);
+            fixture.app.request.project_override = Some("example".into());
+            fs::write(&config, &source).unwrap();
+        }
+    }
+
+    #[test]
+    fn resolution_inspection_obsolete_requests_and_recovery_retain_graph_and_scroll() {
+        let mut fixture = Fixture::new();
+        fixture.app.command(&format!("links {ID}"));
+        fixture.finish();
+        let body = fixture.app.body.clone();
+        let report = fixture.app.link_report.clone();
+        let original = fixture.app.request.clone();
+        let before = link_snapshot(&fixture.temp);
+        for field in 0..6 {
+            fixture.app.request = original.clone();
+            let response = execute_job(Job::Resolve(original.clone()));
+            match field {
+                0 => fixture.app.request.root_override = Some("/obsolete".into()),
+                1 => fixture.app.request.project_override = Some("obsolete".into()),
+                2 => fixture.app.request.cwd = "/obsolete".into(),
+                3 => fixture.app.request.environment.akasha_root = Some("/obsolete".into()),
+                4 => fixture.app.request.environment.xdg_config_home = Some("/obsolete".into()),
+                5 => fixture.app.request.environment.home = Some("/obsolete".into()),
+                _ => unreachable!(),
+            }
+            fixture.app.scroll = 7;
+            fixture.app.receive(response);
+            assert_eq!(fixture.app.body, body);
+            assert!(fixture.app.link_report == report && fixture.app.scroll == 7);
+            assert!(fixture.app.messages.back().unwrap().contains("obsolete"));
+        }
+        fixture.app.request = original;
+        for blocked in [false, true] {
+            fixture.app.recovery_visible = true;
+            fixture.app.recovery_blocked = blocked;
+            let response = execute_job(Job::Resolve(fixture.app.request.clone()));
+            fixture.app.receive(response);
+            assert_eq!(fixture.app.body, body);
+            assert!(fixture.app.link_report == report && fixture.app.scroll == 7);
+            if blocked {
+                fixture.app.command("resolve");
+                assert!(fixture.jobs.try_recv().is_err());
+            }
+        }
+        fixture.app.recovery_visible = false;
+        fixture.app.recovery_blocked = false;
+        fixture.app.command("resolve");
+        fixture.finish();
+        assert!(!fixture.app.has_link_report() && fixture.app.link_return.is_none());
+        assert_eq!(fixture.app.scroll, 0);
+        assert_eq!(link_snapshot(&fixture.temp), before);
     }
 
     #[test]

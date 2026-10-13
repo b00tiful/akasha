@@ -32,3 +32,6 @@ in private project memory and is not an installation procedure.
 
 Cross-project `status` and `digest` provide bounded shared-core dashboard metrics, with plain/JSON
 named commands and matching guarded TUI readers. See [status/digest usage](status-digest.md).
+
+Named `resolve` and terminal `/resolve` inspect the current root/project selection and its
+provenance without changing files. See [resolution inspection](resolution.md).

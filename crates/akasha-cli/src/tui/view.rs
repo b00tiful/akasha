@@ -889,7 +889,11 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
             || app.lifecycle_review().is_some()
             || matches!(
                 app.body_title.as_str(),
-                "NOTE LINKS" | "NOTE BACKLINKS" | "CROSS-PROJECT STATUS" | "CROSS-PROJECT DIGEST"
+                "NOTE LINKS"
+                    | "NOTE BACKLINKS"
+                    | "CROSS-PROJECT STATUS"
+                    | "CROSS-PROJECT DIGEST"
+                    | "PROJECT RESOLUTION"
             ) {
             Text::from(safe_text(&source))
         } else {
@@ -1092,10 +1096,11 @@ mod tests {
         for (width, height) in [(40, 12), (80, 24), (120, 38)] {
             let mut app = test_app();
             app.paste("/");
+            let last_command = app.completions().last().unwrap().command.clone();
             app.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|f| draw(f, &mut app)).unwrap();
-            assert!(screen(&terminal).contains("/quit"));
+            assert!(screen(&terminal).contains(&format!("/{last_command}")));
             app.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
             app.paste("search Привет 世界");
             let before = app.prompt.lines().to_vec();
@@ -1230,6 +1235,68 @@ mod tests {
                 app.hits
                     .iter()
                     .any(|(_, hit)| matches!(hit, Action::Command("back")))
+            );
+            app.command("back");
+            assert_eq!(app.body_title, "WELCOME TO AKASHA");
+        }
+    }
+
+    #[test]
+    fn resolution_inspection_is_literal_scrollable_and_safe_at_compact_sizes() {
+        use super::super::app::Response;
+        use akasha_core::{ProjectSource, ResolvedProject, RootSource};
+        // A real terminal consumes continuation cells when drawing a wide symbol.
+        // TestBackend can retain their previous-frame bytes; do not observe those bytes.
+        fn glyph_screen(terminal: &Terminal<TestBackend>) -> String {
+            let buffer = terminal.backend().buffer();
+            let mut text = String::new();
+            for row in buffer.content.chunks(usize::from(buffer.area.width)) {
+                let mut continuation = 0;
+                for cell in row {
+                    if continuation > 0 {
+                        continuation -= 1;
+                        continue;
+                    }
+                    text.push_str(cell.symbol());
+                    continuation = ratatui::text::Span::raw(cell.symbol())
+                        .width()
+                        .saturating_sub(1);
+                }
+                text.push('\n');
+            }
+            text
+        }
+        for (width, height) in [(40, 12), (80, 24), (120, 38)] {
+            let mut app = test_app();
+            app.receive(Ok(Response::Resolved(
+                app.request.clone(),
+                Box::new(ResolvedProject {
+                    root: "/tmp\n#literal\n---\u{1b}[2J".into(),
+                    root_source: RootSource::Environment,
+                    project: "example".into(),
+                    project_source: ProjectSource::Pointer,
+                    pointer: Some("/tmp/Привет 世界/.akasha.toml".into()),
+                    registry: "/tmp/Meta/projects.yaml".into(),
+                    repository_dir: "/tmp/Привет 世界".into(),
+                    project_dir: "/tmp/Projects/example".into(),
+                }),
+            )));
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let mut visible = glyph_screen(&terminal);
+            assert!(visible.contains("PROJECT RESOLUTION"));
+            for scroll in 1..=app.max_scroll {
+                app.scroll = scroll;
+                terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                visible.push_str(&glyph_screen(&terminal));
+            }
+            assert!(visible.contains("#literal") && visible.contains("---"));
+            assert!(visible.contains("Привет 世界"), "{visible}");
+            assert!(!visible.contains('\u{1b}'));
+            assert!(
+                app.hits
+                    .iter()
+                    .any(|(_, action)| matches!(action, Action::Command("back")))
             );
             app.command("back");
             assert_eq!(app.body_title, "WELCOME TO AKASHA");

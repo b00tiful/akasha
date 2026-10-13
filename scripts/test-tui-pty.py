@@ -104,7 +104,8 @@ def report_body_text(screen):
     lines = screen.text().splitlines()
     top = next(index for index, line in enumerate(lines)
                if any(title in line for title in ('NOTE LINKS', 'NOTE BACKLINKS',
-                                                   'CROSS-PROJECT STATUS', 'CROSS-PROJECT DIGEST')))
+                                                   'CROSS-PROJECT STATUS', 'CROSS-PROJECT DIGEST',
+                                                   'PROJECT RESOLUTION')))
     status = next(index for index in range(top + 1, len(lines))
                   if re.fullmatch(r'\s*\d+-\d+ / \d+ lines\s*', lines[index]))
     # The reader has only a top rail and one padding row below it. Its final
@@ -540,6 +541,22 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
                 assert graph_snapshot() == baseline, 'status/digest and return must preserve bytes/types/modes'
             print(f'PASS cross-project reports TERM={term} {size[1]}x{size[0]}: '
                   'fresh core parity, bounded metrics, keyboard scroll/return and no writes', flush=True)
+            expected_resolution = subprocess.check_output([
+                str(binary), '--root', str(root), '--project', 'example', 'resolve',
+            ]).decode()
+            command('resolve')
+            wait_for(b'PROJECT RESOLUTION')
+            report = collect_report()
+            for line in expected_resolution.splitlines():
+                assert ''.join(line.split()) in report, (line, report)
+            command('resolve unexpected')
+            wait_for(b'Usage: /resolve')
+            assert 'PROJECT RESOLUTION' in screen.text()
+            command('back')
+            command('home')
+            assert graph_snapshot() == baseline, 'resolution inspection must preserve bytes/types/modes'
+            print(f'PASS resolution TERM={term} {size[1]}x{size[0]}: named plain parity, '
+                  'all provenance fields, keyboard scroll/return, invalid arguments and no writes', flush=True)
         if full:
             idle_before = len(output)
             drain(0.7)
