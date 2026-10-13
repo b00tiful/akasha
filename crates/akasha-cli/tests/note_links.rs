@@ -221,6 +221,83 @@ fn backlinks_default_to_thirty_results_and_expand_only_with_an_explicit_limit() 
     assert_eq!(snapshot(&fixture.root), before);
 }
 
+#[test]
+fn cross_project_reports_have_exact_plain_json_metrics_and_no_ansi() {
+    let fixture = Fixture::new();
+    let before = snapshot(&fixture.root);
+    for command in ["status", "digest"] {
+        let plain = run(&fixture.root, &[command]);
+        assert!(plain.status.success(), "{:?}", plain.stderr);
+        assert!(plain.stderr.is_empty());
+        assert!(!plain.stdout.contains(&0x1b));
+        let text = String::from_utf8(plain.stdout.clone()).unwrap();
+        assert!(text.contains("1 projects; 7 notes (1 global); 5 configured categories"));
+        assert!(text.contains("1 open tasks; 1 open problems; 2 canonical outgoing links"));
+        assert!(text.contains("Showing 1 of 1 projects"));
+        let default_json = run(&fixture.root, &["--json", command]);
+        let default_value: serde_json::Value =
+            serde_json::from_slice(&default_json.stdout).unwrap();
+        assert_eq!(default_value["limit"], 30);
+        let no_color = run(&fixture.root, &["--no-color", command]);
+        assert_eq!(plain.stdout, no_color.stdout);
+        let json = run(&fixture.root, &[command, "--json", "--limit", "100"]);
+        assert!(json.status.success());
+        assert!(json.stderr.is_empty());
+        let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+        assert_eq!(value["kind"], command);
+        assert_eq!(value["limit"], 100);
+        assert_eq!(value["truncated"], false);
+        assert_eq!(value["dashboard"]["projects"], 1);
+        assert_eq!(
+            value["dashboard"]["project_metrics"][0]["project"],
+            "example"
+        );
+    }
+    assert_eq!(snapshot(&fixture.root), before);
+}
+
+#[test]
+fn report_usage_stale_state_and_pending_journal_fail_only_on_stderr_without_writes() {
+    let fixture = Fixture::new();
+    for command in ["status", "digest"] {
+        for limit in ["0", "101", "-1", "bad"] {
+            let output = run(&fixture.root, &[command, "--limit", limit]);
+            assert_eq!(output.status.code(), Some(2));
+            assert!(output.stdout.is_empty());
+            assert!(!output.stderr.is_empty());
+        }
+    }
+    fs::write(fixture.root.join("Projects/example/index.md"), "# Stale\n").unwrap();
+    let before = snapshot(&fixture.root);
+    for command in ["status", "digest"] {
+        let output = run(&fixture.root, &["--json", command]);
+        assert_eq!(output.status.code(), Some(4));
+        assert!(output.stdout.is_empty());
+        assert!(!output.stderr.is_empty());
+        assert_eq!(snapshot(&fixture.root), before);
+    }
+    fs::write(
+        fixture
+            .root
+            .join("Projects/example")
+            .join(akasha_core::NOTE_EDIT_JOURNAL_FILE),
+        b"partial journal",
+    )
+    .unwrap();
+    let before = snapshot(&fixture.root);
+    for command in ["status", "digest"] {
+        let output = run(&fixture.root, &[command]);
+        assert_eq!(output.status.code(), Some(5));
+        assert!(output.stdout.is_empty());
+        assert!(
+            String::from_utf8(output.stderr)
+                .unwrap()
+                .contains("pending note recovery journal")
+        );
+        assert_eq!(snapshot(&fixture.root), before);
+    }
+}
+
 struct Fixture {
     base: PathBuf,
     root: PathBuf,

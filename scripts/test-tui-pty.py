@@ -103,7 +103,8 @@ class Screen:
 def report_body_text(screen):
     lines = screen.text().splitlines()
     top = next(index for index, line in enumerate(lines)
-               if 'NOTE LINKS' in line or 'NOTE BACKLINKS' in line)
+               if any(title in line for title in ('NOTE LINKS', 'NOTE BACKLINKS',
+                                                   'CROSS-PROJECT STATUS', 'CROSS-PROJECT DIGEST')))
     status = next(index for index in range(top + 1, len(lines))
                   if re.fullmatch(r'\s*\d+-\d+ / \d+ lines\s*', lines[index]))
     # The reader has only a top rail and one padding row below it. Its final
@@ -509,6 +510,10 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             send(b'\x1b[200~\nGraph inspection dirty guard: \xe4\xb8\x96\xe7\x95\x8c\x1b[201~')
             command('backlinks', from_editor=True)
             wait_for(b'Unsaved changes')
+            command('status')
+            wait_for(b'Unsaved changes')
+            command('digest --limit 100')
+            wait_for(b'Unsaved changes')
             command('discard')
             assert graph_snapshot() == baseline, 'refusal and discard must preserve bytes/types/modes'
             command('back')
@@ -516,6 +521,25 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             print(f'PASS graph reports TERM={term} {size[1]}x{size[0]}: keyboard scroll, '
                   'bounds, coverage, bound incoming/outgoing follow and report return, projection input, '
                   'failure/dirty retention, exact bytes/types/modes', flush=True)
+            baseline = graph_snapshot()
+            for kind in ('status', 'digest'):
+                expected = json.loads(subprocess.check_output([
+                    str(binary), '--root', str(root), '--project', 'example', '--json',
+                    kind, '--limit', '1',
+                ]))
+                command(f'{kind} --limit 1')
+                wait_for(f'CROSS-PROJECT {kind.upper()}'.encode())
+                report = collect_report()
+                dashboard = expected['dashboard']
+                assert f'Showing1of{dashboard["projects"]}projects' in report, report
+                first = dashboard['project_metrics'][0]
+                assert ''.join(f'{first["project"]} [{first["status"]}]'.split()) in report, report
+                assert f'{dashboard["open_tasks"]}opentasks' in report, report
+                command('back')
+                command('home')
+                assert graph_snapshot() == baseline, 'status/digest and return must preserve bytes/types/modes'
+            print(f'PASS cross-project reports TERM={term} {size[1]}x{size[0]}: '
+                  'fresh core parity, bounded metrics, keyboard scroll/return and no writes', flush=True)
         if full:
             idle_before = len(output)
             drain(0.7)

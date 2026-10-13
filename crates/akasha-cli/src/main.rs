@@ -69,6 +69,16 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Show validated cross-project metrics in project-name order.
+    Status {
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u16).range(1..=100))]
+        limit: u16,
+    },
+    /// Summarize cross-project metrics in descending latest canonical note-date order.
+    Digest {
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u16).range(1..=100))]
+        limit: u16,
+    },
     /// Review a new data root and bundled defaults; apply only a reviewed full plan ID.
     SetupRoot {
         #[arg(value_name = "PATH")]
@@ -342,6 +352,8 @@ fn run(cli: Cli) -> Result<(), u8> {
             | Command::Onboard
             | Command::CreateEvent { .. }
             | Command::Search { .. }
+            | Command::Status { .. }
+            | Command::Digest { .. }
             | Command::Links { .. }
             | Command::Backlinks { .. }
             | Command::Tui { .. }
@@ -370,6 +382,20 @@ fn run(cli: Cli) -> Result<(), u8> {
 
     match command {
         Command::Tui { .. } => unreachable!("interactive dispatch handled above"),
+        Command::Status { limit } | Command::Digest { limit } => {
+            let kind = if matches!(command, Command::Status { .. }) {
+                akasha_core::LibraryReportKind::Status
+            } else {
+                akasha_core::LibraryReportKind::Digest
+            };
+            let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
+            let report = akasha_core::inspect_library_report(&request, kind, usize::from(limit))
+                .map_err(|error| {
+                    eprintln!("akasha: {error}");
+                    error.exit_code()
+                })?;
+            finish_output(render::render_library_report(&report, output))?;
+        }
         Command::Links { note, limit } => {
             inspect_links(
                 root,

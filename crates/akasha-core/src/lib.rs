@@ -7,6 +7,7 @@ pub mod event;
 mod evidence;
 pub mod init;
 pub mod library;
+pub mod library_report;
 pub mod link;
 pub mod note_creation;
 pub mod note_edit;
@@ -56,6 +57,10 @@ pub use library::{
     LibraryProjectDashboard, LibraryProjection, LibraryScope, LibrarySearchHit,
     LibrarySearchResult, LibraryShelf, build_library_projection, load_library_document,
     render_library_markdown, search_library,
+};
+pub use library_report::{
+    DEFAULT_LIBRARY_REPORT_LIMIT, LibraryReport, LibraryReportError, LibraryReportKind,
+    inspect_library_report,
 };
 pub use link::{
     LinkError, LinkPlan, LinkRequest, LinkResult, apply_project_link, link_project,

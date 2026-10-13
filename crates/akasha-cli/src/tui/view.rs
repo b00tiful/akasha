@@ -887,8 +887,10 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
             || app.event_stage() == Some(true)
             || app.creation_review().is_some()
             || app.lifecycle_review().is_some()
-            || matches!(app.body_title.as_str(), "NOTE LINKS" | "NOTE BACKLINKS")
-        {
+            || matches!(
+                app.body_title.as_str(),
+                "NOTE LINKS" | "NOTE BACKLINKS" | "CROSS-PROJECT STATUS" | "CROSS-PROJECT DIGEST"
+            ) {
             Text::from(safe_text(&source))
         } else {
             reading_text(&source, app)
@@ -1169,6 +1171,68 @@ mod tests {
             assert!(!visible.contains('\u{1b}'));
             assert!(visible.contains("private backup"));
             assert!(!visible.contains("Project memory"));
+        }
+    }
+
+    #[test]
+    fn cross_project_reports_render_literal_safe_bounded_fields_at_compact_sizes() {
+        use super::super::app::Response;
+        use akasha_core::{
+            LibraryDashboard, LibraryProjectDashboard, LibraryReport, LibraryReportKind,
+        };
+        for (width, height) in [(40, 12), (80, 24), (120, 38)] {
+            let mut app = test_app();
+            app.receive(Ok(Response::LibraryReport(LibraryReport {
+                kind: LibraryReportKind::Status,
+                root: "/tmp".into(),
+                selected_project: "example".into(),
+                limit: 30,
+                truncated: true,
+                dashboard: LibraryDashboard {
+                    validation_passed: true,
+                    projects: 32,
+                    notes: 32,
+                    global_notes: 2,
+                    configured_categories: 5,
+                    open_tasks: 3,
+                    open_problems: 2,
+                    validated_links: 9,
+                    latest_activity_date: None,
+                    project_metrics: (0..30)
+                        .map(|number| LibraryProjectDashboard {
+                            project: format!("#literal-{number:02}"),
+                            status: format!("Привет\u{1b}[2J{}", "x".repeat(150)),
+                            notes: 1,
+                            populated_categories: 1,
+                            open_tasks: 0,
+                            open_problems: 0,
+                            validated_links: 0,
+                            latest_activity_date: None,
+                        })
+                        .collect(),
+                },
+            })));
+            assert!(app.body.contains('…'));
+            assert!(!app.body.contains(&"x".repeat(121)));
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let mut visible = screen(&terminal);
+            assert!(visible.contains("CROSS-PROJECT STATUS"));
+            assert!(app.max_scroll > 0);
+            for scroll in 1..=app.max_scroll {
+                app.scroll = scroll;
+                terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                visible.push_str(&screen(&terminal));
+            }
+            assert!(visible.contains("#literal-29"));
+            assert!(!visible.contains('\u{1b}'));
+            assert!(
+                app.hits
+                    .iter()
+                    .any(|(_, hit)| matches!(hit, Action::Command("back")))
+            );
+            app.command("back");
+            assert_eq!(app.body_title, "WELCOME TO AKASHA");
         }
     }
 

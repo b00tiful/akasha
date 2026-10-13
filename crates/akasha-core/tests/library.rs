@@ -15,6 +15,9 @@ mod backlink_tests;
 mod document_link_tests;
 mod support;
 
+#[path = "support/library_report.rs"]
+mod library_report_tests;
+
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 struct TempDir(PathBuf);

@@ -30,6 +30,71 @@ impl OutputMode {
     }
 }
 
+pub(crate) fn render_library_report(
+    report: &akasha_core::LibraryReport,
+    output: OutputMode,
+) -> io::Result<()> {
+    if output.json {
+        return write_stdout(&json_line(serde_json::to_string_pretty(report))?);
+    }
+    write_stdout(&library_report_text(report))
+}
+
+pub(crate) fn library_report_text(report: &akasha_core::LibraryReport) -> String {
+    let display = |value: &str| {
+        let mut chars = value.chars();
+        let mut text: String = chars
+            .by_ref()
+            .take(120)
+            .map(|ch| if ch.is_control() { ' ' } else { ch })
+            .collect();
+        if chars.next().is_some() {
+            text.push('…');
+        }
+        text
+    };
+    let title = match report.kind {
+        akasha_core::LibraryReportKind::Status => "Cross-project status (project order)",
+        akasha_core::LibraryReportKind::Digest => {
+            "Cross-project digest (latest canonical note date)"
+        }
+    };
+    let dashboard = &report.dashboard;
+    let mut text = format!(
+        "{title}\nAll registered projects and global knowledge validated.\n{} projects; {} notes ({} global); {} configured categories\n{} open tasks; {} open problems; {} canonical outgoing links\nLatest canonical note date: {}\nShowing {} of {} projects{}\n",
+        dashboard.projects,
+        dashboard.notes,
+        dashboard.global_notes,
+        dashboard.configured_categories,
+        dashboard.open_tasks,
+        dashboard.open_problems,
+        dashboard.validated_links,
+        display(dashboard.latest_activity_date.as_deref().unwrap_or("none")),
+        dashboard.project_metrics.len(),
+        dashboard.projects,
+        if report.truncated {
+            " (truncated; increase --limit)"
+        } else {
+            ""
+        },
+    );
+    for project in &dashboard.project_metrics {
+        writeln!(
+            text,
+            "{} [{}]\n  {} notes; {} populated categories; {} open tasks; {} open problems; {} canonical outgoing links; latest date: {}",
+            display(&project.project),
+            display(&project.status),
+            project.notes,
+            project.populated_categories,
+            project.open_tasks,
+            project.open_problems,
+            project.validated_links,
+            display(project.latest_activity_date.as_deref().unwrap_or("none")),
+        ).expect("writing to a string cannot fail");
+    }
+    text
+}
+
 pub(crate) fn render_search(
     result: &akasha_core::LibrarySearchResult,
     output: OutputMode,
