@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type {
   DesktopLibrary,
-  LibraryDocument,
+  LinkedLibraryDocument,
   LibrarySearchResult,
   LocalNavigationState,
   NoteEditResult,
@@ -34,11 +34,20 @@ export function loadDocumentWithRecovery(
   root: string,
   project: string,
   id: string,
-): Promise<LibraryDocument> {
-  return invoke<LibraryDocument>("load_document_with_recovery", {
+): Promise<LinkedLibraryDocument> {
+  return invoke<LinkedLibraryDocument>("load_linked_document_with_recovery", {
     root: optional(root),
     project: optional(project),
     id,
+  });
+}
+
+/** Revalidates source and occurrence; never performs recovery or writes. */
+export function followDocumentLink(
+  root: string, project: string, id: string, expectedSource: string, from: number,
+): Promise<LinkedLibraryDocument> {
+  return invoke<LinkedLibraryDocument>("follow_document_link", {
+    root: optional(root), project: optional(project), id, expectedSource, from,
   });
 }
 

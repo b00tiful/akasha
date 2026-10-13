@@ -1407,6 +1407,18 @@ kbd {
   text-underline-offset: 0.2em;
 }
 
+.reading-wikilink {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+}
+
+.cm-document-link { cursor: pointer; }
+.cm-document-link:focus-visible { outline: 1px solid var(--purple); }
+[data-document-link][aria-disabled="true"] { color: var(--dim); cursor: help; }
+
 .note-viewer > pre,
 .note-viewer > p,
 .note-viewer > h1,

@@ -57,6 +57,7 @@ pub enum NoteLinksError {
     Validation(Box<ProjectValidationError>),
     Inspection(Box<NoteEditError>),
     PendingJournal(PathBuf),
+    StaleSource(String),
 }
 
 impl NoteLinksError {
@@ -65,7 +66,7 @@ impl NoteLinksError {
         match self {
             Self::Validation(error) => error.exit_code(),
             Self::Inspection(error) => error.exit_code(),
-            Self::PendingJournal(_) => 5,
+            Self::PendingJournal(_) | Self::StaleSource(_) => 5,
         }
     }
 }
@@ -80,6 +81,10 @@ impl fmt::Display for NoteLinksError {
                 "pending note recovery journal at {}; reconcile and recover before inspecting links",
                 path.display()
             ),
+            Self::StaleSource(id) => write!(
+                formatter,
+                "saved source for {id:?} changed; reload before following links"
+            ),
         }
     }
 }
@@ -89,7 +94,7 @@ impl Error for NoteLinksError {
         match self {
             Self::Validation(error) => Some(error),
             Self::Inspection(error) => Some(error),
-            Self::PendingJournal(_) => None,
+            Self::PendingJournal(_) | Self::StaleSource(_) => None,
         }
     }
 }
@@ -230,7 +235,7 @@ pub fn inspect_note_links(
     })
 }
 
-fn refuse_pending_journals(requests: &[ResolveRequest]) -> Result<(), NoteLinksError> {
+pub(crate) fn refuse_pending_journals(requests: &[ResolveRequest]) -> Result<(), NoteLinksError> {
     for request in requests {
         let inspection = inspect_pending_note_edit(request)
             .map_err(|error| NoteLinksError::Inspection(Box::new(error)))?;
@@ -241,7 +246,10 @@ fn refuse_pending_journals(requests: &[ResolveRequest]) -> Result<(), NoteLinksE
     Ok(())
 }
 
-fn read_checked_source(root: &Path, path: &Path) -> Result<String, ProjectValidationError> {
+pub(crate) fn read_checked_source(
+    root: &Path,
+    path: &Path,
+) -> Result<String, ProjectValidationError> {
     let io_error = |operation, source| ProjectValidationError::FileSystem {
         operation,
         path: path.to_path_buf(),

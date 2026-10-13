@@ -9,7 +9,8 @@ use std::os::unix::fs::PermissionsExt;
 #[cfg(feature = "runtime-probe")]
 use akasha_desktop::write_runtime_probe_report_file;
 use akasha_desktop::{
-    LocalNavigationState, library_document_with_recovery, library_projection_with_recovery,
+    LocalNavigationState, activate_document_link, library_document_with_recovery,
+    library_projection_with_recovery, linked_library_document_with_recovery,
     load_local_navigation_file, recovery_inspection, save_library_document,
     save_local_navigation_file, search_project_library,
 };
@@ -54,6 +55,82 @@ fn adapter_loads_only_a_projected_exact_document() {
     )
     .expect_err("reject non-projected document");
     assert_eq!(error.code, 4);
+}
+
+#[test]
+fn linked_adapter_delegates_occurrence_activation_and_preserves_stale_source() {
+    let temp = TempDir::new("document-links");
+    let root = temp.path().join("valid-root");
+    copy_tree(&fixture_root(), &root);
+    fs::create_dir_all(temp.path().join("repository")).unwrap();
+    let id = "Projects/example/entities/core.md";
+    let path = root.join(id);
+    let before = fs::read_to_string(&path).unwrap();
+    let source = format!("{before}\n🌘 [[Global/entities/rust-pattern|Shared]]\n");
+    save_library_document(
+        Some(root.clone()),
+        Some("example".into()),
+        id,
+        &before,
+        &source,
+    )
+    .unwrap();
+    let loaded =
+        linked_library_document_with_recovery(Some(root.clone()), Some("example".into()), id)
+            .unwrap();
+    assert_eq!(loaded.links.len(), 1);
+    let target = activate_document_link(
+        Some(root.clone()),
+        Some("example".into()),
+        id,
+        &source,
+        loaded.links[0].from,
+    )
+    .unwrap();
+    assert_eq!(target.document.id, "Global/entities/rust-pattern.md");
+    assert_eq!(fs::read_to_string(&path).unwrap(), source);
+    let replacement = source.replace("|Shared", "|Updated");
+    save_library_document(
+        Some(root.clone()),
+        Some("example".into()),
+        id,
+        &source,
+        &replacement,
+    )
+    .unwrap();
+    let state = fs::read(root.join("Projects/example/.akasha-state.toml")).unwrap();
+    let error = activate_document_link(
+        Some(root.clone()),
+        Some("example".into()),
+        id,
+        &source,
+        loaded.links[0].from,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, 5);
+    assert_eq!(fs::read_to_string(&path).unwrap(), replacement);
+    assert_eq!(
+        fs::read(root.join("Projects/example/.akasha-state.toml")).unwrap(),
+        state
+    );
+}
+
+#[test]
+fn inline_adapter_refuses_pending_recovery_without_parsing_or_writes() {
+    let temp = TempDir::new("inline-journal");
+    let root = temp.path().join("valid-root");
+    copy_tree(&fixture_root(), &root);
+    fs::create_dir_all(temp.path().join("repository")).unwrap();
+    let id = "Projects/example/entities/core.md";
+    let source = fs::read_to_string(root.join(id)).unwrap();
+    let journal = root.join("Projects/example/.akasha-edit-journal.json");
+    let bytes = b"unfinished journal; activation must never recover";
+    fs::write(&journal, bytes).unwrap();
+    let error = activate_document_link(Some(root.clone()), Some("example".into()), id, &source, 0)
+        .unwrap_err();
+    assert_eq!(error.code, 5);
+    assert_eq!(fs::read(&journal).unwrap(), bytes);
+    assert_eq!(fs::read_to_string(root.join(id)).unwrap(), source);
 }
 
 #[test]

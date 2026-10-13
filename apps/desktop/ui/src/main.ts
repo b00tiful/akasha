@@ -1,6 +1,7 @@
 import "./styles.css";
 
 import {
+  followDocumentLink,
   inspectRecovery,
   loadDocumentWithRecovery,
   loadLibraryWithRecovery,
@@ -31,7 +32,7 @@ import type { SpatialDirection } from "./scene-model";
 import { runtimeProbeEnabled } from "./runtime-metrics";
 import { scheduleRuntimeProbe } from "./runtime-probe";
 import { recoveryProbeEnabled, recoveryProbeRoot, scheduleRecoveryProbe } from "./recovery-probe";
-import type { CommandError, DesktopLibrary, LibraryBook, LibrarySearchResult } from "./types";
+import type { CommandError, DesktopLibrary, LibraryBook, LibraryDocumentLink, LinkedLibraryDocument, LibrarySearchResult } from "./types";
 
 const form = required<HTMLFormElement>("library-form");
 const rootInput = required<HTMLInputElement>("root-input");
@@ -87,7 +88,8 @@ const reducedMotion = required<HTMLInputElement>("reduced-motion");
 const modeButtons = [...document.querySelectorAll<HTMLButtonElement>("[data-mode]")];
 
 let viewer: NoteViewer;
-viewer = new NoteViewer(required<HTMLElement>("note-viewer"), updateEditActions);
+viewer = new NoteViewer(required<HTMLElement>("note-viewer"), updateEditActions,
+  (link) => void activateInlineLink(link));
 
 let library: DesktopLibrary | null = null;
 let scene: SceneHandle | null = null;
@@ -519,7 +521,7 @@ async function closeVolume(): Promise<void> {
   renderSelection();
 }
 
-async function openBookFromInventory(book: LibraryBook): Promise<void> {
+async function openBookFromInventory(book: LibraryBook, document?: LinkedLibraryDocument): Promise<void> {
   if (!library) {
     return;
   }
@@ -534,7 +536,7 @@ async function openBookFromInventory(book: LibraryBook): Promise<void> {
     }
     closeDrawer(inventoryPanel, inventoryToggle);
     closeSearch();
-    await selectBook(book);
+    await selectBook(book, document);
     return;
   }
   const shelf = libraryShelves(library.projection).find(
@@ -553,10 +555,42 @@ async function openBookFromInventory(book: LibraryBook): Promise<void> {
   scene?.openVolume(activeVolume?.id ?? null);
   renderSelection();
   renderVolume();
-  await selectBook(book);
+  await selectBook(book, document);
 }
 
-async function selectBook(book: LibraryBook): Promise<void> {
+async function activateInlineLink(link: LibraryDocumentLink): Promise<void> {
+  if (viewer.dirty) { requireDirtyDecision("following a note link"); return; }
+  if (!library || !activeResolution || !selectedId) return;
+  if (link.kind !== "canonical") {
+    setStatus(`${link.target_id}: ${link.kind === "projection" ? "Index or roadmap" : "This Markdown file"} is not a library document.`, "warning");
+    return;
+  }
+  const book = allBooks(library.projection).find((book) => book.id === link.target_id);
+  if (!book) { setStatus("Linked note is absent from this library. Refresh before retrying.", "error"); return; }
+  if (localMode && (book.scope.kind !== "project" || book.scope.project !== library.projection.selected_project)) {
+    setStatus("This note belongs to the global archive. Switch to Global library to open it.", "warning");
+    return;
+  }
+  const id = selectedId;
+  const source = viewer.savedSource;
+  const resolution = activeResolution;
+  const request = ++documentRequest;
+  try {
+    const document = await followDocumentLink(resolution.root, resolution.project, id, source, link.from);
+    if (request !== documentRequest || selectedId !== id || activeResolution !== resolution) return;
+    if (viewer.dirty) { requireDirtyDecision("following a note link"); return; }
+    if (viewer.savedSource !== source || viewer.source !== source) return;
+    if (document.id !== link.target_id) throw new Error("the loaded identity does not match the bound link");
+    await openBookFromInventory(book, document);
+    setStatus(`Opened ${document.id}.`, "success");
+  } catch (error) {
+    if (request === documentRequest && selectedId === id) {
+      setStatus(`Link unavailable: ${errorMessage(error)}`, "error");
+    }
+  }
+}
+
+async function selectBook(book: LibraryBook, loadedDocument?: LinkedLibraryDocument): Promise<void> {
   if (viewer.dirty) {
     requireDirtyDecision("selecting another note");
     return;
@@ -574,9 +608,10 @@ async function selectBook(book: LibraryBook): Promise<void> {
     if (!resolution) {
       throw new Error("the active library resolution is unavailable");
     }
-    const document = await loadDocumentWithRecovery(resolution.root, resolution.project, requestedId);
+    const document = loadedDocument ?? await loadDocumentWithRecovery(resolution.root, resolution.project, requestedId);
     if (selectedId === requestedId && request === documentRequest) {
       viewer.setDocument(document.source, isEditable(book));
+      viewer.setLinks(document.links ?? []);
       if (localMode) noteClose.focus();
     }
   } catch (error) {

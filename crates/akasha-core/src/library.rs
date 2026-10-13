@@ -502,6 +502,13 @@ pub fn load_library_document(
     id: &str,
 ) -> Result<LibraryDocument, ProjectValidationError> {
     let projection = build_library_projection(request)?;
+    document_from_projection(&projection, id)
+}
+
+pub(crate) fn document_from_projection(
+    projection: &LibraryProjection,
+    id: &str,
+) -> Result<LibraryDocument, ProjectValidationError> {
     let is_projected = projection
         .global
         .categories
@@ -522,13 +529,12 @@ pub fn load_library_document(
     }
 
     let path = projection.root.join(id);
-    let source = read_note(&path)?;
-    parse_note(&path, &source)?;
-    let source = str::from_utf8(&source)
-        .map_err(|source| invalid_note(&path, ValidationError::InvalidUtf8(source)))?;
+    let source = crate::note_links::read_checked_source(&projection.root, &path)?;
+    let parsed = parse_note(&path, source.as_bytes())?;
+    validate_wikilinks_with_targets(&projection.root, &path, parsed.body, &BTreeSet::new())?;
     Ok(LibraryDocument {
         id: id.to_owned(),
-        source: source.to_owned(),
+        source,
     })
 }
 

@@ -65,7 +65,10 @@ describe("first live-preview fidelity subset", () => {
 
   it("renders supported syntax safely and preserves unknown text", () => {
     const host = document.createElement("div");
-    renderReading(host, source);
+    const from = source.indexOf("[[Global/entities/pattern");
+    renderReading(host, source, [{ from, to: source.indexOf("]]", from) + 2,
+      label_from: source.indexOf("shared pattern"), label_to: source.indexOf("]]", from),
+      target_id: "Global/entities/pattern.md", kind: "canonical" }]);
 
     expect(host.querySelector("h1")?.textContent).toBe("Core");
     expect(host.querySelector(".reading-wikilink")?.textContent).toBe("shared pattern");

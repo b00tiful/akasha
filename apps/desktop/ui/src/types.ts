@@ -89,6 +89,19 @@ export interface LibraryDocument {
   source: string;
 }
 
+export interface LibraryDocumentLink {
+  from: number;
+  to: number;
+  label_from: number;
+  label_to: number;
+  target_id: string;
+  kind: "canonical" | "projection" | "other";
+}
+
+export interface LinkedLibraryDocument extends LibraryDocument {
+  links: LibraryDocumentLink[];
+}
+
 export interface LibrarySearchHit {
   id: string;
   label: string;

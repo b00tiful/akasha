@@ -2,6 +2,7 @@
 
 pub mod agent_wiring;
 pub mod context;
+pub mod document_links;
 pub mod event;
 mod evidence;
 pub mod init;
@@ -35,6 +36,10 @@ pub use context::{
     ContextSection, DEFAULT_CONTEXT_MAX_CHARS, SessionBreadcrumb, assemble_context,
     assemble_session_breadcrumb, assemble_session_breadcrumb_if_linked, render_context_markdown,
     render_session_breadcrumb,
+};
+pub use document_links::{
+    LibraryDocumentLink, LinkedLibraryDocument, activate_library_document_link,
+    load_linked_library_document,
 };
 pub use event::{
     EventCreationError, EventCreationForm, EventCreationPreview, EventCreationResult,

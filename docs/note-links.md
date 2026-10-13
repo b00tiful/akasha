@@ -38,8 +38,9 @@ empty stdout, including under `--json`.
 
 These commands perform no recovery or writes and do not read editor drafts. Each invocation
 validates current saved data, without a cache or atomic filesystem snapshot. Later document
-navigation must still validate the identity and respect dirty-editor guards. Desktop inline
-activation and interactive backlink panels are subsequent interface work.
+navigation must still validate the identity and respect dirty-editor guards. The desktop's
+[inline activation](inline-navigation.md) now supplies source-bound core checks and keeps
+non-book targets visibly unavailable. Interactive backlink panels remain subsequent work.
 
 Plain output replaces control characters in displayed identities with spaces. Opt-in JSON
 preserves exact identities as escaped data. Akasha needs no external editor, plugin or model

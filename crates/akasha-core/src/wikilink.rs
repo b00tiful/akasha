@@ -5,6 +5,10 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Wikilink<'a> {
     pub(crate) target: Option<&'a str>,
+    pub(crate) from: usize,
+    pub(crate) to: usize,
+    pub(crate) label_from: usize,
+    pub(crate) label_to: usize,
 }
 
 /// A malformed wikilink owned by Akasha's limited Markdown subset.
@@ -110,7 +114,17 @@ pub(crate) fn parse_wikilinks(body: &str) -> Result<Vec<Wikilink<'_>>, WikilinkP
                 });
             };
             let end = offset + 2 + relative_end;
-            links.push(parse_link_content(&body[offset + 2..end], offset)?);
+            let content = &body[offset + 2..end];
+            let mut link = parse_link_content(content, offset)?;
+            link.from = if offset > 0 && bytes[offset - 1] == b'!' {
+                offset - 1
+            } else {
+                offset
+            };
+            link.to = end + 2;
+            link.label_from = offset + 2 + content.find('|').map_or(0, |index| index + 1);
+            link.label_to = end;
+            links.push(link);
             offset = end + 2;
             continue;
         }
@@ -158,7 +172,13 @@ fn parse_link_content(content: &str, offset: usize) -> Result<Wikilink<'_>, Wiki
                 message: "link target is empty",
             });
         }
-        return Ok(Wikilink { target: None });
+        return Ok(Wikilink {
+            target: None,
+            from: 0,
+            to: 0,
+            label_from: 0,
+            label_to: 0,
+        });
     }
     if target.trim() != target {
         return Err(WikilinkParseError {
@@ -169,6 +189,10 @@ fn parse_link_content(content: &str, offset: usize) -> Result<Wikilink<'_>, Wiki
 
     Ok(Wikilink {
         target: Some(target),
+        from: 0,
+        to: 0,
+        label_from: 0,
+        label_to: 0,
     })
 }
 

@@ -1,6 +1,23 @@
-export function renderReading(host: HTMLElement, source: string): void {
+import type { LibraryDocumentLink } from "./types";
+
+export function linkTitle(link: LibraryDocumentLink): string {
+  return link.kind === "canonical"
+    ? `Open ${link.target_id}`
+    : `${link.target_id} — ${link.kind === "projection" ? "Index or roadmap" : "This Markdown file"} is not a library document`;
+}
+
+export function renderReading(
+  host: HTMLElement, source: string, links: readonly LibraryDocumentLink[] = [],
+  onActivate: (link: LibraryDocumentLink) => void = () => {},
+): void {
   host.replaceChildren();
   const lines = source.split(/\r?\n/u);
+  const offsets: number[] = [];
+  let position = 0;
+  for (const line of source.split(/(?<=\n)/u)) {
+    offsets.push(position);
+    position += line.length;
+  }
   let index = 0;
 
   if (lines[0] === "---") {
@@ -47,34 +64,47 @@ export function renderReading(host: HTMLElement, source: string): void {
     const element = heading?.[1]
       ? document.createElement(`h${heading[1].length}`)
       : document.createElement("p");
-    appendInline(element, heading?.[2] ?? line);
+    const text = heading?.[2] ?? line;
+    const offset = (offsets[index] ?? source.length) + line.length - text.length;
+    appendInline(element, text, offset, links, onActivate);
     host.append(element);
     index += 1;
   }
 }
 
-function appendInline(host: HTMLElement, source: string): void {
-  const pattern = /(\*\*[^*\n]+\*\*|!?\[\[[^\]\n]+\]\])/gu;
+function appendInline(
+  host: HTMLElement, source: string, start: number, links: readonly LibraryDocumentLink[],
+  onActivate: (link: LibraryDocumentLink) => void,
+): void {
+  const strongMatches = [...source.matchAll(/\*\*[^*\n]+\*\*/gu)];
+  const tokens = [
+    ...strongMatches.map((match) => ({ from: match.index!, to: match.index! + match[0].length, link: null })),
+    ...links.filter((link) => link.from >= start && link.to <= start + source.length)
+      .map((link) => ({ from: link.from - start, to: link.to - start, link })),
+  ].sort((a, b) => a.from - b.from || b.to - a.to);
   let offset = 0;
-  for (const match of source.matchAll(pattern)) {
-    if (match.index === undefined || !match[0]) {
-      continue;
-    }
-    host.append(document.createTextNode(source.slice(offset, match.index)));
-    if (match[0].startsWith("**")) {
+  for (const token of tokens) {
+    if (token.from < offset) continue;
+    host.append(document.createTextNode(source.slice(offset, token.from)));
+    if (!token.link) {
       const strong = document.createElement("strong");
-      strong.textContent = match[0].slice(2, -2);
+      appendInline(strong, source.slice(token.from + 2, token.to - 2), start + token.from + 2, links, onActivate);
       host.append(strong);
     } else {
-      const link = document.createElement("span");
-      link.className = "reading-wikilink";
-      const content = match[0].replace(/^!?\[\[/u, "").slice(0, -2);
-      const [target, alias] = content.split("|", 2);
-      link.textContent = alias ?? target ?? content;
-      link.title = target ?? content;
-      host.append(link);
+      const binding = token.link;
+      const element = document.createElement("button");
+      element.type = "button";
+      element.className = "reading-wikilink";
+      element.textContent = source.slice(binding.label_from - start, binding.label_to - start);
+      element.title = linkTitle(binding);
+      element.dataset.documentLink = String(binding.from);
+      element.setAttribute("role", "link");
+      element.setAttribute("aria-label", linkTitle(binding));
+      element.setAttribute("aria-disabled", String(binding.kind !== "canonical"));
+      element.addEventListener("click", () => onActivate(binding));
+      host.append(element);
     }
-    offset = match.index + match[0].length;
+    offset = token.to;
   }
   host.append(document.createTextNode(source.slice(offset)));
 }

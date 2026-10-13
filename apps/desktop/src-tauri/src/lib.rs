@@ -8,9 +8,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use akasha_core::{
-    LibraryDocument, LibraryProjection, LibraryScope, LibrarySearchResult, NoteEditRecovery,
-    NoteEditResult, PendingNoteEditInspection, ResolveRequest, build_library_projection,
-    inspect_pending_note_edit, load_library_document, recover_pending_note_edit,
+    LibraryDocument, LibraryProjection, LibraryScope, LibrarySearchResult, LinkedLibraryDocument,
+    NoteEditRecovery, NoteEditResult, PendingNoteEditInspection, ResolveRequest,
+    activate_library_document_link, build_library_projection, inspect_pending_note_edit,
+    load_library_document, load_linked_library_document, recover_pending_note_edit,
     render_library_markdown, replace_library_document, search_library,
 };
 use serde::{Deserialize, Serialize};
@@ -278,6 +279,39 @@ pub fn library_document_with_recovery(
     })
 }
 
+pub fn linked_library_document_with_recovery(
+    root: Option<PathBuf>,
+    project: Option<String>,
+    id: &str,
+) -> Result<LinkedLibraryDocument, DesktopError> {
+    let request = request(root, project)?;
+    recover_pending_note_edit(&request).map_err(|error| DesktopError {
+        code: error.exit_code(),
+        message: error.to_string(),
+    })?;
+    load_linked_library_document(&request, id).map_err(|error| DesktopError {
+        code: error.exit_code(),
+        message: error.to_string(),
+    })
+}
+
+/// Read-only activation; pending journals refuse without recovery.
+pub fn activate_document_link(
+    root: Option<PathBuf>,
+    project: Option<String>,
+    id: &str,
+    expected_source: &str,
+    from: usize,
+) -> Result<LinkedLibraryDocument, DesktopError> {
+    let request = request(root, project)?;
+    activate_library_document_link(&request, id, expected_source, from).map_err(|error| {
+        DesktopError {
+            code: error.exit_code(),
+            message: error.to_string(),
+        }
+    })
+}
+
 pub fn search_project_library(
     root: Option<PathBuf>,
     project: String,
@@ -355,6 +389,28 @@ fn search_project(
     query: String,
 ) -> Result<LibrarySearchResult, DesktopError> {
     search_project_library(root, project, &query)
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn load_linked_document_with_recovery(
+    root: Option<PathBuf>,
+    project: Option<String>,
+    id: String,
+) -> Result<LinkedLibraryDocument, DesktopError> {
+    linked_library_document_with_recovery(root, project, &id)
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn follow_document_link(
+    root: Option<PathBuf>,
+    project: Option<String>,
+    id: String,
+    expected_source: String,
+    from: usize,
+) -> Result<LinkedLibraryDocument, DesktopError> {
+    activate_document_link(root, project, &id, &expected_source, from)
 }
 
 #[cfg(feature = "desktop")]
@@ -452,6 +508,8 @@ pub fn run() {
         load_library_with_recovery,
         inspect_recovery,
         load_document_with_recovery,
+        load_linked_document_with_recovery,
+        follow_document_link,
         search_project,
         save_document,
         load_local_navigation,
@@ -463,6 +521,8 @@ pub fn run() {
         load_library_with_recovery,
         inspect_recovery,
         load_document_with_recovery,
+        load_linked_document_with_recovery,
+        follow_document_link,
         search_project,
         save_document,
         load_local_navigation,

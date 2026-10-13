@@ -4,9 +4,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use akasha_core::{
     LibraryScope, NoteLinkDirection, NoteLinkKind, ResolutionEnvironment, ResolveRequest,
-    build_library_projection, inspect_note_links, load_library_document, render_library_markdown,
+    activate_library_document_link, build_library_projection, inspect_note_links,
+    load_library_document, load_linked_library_document, render_library_markdown,
 };
 
+#[path = "support/document_links.rs"]
+mod document_link_tests;
 mod support;
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
