@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use akasha_core::{
     AgentClient, InitRequest, LinkRequest, ResolveRequest, apply_agent_wiring,
-    apply_session_hook_wiring, assemble_context, assemble_session_breadcrumb,
+    apply_session_hook_wiring, assemble_context_with_budget, assemble_session_breadcrumb,
     assemble_session_breadcrumb_if_linked, capture_handoff, create_event, create_mutable_note,
     initialize_project, link_project, prepare_agent_wiring, prepare_agent_wiring_removal,
     prepare_session_hook_removal, prepare_session_hook_wiring, remove_agent_wiring,
@@ -311,7 +311,11 @@ enum Command {
     /// Validate the selected project's configuration, layout, and canonical notes.
     Validate,
     /// Assemble a deterministic, bounded orientation bundle for the selected project.
-    Context,
+    Context {
+        /// Canonical Markdown character budget; entries are kept whole.
+        #[arg(long, value_name = "N", default_value_t = akasha_core::DEFAULT_CONTEXT_MAX_CHARS as u32, value_parser = clap::value_parser!(u32).range(1..))]
+        max_chars: u32,
+    },
     /// Print the compact session-start project breadcrumb.
     Breadcrumb {
         /// Succeed without output only when no project pointer exists above the current directory.
@@ -369,7 +373,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             | Command::RemoveSessionHook { .. }
             | Command::Resolve
             | Command::Validate
-            | Command::Context
+            | Command::Context { .. }
             | Command::Breadcrumb { .. } => None,
         };
         if let Some(slug) = positional
@@ -661,9 +665,10 @@ fn run(cli: Cli) -> Result<(), u8> {
             let report = validate_project(&request).map_err(report_validation)?;
             finish_output(render_validation(&report, output))?;
         }
-        Command::Context => {
+        Command::Context { max_chars } => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
-            let context = assemble_context(&request).map_err(report_context)?;
+            let context = assemble_context_with_budget(&request, max_chars as usize)
+                .map_err(report_context)?;
             finish_output(render_context(&context, output))?;
         }
         Command::Breadcrumb { optional } => {

@@ -125,3 +125,67 @@ fn plain_context_has_lower_wire_overhead_at_equal_fidelity() {
         "plain Markdown should have less wire overhead than equivalent pretty JSON"
     );
 }
+
+#[test]
+fn explicit_context_budget_preserves_default_and_plain_json_selection() {
+    let root = fixtures().join("valid-root");
+    let run = |arguments: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_akasha"))
+            .args(["--root", root.to_str().unwrap(), "--project", "example"])
+            .args(arguments)
+            .env_remove("AKASHA_ROOT")
+            .output()
+            .unwrap()
+    };
+    let default = run(&["context"]);
+    assert!(default.status.success());
+    assert_eq!(
+        default.stdout,
+        run(&["context", "--max-chars", "16000"]).stdout
+    );
+    let json = run(&["--json", "context"]);
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let full_count = value["rendered_chars"].as_u64().unwrap();
+    let budget = (full_count - 1).to_string();
+    for bound in [budget.as_str(), "32000"] {
+        let plain = run(&["context", "--max-chars", bound]);
+        let json = run(&["--json", "context", "--max-chars", bound]);
+        assert!(plain.status.success() && json.status.success());
+        assert!(plain.stderr.is_empty() && json.stderr.is_empty());
+        assert!(!plain.stdout.contains(&0x1b) && !json.stdout.contains(&0x1b));
+        let markdown = String::from_utf8(plain.stdout).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+        assert_eq!(value["max_chars"], bound.parse::<u32>().unwrap());
+        assert_eq!(value["rendered_chars"], markdown.chars().count());
+        assert!(markdown.chars().count() <= bound.parse::<usize>().unwrap());
+        assert_eq!(value["truncated"], bound == budget);
+        for entry in value["entries"].as_array().unwrap() {
+            assert!(markdown.contains(entry["content"].as_str().unwrap()));
+        }
+    }
+}
+
+#[test]
+fn invalid_and_tiny_context_budgets_fail_only_on_stderr() {
+    let root = fixtures().join("valid-root");
+    for (arguments, code) in [
+        (vec!["context", "--max-chars", "0"], 2),
+        (vec!["context", "--max-chars", "-1"], 2),
+        (vec!["context", "--max-chars", "words"], 2),
+        (vec!["context", "--max-chars", "4294967296"], 2),
+        (vec!["context", "--max-chars"], 2),
+        (vec!["context", "--max-chars", "1", "--max-chars", "2"], 2),
+        (vec!["context", "--max-chars", "1"], 4),
+        (vec!["--json", "context", "--max-chars", "1"], 4),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_akasha"))
+            .args(["--root", root.to_str().unwrap(), "--project", "example"])
+            .args(&arguments)
+            .env_remove("AKASHA_ROOT")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(code), "{arguments:?}");
+        assert!(output.stdout.is_empty(), "{arguments:?}");
+        assert!(!output.stderr.is_empty(), "{arguments:?}");
+    }
+}

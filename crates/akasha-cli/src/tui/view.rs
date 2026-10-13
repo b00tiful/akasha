@@ -894,6 +894,7 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
                     | "CROSS-PROJECT STATUS"
                     | "CROSS-PROJECT DIGEST"
                     | "PROJECT RESOLUTION"
+                    | "PROJECT CONTEXT"
             ) {
             Text::from(safe_text(&source))
         } else {
@@ -1292,6 +1293,54 @@ mod tests {
             }
             assert!(visible.contains("#literal") && visible.contains("---"));
             assert!(visible.contains("Привет 世界"), "{visible}");
+            assert!(!visible.contains('\u{1b}'));
+            assert!(
+                app.hits
+                    .iter()
+                    .any(|(_, action)| matches!(action, Action::Command("back")))
+            );
+            app.command("back");
+            assert_eq!(app.body_title, "WELCOME TO AKASHA");
+        }
+    }
+
+    #[test]
+    fn context_budget_reader_preserves_literal_framing_and_compact_return() {
+        use super::super::app::Response;
+        use akasha_core::{ContextBundle, ContextEntry, ContextSection};
+        for (width, height) in [(40, 12), (80, 24)] {
+            let mut app = test_app();
+            app.receive(Ok(Response::Context(
+                app.request.clone(),
+                Box::new(ContextBundle {
+                    project: "example".into(),
+                    repository_dir: "/tmp/repository".into(),
+                    project_dir: "/tmp/project".into(),
+                    errors: vec![],
+                    entries: vec![ContextEntry {
+                        section: ContextSection::OpenTask,
+                        source: "records/tasks/a.md".into(),
+                        content: "#literal\n---\n``````\nCONTROL\u{1b}[2J\n".repeat(10),
+                    }],
+                    truncated: false,
+                    omitted_entries: 0,
+                    omissions: vec![],
+                    max_chars: 32_000,
+                    rendered_chars: 0,
+                }),
+            )));
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let mut visible = screen(&terminal);
+            assert!(visible.contains("PROJECT CONTEXT"));
+            assert!(app.max_scroll > 0);
+            for scroll in 1..=app.max_scroll {
+                app.scroll = scroll;
+                terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                visible.push_str(&screen(&terminal));
+            }
+            assert!(visible.contains("#literal") && visible.contains("---"));
+            assert!(visible.contains("```````akasha-project-data"));
             assert!(!visible.contains('\u{1b}'));
             assert!(
                 app.hits

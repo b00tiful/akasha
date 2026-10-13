@@ -157,12 +157,22 @@ impl From<ProjectValidationError> for ContextError {
 
 /// Validate a project and assemble its default 16,000-character orientation bundle.
 pub fn assemble_context(request: &ResolveRequest) -> Result<ContextBundle, ContextError> {
+    assemble_context_with_budget(request, DEFAULT_CONTEXT_MAX_CHARS)
+}
+
+/// Validate a project and assemble whole entries within a caller-selected character budget.
+/// Counts Unicode scalar values in canonical Markdown, including identity and omission framing.
+/// Budgets too small for that framing return `ContextError::Budget` without a partial bundle.
+pub fn assemble_context_with_budget(
+    request: &ResolveRequest,
+    max_chars: usize,
+) -> Result<ContextBundle, ContextError> {
     let report = validate_project(request)?;
     let config = load_root_config(&report.root)
         .map_err(ProjectValidationError::from)
         .map_err(ContextError::from)?;
     let candidates = collect_candidates(&report, &config)?;
-    fit_candidates(&report, candidates, DEFAULT_CONTEXT_MAX_CHARS)
+    fit_candidates(&report, candidates, max_chars)
 }
 
 /// Validate a project and assemble its compact session-start breadcrumb.
@@ -447,13 +457,24 @@ fn fit_candidates(
         repository_dir: report.repository_dir.clone(),
         project_dir: report.project_dir.clone(),
         errors: Vec::new(),
-        entries: Vec::new(),
-        truncated: total_entries > 0,
-        omitted_entries: total_entries,
+        entries: candidates,
+        truncated: false,
+        omitted_entries: 0,
         omissions: Vec::new(),
         max_chars,
         rendered_chars: 0,
     };
+
+    // A complete bundle needs no omission warning. Check it first: reserving
+    // a provisional warning during greedy selection can omit entries even
+    // when the complete final Markdown fits the caller's exact budget.
+    bundle.rendered_chars = char_count(&render_context_markdown(&bundle));
+    if bundle.rendered_chars <= max_chars {
+        return Ok(bundle);
+    }
+    let candidates = std::mem::take(&mut bundle.entries);
+    bundle.truncated = total_entries > 0;
+    bundle.omitted_entries = total_entries;
 
     for (index, candidate) in candidates.into_iter().enumerate() {
         let remaining = total_entries - index - 1;

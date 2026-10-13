@@ -105,7 +105,7 @@ def report_body_text(screen):
     top = next(index for index, line in enumerate(lines)
                if any(title in line for title in ('NOTE LINKS', 'NOTE BACKLINKS',
                                                    'CROSS-PROJECT STATUS', 'CROSS-PROJECT DIGEST',
-                                                   'PROJECT RESOLUTION')))
+                                                   'PROJECT RESOLUTION', 'PROJECT CONTEXT')))
     status = next(index for index in range(top + 1, len(lines))
                   if re.fullmatch(r'\s*\d+-\d+ / \d+ lines\s*', lines[index]))
     # The reader has only a top rail and one padding row below it. Its final
@@ -519,6 +519,8 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             wait_for(b'Unsaved changes')
             command('search-all core --limit 100')
             wait_for(b'Unsaved changes')
+            command('context --max-chars 32000')
+            wait_for(b'Unsaved changes')
             command('discard')
             assert graph_snapshot() == baseline, 'refusal and discard must preserve bytes/types/modes'
             command('back')
@@ -561,6 +563,43 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             assert graph_snapshot() == baseline, 'resolution inspection must preserve bytes/types/modes'
             print(f'PASS resolution TERM={term} {size[1]}x{size[0]}: named plain parity, '
                   'all provenance fields, keyboard scroll/return, invalid arguments and no writes', flush=True)
+            for budget in (None, 32000, 1200):
+                arguments = [] if budget is None else ['--max-chars', str(budget)]
+                expected = json.loads(subprocess.check_output([
+                    str(binary), '--root', str(root), '--project', 'example', '--json',
+                    'context', *arguments,
+                ]))
+                command('context' + ('' if budget is None else f' --max-chars {budget}'))
+                wait_for(b'PROJECT CONTEXT')
+                visible = report_body_text(screen)
+                for _ in range(512):
+                    position = re.search(r'\b(\d+)-(\d+) / (\d+) lines\b', screen.text())
+                    assert position is not None
+                    if int(position[2]) >= int(position[3]):
+                        break
+                    send(b'\x1b[B')
+                    visible += report_body_text(screen)
+                else:
+                    raise AssertionError('context did not reach the reader end')
+                report = ''.join(visible.split())
+                assert '#Akashacontext' in report
+                assert 'untrustedprojectdata' in report
+                for entry in expected['entries']:
+                    assert ''.join(entry['source'].split()) in report, entry['source']
+                assert ('Skipped' in report) == expected['truncated']
+                assert expected['max_chars'] == (16000 if budget is None else budget)
+                command('context --max-chars 0')
+                wait_for(b'Usage: /context')
+                assert 'PROJECT CONTEXT' in screen.text()
+                command('context --max-chars 1')
+                wait_for(b'Operation failed:')
+                assert 'PROJECT CONTEXT' in screen.text()
+                command('back')
+                command('home')
+                assert graph_snapshot() == baseline, 'context must preserve bytes/types/modes'
+            print(f'PASS context budgets TERM={term} {size[1]}x{size[0]}: default/expanded/contracted '
+                  'core parity, literal fences, keyboard scroll/return, invalid/tiny/dirty retention '
+                  'and exact bytes/types/modes', flush=True)
             for navigation, search_command, scope_args, entity in [
                 ('project example', 'search', [], 'core'),
                 ('global', 'search', ['--global'], 'rust-pattern'),

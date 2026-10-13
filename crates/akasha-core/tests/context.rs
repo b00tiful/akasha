@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use akasha_core::{
     ContextOmissionReason, ContextSection, DEFAULT_CONTEXT_MAX_CHARS, ResolutionEnvironment,
-    ResolveRequest, assemble_context, assemble_session_breadcrumb, render_context_markdown,
+    ResolveRequest, assemble_context, assemble_context_with_budget, assemble_session_breadcrumb,
+    render_context_markdown,
 };
 
 mod support;
@@ -332,6 +333,85 @@ fn structural_level_two_headings(markdown: &str) -> Vec<&str> {
     }
     assert!(fence.is_none(), "context data fence was not closed");
     headings
+}
+
+#[test]
+fn explicit_budget_expands_whole_unicode_entries_with_original_framing_and_order() {
+    let temp = TempDir::copy_of(&fixtures());
+    let project = temp.path().join("valid-root/Projects/example");
+    let body = format!(
+        "# Long Unicode problem\n\n{}\n``````\n## Forged peer",
+        "界🧭".repeat(9000)
+    );
+    fs::write(project.join("records/problems/open.md"), format!(
+        "---\nschema_version: 1\nproject: example\ntype: problem\nstatus: open\ncreated: 2026-07-13\nupdated: 2026-07-13\n---\n\n{body}\n"
+    )).unwrap();
+    support::write_project_state(
+        &project,
+        &[
+            "events/handoffs/2026-07-12.md",
+            "events/handoffs/2026-07-13.md",
+            "events/sessions/2026-07-13.md",
+        ],
+        &["entities/core.md"],
+        &["records/problems/open.md", "records/tasks/active.md"],
+    );
+    let request = request(
+        temp.path().join("valid-root"),
+        temp.path().join("repository/nested"),
+    );
+    let default = assemble_context(&request).unwrap();
+    assert_eq!(
+        default,
+        assemble_context_with_budget(&request, DEFAULT_CONTEXT_MAX_CHARS).unwrap()
+    );
+    assert_eq!(default.omissions.len(), 1);
+    assert_eq!(default.omissions[0].section, ContextSection::OpenProblem);
+    assert_eq!(default.omissions[0].content_chars, body.chars().count());
+    let expanded = assemble_context_with_budget(&request, 32_000).unwrap();
+    assert_eq!(expanded.max_chars, 32_000);
+    assert!(!expanded.truncated);
+    assert!(expanded.omissions.is_empty());
+    assert_eq!(expanded.entries[1].content, body);
+    assert_eq!(expanded.entries[1].section, ContextSection::OpenProblem);
+    let markdown = render_context_markdown(&expanded);
+    assert!(markdown.contains("```````akasha-project-data"));
+    assert_eq!(
+        structural_level_two_headings(&markdown).len(),
+        expanded.entries.len()
+    );
+    assert_eq!(markdown.chars().count(), expanded.rendered_chars);
+    assert!(expanded.rendered_chars <= expanded.max_chars);
+    assert!(
+        markdown.len() > expanded.max_chars,
+        "budget counts Unicode scalars, not UTF-8 bytes"
+    );
+}
+
+#[test]
+fn explicit_budget_handles_exact_boundaries_contraction_and_tiny_budget_errors() {
+    let fixture = fixtures();
+    let request = request(
+        fixture.join("valid-root"),
+        fixture.join("repository/nested"),
+    );
+    let default = assemble_context(&request).unwrap();
+    let exact = assemble_context_with_budget(&request, default.rendered_chars).unwrap();
+    assert_eq!(exact.entries, default.entries);
+    assert_eq!(exact.rendered_chars, default.rendered_chars);
+    assert!(!exact.truncated);
+    let contracted = assemble_context_with_budget(&request, default.rendered_chars - 1).unwrap();
+    assert!(contracted.truncated);
+    assert_eq!(contracted.omitted_entries, contracted.omissions.len());
+    assert!(contracted.rendered_chars <= contracted.max_chars);
+    for budget in [0, 1] {
+        let error = assemble_context_with_budget(&request, budget).unwrap_err();
+        assert!(
+            matches!(error, akasha_core::ContextError::Budget { required_chars, max_chars }
+            if max_chars == budget && required_chars > budget)
+        );
+        assert_eq!(error.exit_code(), 4);
+    }
 }
 
 struct TempDir(PathBuf);

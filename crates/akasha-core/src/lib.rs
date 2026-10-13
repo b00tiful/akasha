@@ -35,8 +35,8 @@ pub use agent_wiring::{
 pub use context::{
     ContextBundle, ContextEntry, ContextError, ContextOmission, ContextOmissionReason,
     ContextSection, DEFAULT_CONTEXT_MAX_CHARS, SessionBreadcrumb, assemble_context,
-    assemble_session_breadcrumb, assemble_session_breadcrumb_if_linked, render_context_markdown,
-    render_session_breadcrumb,
+    assemble_context_with_budget, assemble_session_breadcrumb,
+    assemble_session_breadcrumb_if_linked, render_context_markdown, render_session_breadcrumb,
 };
 pub use document_links::{
     LibraryDocumentLink, LinkedLibraryDocument, activate_library_backlink,
