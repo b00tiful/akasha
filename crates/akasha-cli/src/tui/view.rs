@@ -501,6 +501,23 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
             "Esc Back",
             Action::Command("back"),
         );
+    } else if app.has_link_report() {
+        button(
+            frame,
+            app,
+            area,
+            &mut x,
+            "Follow",
+            Action::Command("follow"),
+        );
+        button(
+            frame,
+            app,
+            area,
+            &mut x,
+            "Esc Back",
+            Action::Command("back"),
+        );
     } else if app.focus == Focus::Reader && app.document.is_some() {
         button(
             frame,
@@ -1161,19 +1178,23 @@ mod tests {
         use akasha_core::{NoteLink, NoteLinkDirection, NoteLinkKind, NoteLinksResult};
         for (width, height) in [(40, 12), (80, 24), (120, 38)] {
             let mut app = test_app();
-            app.receive(Ok(Response::NoteLinks(NoteLinksResult {
-                note: "Projects/example/entities/Привет 世界.md".into(),
-                direction: NoteLinkDirection::Incoming,
-                scanned_canonical_notes: 35,
-                scanned_projections: 2,
-                total_matches: 32,
-                truncated: true,
-                links: (0..30)
-                    .map(|number| NoteLink {
-                        id: format!("#literal/{number:02}.md\u{1b}[2J"),
-                        kind: NoteLinkKind::Canonical,
-                    })
-                    .collect(),
+            app.receive(Ok(Response::NoteLinks(super::super::links::Report {
+                source: None,
+                limit: 30,
+                result: NoteLinksResult {
+                    note: "Projects/example/entities/Привет 世界.md".into(),
+                    direction: NoteLinkDirection::Incoming,
+                    scanned_canonical_notes: 35,
+                    scanned_projections: 2,
+                    total_matches: 32,
+                    truncated: true,
+                    links: (0..30)
+                        .map(|number| NoteLink {
+                            id: format!("#literal/{number:02}.md\u{1b}[2J"),
+                            kind: NoteLinkKind::Canonical,
+                        })
+                        .collect(),
+                },
             })));
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|frame| draw(frame, &mut app)).unwrap();

@@ -436,6 +436,18 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
                     visible += report_body_text(screen)
                 return ''.join(visible.split())
 
+            def expect_followed_entity(note_id, entity):
+                if size[0] >= 24:
+                    wait_for(note_id.encode())
+                # At 40x12 the reader deliberately omits its path row. Verify
+                # the target's canonical metadata through keyboard scrolling.
+                marker = f'entity: {entity}'
+                for _ in range(16):
+                    if marker in screen.text():
+                        break
+                    send(b'\x1b[B')
+                wait_for(marker.encode())
+
             identity = 'Projects/example/entities/core.md'
             baseline = graph_snapshot()
             expected = json.loads(subprocess.check_output([
@@ -454,6 +466,29 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             assert 'Savedfilesonly' in report
             assert ('truncated' in report) == expected['truncated']
             assert graph_snapshot() == baseline, 'backlink inspection must preserve bytes/types/modes'
+            assert expected['links'][0]['kind'] == 'canonical'
+            incoming_position = re.search(r'\b\d+-\d+ / \d+ lines\b', screen.text()).group(0)
+            command('follow 1')
+            wait_for(b'READ ONLY')
+            expect_followed_entity(expected['links'][0]['id'], 'rust-pattern')
+            command('back')
+            wait_for(b'NOTE BACKLINKS')
+            assert re.search(r'\b\d+-\d+ / \d+ lines\b', screen.text()).group(0) == incoming_position
+            assert graph_snapshot() == baseline, 'incoming activation and return must write nothing'
+            command('links Projects/example/events/sessions/2026-07-13.md --limit 1')
+            wait_for(b'NOTE LINKS')
+            report = collect_report()
+            assert '1.Projects/example/entities/core.md[canonical]' in report
+            outgoing_position = re.search(r'\b\d+-\d+ / \d+ lines\b', screen.text()).group(0)
+            command('follow 1')
+            wait_for(b'READING')
+            expect_followed_entity(identity, 'core')
+            command('back')
+            wait_for(b'NOTE LINKS')
+            assert re.search(r'\b\d+-\d+ / \d+ lines\b', screen.text()).group(0) == outgoing_position
+            assert graph_snapshot() == baseline, 'outgoing activation and return must write nothing'
+            command(f'backlinks {identity} --limit 1')
+            wait_for(b'NOTE BACKLINKS')
             command('links Projects/example/entities/missing.md')
             wait_for_refusal()
             wait_for(b'NOTE BACKLINKS')
@@ -479,7 +514,8 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             command('back')
             command('home')
             print(f'PASS graph reports TERM={term} {size[1]}x{size[0]}: keyboard scroll, '
-                  'bounds, coverage, projection input, failure/dirty retention, exact bytes/types/modes', flush=True)
+                  'bounds, coverage, bound incoming/outgoing follow and report return, projection input, '
+                  'failure/dirty retention, exact bytes/types/modes', flush=True)
         if full:
             idle_before = len(output)
             drain(0.7)

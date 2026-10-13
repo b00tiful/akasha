@@ -8,6 +8,7 @@ use super::editor::{Editor, safe_text};
 use super::init::{self, RecoveryReview as InitRecoveryReview, Review as InitReview};
 use super::integration::{Operation as IntegrationOperation, Review as IntegrationReview};
 use super::link::{self, Review as LinkReview};
+use super::links::Report as LinkReport;
 use super::state::{NavigationLocation, NavigationState};
 use crate::discover_agent_home;
 use crate::render::{agent_wiring_action_name, session_hook_action_name};
@@ -17,10 +18,9 @@ use akasha_core::{
     LibrarySearchResult, LinkPlan, LinkRequest, MutableNoteCreationForm,
     MutableNoteCreationPreview, MutableNoteCreationResult, MutableNoteLifecycleForm,
     MutableNoteLifecyclePreview, MutableNoteLifecycleResult, NoteClass, NoteLinkDirection,
-    NoteLinksResult, PendingNoteEditInspection, ResolveRequest, SessionHookWiringPlan,
-    apply_event_creation, apply_mutable_note_creation_preview,
-    apply_mutable_note_lifecycle_preview, assemble_context, assemble_session_breadcrumb,
-    build_library_projection, capture_handoff, create_event, inspect_note_links,
+    PendingNoteEditInspection, ResolveRequest, SessionHookWiringPlan, apply_event_creation,
+    apply_mutable_note_creation_preview, apply_mutable_note_lifecycle_preview, assemble_context,
+    assemble_session_breadcrumb, build_library_projection, capture_handoff, create_event,
     inspect_pending_note_edit, load_library_document, prepare_agent_wiring, prepare_event_creation,
     prepare_handoff_creation, prepare_mutable_note_creation, prepare_mutable_note_lifecycle,
     prepare_session_hook_wiring, preview_event_creation, preview_mutable_note_creation,
@@ -140,6 +140,11 @@ const COMMANDS: &[Completion] = &[
         description: "Inspect saved incoming files across projects and global knowledge",
     },
     Completion {
+        command: "follow",
+        argument: "NUMBER",
+        description: "Follow a bound canonical graph result; Esc returns to its report",
+    },
+    Completion {
         command: "search-all",
         argument: "TEXT",
         description: "Search every project and shared knowledge",
@@ -247,7 +252,7 @@ fn prompt_area(text: String) -> TextArea<'static> {
     prompt_area_with_placeholder(text, PROMPT_PLACEHOLDER)
 }
 
-pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nsetup PATH      review a new private data root (first run)\nonboard         prepare external-agent onboarding instructions\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nlinks [NOTE] [--limit N]\n                saved outgoing files (open note by default)\nbacklinks [NOTE] [--limit N]\n                saved incoming files; 30 default, 1..100 explicit\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       edit and review the open record/entity and its projection\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff         guided multiline handoff authoring and exact review\nhandoff PATH | NAME=VALUE | ...\n                inline capture from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE      guided multiline event authoring and exact review\nevent TYPE PATH | NAME=VALUE | ...\n                inline configured immutable event creation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\ninit PROJECT [REPOSITORY]\n                review an empty project scaffold and registry update\nlink PROJECT [REPOSITORY]\n                review an exclusive repository pointer creation\nconfirm PLAN_ID authorize the displayed administration plan\nrecovery        inspect note journal presence without writing; Esc returns\nrecover-init    review root initialization recovery; confirm PLAN_ID applies\nrefresh         retry core recovery and reload validated data (F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and lifecycle forms show exact configured templates and\nmaintained projections. Creation and lifecycle use Ctrl-N to review the exact note and projection\nbefore Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. All guided template fields support multiline text;\nCtrl-N/Ctrl-P navigate and Ctrl-S publishes only after exact source review.\nIntegration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nFirst run: /setup PATH, /confirm PLAN_ID, /init PROJECT [REPOSITORY], then /onboard.\nOtherwise open from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
+pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nsetup PATH      review a new private data root (first run)\nonboard         prepare external-agent onboarding instructions\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to report / previous list\nfollow NUMBER   open a bound canonical graph result\nlinks [NOTE] [--limit N]\n                saved outgoing files (open note by default)\nbacklinks [NOTE] [--limit N]\n                saved incoming files; 30 default, 1..100 explicit\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       edit and review the open record/entity and its projection\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff         guided multiline handoff authoring and exact review\nhandoff PATH | NAME=VALUE | ...\n                inline capture from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE      guided multiline event authoring and exact review\nevent TYPE PATH | NAME=VALUE | ...\n                inline configured immutable event creation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\ninit PROJECT [REPOSITORY]\n                review an empty project scaffold and registry update\nlink PROJECT [REPOSITORY]\n                review an exclusive repository pointer creation\nconfirm PLAN_ID authorize the displayed administration plan\nrecovery        inspect note journal presence without writing; Esc returns\nrecover-init    review root initialization recovery; confirm PLAN_ID applies\nrefresh         retry core recovery and reload validated data (F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and lifecycle forms show exact configured templates and\nmaintained projections. Creation and lifecycle use Ctrl-N to review the exact note and projection\nbefore Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. All guided template fields support multiline text;\nCtrl-N/Ctrl-P navigate and Ctrl-S publishes only after exact source review.\nIntegration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nFirst run: /setup PATH, /confirm PLAN_ID, /init PROJECT [REPOSITORY], then /onboard.\nOtherwise open from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Focus {
@@ -356,7 +361,8 @@ pub(super) enum Job {
     Search(ResolveRequest, String, Option<LibraryScope>),
     Context(ResolveRequest),
     Breadcrumb(ResolveRequest),
-    NoteLinks(ResolveRequest, String, NoteLinkDirection, usize),
+    NoteLinks(ResolveRequest, String, NoteLinkDirection, usize, bool),
+    FollowLink(ResolveRequest, Box<LinkReport>, usize, u16),
     CaptureHandoff(ResolveRequest, PathBuf, BTreeMap<String, String>),
     Template(ResolveRequest, String),
     CreateEvent(ResolveRequest, String, PathBuf, BTreeMap<String, String>),
@@ -405,7 +411,8 @@ pub(super) enum Response {
     Checked(Result<RefreshCheck, String>),
     Opened(LibraryDocument),
     Found(LibrarySearchResult),
-    NoteLinks(NoteLinksResult),
+    NoteLinks(LinkReport),
+    LinkFollowed(Box<(LinkReport, u16, LibraryDocument)>),
     Text(String, String),
     Saved(String),
     EventCreated(EventCreationResult),
@@ -597,9 +604,11 @@ fn execute_job_inner(job: Job) -> WorkResult {
             .map_err(|e| err(&e)),
         // Keep read-only inspection failures in the current view. In particular,
         // do not route pending journals through a recovery/load response.
-        Job::NoteLinks(request, id, direction, limit) => inspect_note_links(&request, &id, direction, limit)
+        Job::NoteLinks(request, id, direction, limit, canonical) => LinkReport::inspect(&request, &id, direction, limit, canonical)
             .map(Response::NoteLinks)
             .map_err(|e| err(&e)),
+        Job::FollowLink(request, report, index, scroll) => report.follow(&request, index)
+            .map(|document| Response::LinkFollowed(Box::new((*report, scroll, document)))),
         Job::CaptureHandoff(request, path, fields) => capture_handoff(&request, &path, &fields)
             .map(Response::EventCreated)
             .map_err(|e| err(&e)),
@@ -863,6 +872,8 @@ pub(super) struct App {
     init_recovery_review: Option<InitRecoveryReview>,
     link_review: Option<LinkReview>,
     pending_open: Option<String>,
+    link_report: Option<LinkReport>,
+    link_return: Option<(LinkReport, u16)>,
     recovery_return: Option<(Focus, u16, TextArea<'static>)>,
     jobs: Sender<Job>,
 }
@@ -925,6 +936,8 @@ impl App {
             init_recovery_review: None,
             link_review: None,
             pending_open: None,
+            link_report: None,
+            link_return: None,
             recovery_return: None,
             jobs,
         }
@@ -1091,17 +1104,27 @@ impl App {
                     expected: form.prepared.projection_source.clone(),
                 },
             ],
-            None => self
-                .document
-                .as_ref()
-                .zip(self.request.root_override.as_ref())
-                .map(|(document, root)| {
-                    vec![WatchedSource {
+            None => {
+                let Some(root) = self.request.root_override.as_ref() else {
+                    return vec![];
+                };
+                let report = self
+                    .link_report
+                    .as_ref()
+                    .or_else(|| self.link_return.as_ref().map(|(report, _)| report));
+                self.document
+                    .iter()
+                    .chain(
+                        report
+                            .and_then(|report| report.source.as_ref())
+                            .map(|source| &source.document),
+                    )
+                    .map(|document| WatchedSource {
                         path: root.join(&document.id),
                         expected: document.source.clone(),
-                    }]
-                })
-                .unwrap_or_default(),
+                    })
+                    .collect()
+            }
         }
     }
     fn submit(&mut self, job: Job) {
@@ -2002,6 +2025,19 @@ impl App {
         ));
     }
     pub fn receive(&mut self, response: WorkResult) -> bool {
+        if !matches!(
+            &response,
+            Err(_)
+                | Ok(Response::NoteLinks(_)
+                    | Response::LinkFollowed(_)
+                    | Response::Checked(_)
+                    | Response::Saved(_)
+                    | Response::RecoveryInspected(_)
+                    | Response::RecoveryRequired(_))
+        ) {
+            self.link_report = None;
+            self.link_return = None;
+        }
         let redraw = !matches!(
             &response,
             Ok(Response::Checked(Ok(RefreshCheck { changed: false, .. })))
@@ -2220,6 +2256,14 @@ impl App {
                     "External changes detected. Drafts were retained; save may conflict. Save or discard, then press F5.",
                 );
             }
+            Ok(Response::Checked(Ok(_)))
+                if self.link_report.is_some() || self.link_return.is_some() =>
+            {
+                self.external_change_pending = true;
+                self.message(
+                    "External changes detected. Current view retained; save or navigation may conflict. Resolve drafts, then press F5.",
+                );
+            }
             Ok(Response::Checked(Ok(checked))) => {
                 self.request = checked.request;
                 self.scope = LibraryScope::Project {
@@ -2238,6 +2282,8 @@ impl App {
                 self.message("Library refreshed after external changes.");
             }
             Ok(Response::Opened(document)) => {
+                self.link_report = None;
+                self.link_return = None;
                 self.body_title = document.id.clone();
                 self.body = document.source.clone();
                 self.document = Some(document);
@@ -2282,22 +2328,32 @@ impl App {
                 self.message("Link inspection finished; unfinished work or recovery view retained. Retry after resolving it.");
             }
             Ok(Response::NoteLinks(result)) => {
-                self.body_title = match result.direction {
-                    NoteLinkDirection::Outgoing => "NOTE LINKS",
-                    NoteLinkDirection::Incoming => "NOTE BACKLINKS",
+                self.link_return = None;
+                self.show_link_report(result, 0);
+            }
+            Ok(Response::LinkFollowed(result)) => {
+                let (report, scroll, document) = *result;
+                if self.dirty()
+                    || self.recovery_visible
+                    || self.recovery_blocked
+                    || self.link_report.as_ref() != Some(&report)
+                {
+                    self.message("Link activation finished; current view retained. Inspect again before following.");
+                    return true;
                 }
-                .into();
-                self.body = format!(
-                    "{}\nSaved files only; editor drafts are excluded.\nOpen canonical notes with /open PATH. Projection/other entries are inspection only.\nEsc returns to the library list.\n",
-                    crate::render::note_links_text(&result)
-                );
-                self.scroll = 0;
-                self.document = None;
+                self.link_report = None;
+                self.link_return = Some((report, scroll));
+                self.body_title = document.id.clone();
+                self.body = document.source.clone();
+                self.document = Some(document);
                 self.editor = None;
                 self.editing = false;
+                self.scroll = 0;
                 self.focus = Focus::Reader;
             }
             Ok(Response::Text(title, text)) => {
+                self.link_report = None;
+                self.link_return = None;
                 self.body_title = title;
                 self.body = text;
                 self.scroll = 0;
@@ -2620,6 +2676,8 @@ impl App {
             _ if self.recovery_blocked => self.message("Library closed pending recovery. Use /recovery; after reconciliation and resolving drafts, press F5."),
             _ if !self.can_leave() => {}
             "home" => {
+                self.link_report = None;
+                self.link_return = None;
                 self.document = None;
                 self.editor = None;
                 self.editing = false;
@@ -2670,6 +2728,10 @@ impl App {
                 }
             }
             "back" => {
+                if let Some((report, scroll)) = self.link_return.take() {
+                    self.show_link_report(report, scroll);
+                    return;
+                }
                 if self.document.is_some() || self.body_title != "WELCOME TO AKASHA" {
                     self.close_reader();
                     self.focus = Focus::List;
@@ -2742,13 +2804,36 @@ impl App {
             "links" | "backlinks" => {
                 match note_link_arguments(argument, self.document.as_ref().map(|document| document.id.as_str())) {
                     Ok((id, limit)) => self.submit(Job::NoteLinks(
+                        // Classification only enables a binding; core loading enforces authority.
                         self.request.clone(),
-                        id,
+                        id.clone(),
                         if command == "links" { NoteLinkDirection::Outgoing } else { NoteLinkDirection::Incoming },
                         limit,
+                        self.books().iter().any(|book| book.id == id),
                     )),
                     Err(error) => self.message(&format!("{error}. Usage: /{command} [NOTE] [--limit 1..100]; omit NOTE only while a note is open.")),
                 }
+            }
+            "follow" if argument.is_empty() => {
+                self.prompt = prompt_area("/follow ".into());
+                self.prompt_changed();
+                self.focus = Focus::Prompt;
+                self.message("Choose a report result: /follow NUMBER. Tab lists canonical results.");
+            }
+            "follow" => {
+                if !argument.bytes().all(|byte| byte.is_ascii_digit()) {
+                    self.message("Usage: /follow NUMBER. Result numbers start at 1.");
+                    return;
+                }
+                let Some(index) = argument.parse::<usize>().ok().and_then(|number| number.checked_sub(1)) else {
+                    self.message("Usage: /follow NUMBER. Result numbers start at 1.");
+                    return;
+                };
+                let Some(report) = self.link_report.as_ref() else {
+                    self.message("Open a /links or /backlinks report before using /follow.");
+                    return;
+                };
+                self.submit(Job::FollowLink(self.request.clone(), Box::new(report.clone()), index, self.scroll));
             }
             "breadcrumb" if argument.is_empty() => {
                 self.submit(Job::Breadcrumb(self.request.clone()))
@@ -2847,6 +2932,8 @@ impl App {
                 }
             }
             "help" => {
+                self.link_report = None;
+                self.link_return = None;
                 self.body_title = "HELP".into();
                 self.body = HELP.into();
                 self.document = None;
@@ -2860,12 +2947,33 @@ impl App {
     }
 
     fn close_reader(&mut self) {
+        self.link_report = None;
+        self.link_return = None;
         self.document = None;
         self.editor = None;
         self.editing = false;
         self.body_title = "WELCOME TO AKASHA".into();
         self.body = HELP.into();
         self.scroll = 0;
+    }
+
+    fn show_link_report(&mut self, report: LinkReport, scroll: u16) {
+        self.body_title = match report.result.direction {
+            NoteLinkDirection::Outgoing => "NOTE LINKS",
+            NoteLinkDirection::Incoming => "NOTE BACKLINKS",
+        }
+        .into();
+        self.body = report.text();
+        self.link_report = Some(report);
+        self.document = None;
+        self.editor = None;
+        self.editing = false;
+        self.scroll = scroll;
+        self.focus = Focus::Reader;
+    }
+
+    pub fn has_link_report(&self) -> bool {
+        self.link_report.is_some()
     }
 
     pub fn action(&mut self, action: Action) {
@@ -2956,6 +3064,26 @@ impl App {
                     argument: "[REPOSITORY]".into(),
                     description: "Registered project; repository defaults to launch directory"
                         .into(),
+                })
+                .collect();
+        }
+        if let Some(query) = prefix.strip_prefix("follow ") {
+            let query = query.trim().to_lowercase();
+            return self
+                .link_report
+                .as_ref()
+                .filter(|report| report.source.is_some())
+                .into_iter()
+                .flat_map(|report| report.result.links.iter().enumerate())
+                .filter(|(index, link)| {
+                    link.kind == akasha_core::NoteLinkKind::Canonical
+                        && (link.id.to_lowercase().contains(&query)
+                            || (index + 1).to_string().starts_with(&query))
+                })
+                .map(|(index, link)| Suggestion {
+                    command: format!("follow {}", index + 1),
+                    argument: String::new(),
+                    description: link.id.clone(),
                 })
                 .collect();
         }
@@ -5380,6 +5508,408 @@ mod tests {
     }
 
     #[test]
+    fn link_follow_checks_current_bounded_incoming_membership_before_opening() {
+        let mut fixture = Fixture::new();
+        fixture.app.command(&format!("backlinks {ID} --limit 1"));
+        fixture.finish();
+        let body = fixture.app.body.clone();
+        assert_eq!(
+            fixture.app.link_report.as_ref().unwrap().result.links[0].id,
+            GLOBAL_ID
+        );
+        let source = fs::read_to_string(fixture.root().join(GLOBAL_ID)).unwrap();
+        fs::write(
+            fixture.root().join("Global/entities/aaa-source.md"),
+            source.replace("entity: rust-pattern", "entity: aaa-source"),
+        )
+        .unwrap();
+        let before = link_snapshot(&fixture.root());
+        fixture.app.command("follow 1");
+        fixture.finish();
+        assert_eq!(fixture.app.body, body);
+        assert!(fixture.app.document.is_none());
+        assert!(
+            fixture
+                .app
+                .messages
+                .back()
+                .unwrap()
+                .contains("current bounded result")
+        );
+        assert_eq!(link_snapshot(&fixture.root()), before);
+    }
+
+    #[test]
+    fn link_follow_dirty_return_recovery_views_and_new_report_invalidate_old_replies() {
+        let mut fixture = Fixture::new();
+        fixture
+            .app
+            .command("links Projects/example/events/sessions/2026-07-13.md");
+        fixture.finish();
+        let body = fixture.app.body.clone();
+        fixture.app.scroll = 2;
+        fixture.app.command("follow 1");
+        fixture.finish();
+        fixture.app.command("edit");
+        fixture.app.paste("\nUnsaved follow draft 世界  ");
+        let draft = fixture.app.editor.as_ref().unwrap().source();
+        let before = link_snapshot(&fixture.root());
+        fixture.app.command("back");
+        assert_eq!(fixture.app.editor.as_ref().unwrap().source(), draft);
+        assert!(fixture.app.link_return.is_some() && fixture.app.dirty());
+        fixture.app.command("discard");
+        fixture.app.command("back");
+        assert_eq!(fixture.app.body, body);
+        assert_eq!(fixture.app.scroll, 2);
+        assert_eq!(link_snapshot(&fixture.root()), before);
+
+        let report = fixture.app.link_report.as_ref().unwrap().clone();
+        let response = execute_job(Job::FollowLink(
+            fixture.app.request.clone(),
+            Box::new(report.clone()),
+            0,
+            2,
+        ));
+        fixture.app.command("recovery");
+        fixture.finish();
+        fixture.app.receive(response);
+        assert!(fixture.app.recovery_visible && fixture.app.document.is_none());
+        assert_eq!(fixture.app.body, body);
+        fixture.app.command("back");
+        let obsolete = execute_job(Job::FollowLink(
+            fixture.app.request.clone(),
+            Box::new(report),
+            0,
+            2,
+        ));
+        fixture.app.command(&format!("backlinks {ID}"));
+        fixture.finish();
+        let replacement = fixture.app.body.clone();
+        fixture.app.receive(obsolete);
+        assert_eq!(fixture.app.body, replacement);
+        assert_eq!(fixture.app.body_title, "NOTE BACKLINKS");
+        assert!(fixture.app.document.is_none());
+        assert_eq!(link_snapshot(&fixture.root()), before);
+    }
+
+    #[test]
+    fn link_follow_both_directions_restore_exact_report_scroll_and_read_only_sources() {
+        for (command, target) in [
+            (format!("backlinks {ID}"), GLOBAL_ID),
+            (
+                "links Projects/example/events/sessions/2026-07-13.md".into(),
+                ID,
+            ),
+        ] {
+            let mut fixture = Fixture::new();
+            let before = link_snapshot(&fixture.root());
+            fixture.app.command(&command);
+            fixture.finish();
+            let body = fixture.app.body.clone();
+            let title = fixture.app.body_title.clone();
+            assert!(body.contains(&format!("1. {target} [canonical]")));
+            fixture.app.scroll = 3;
+            fixture.app.command("follow 1");
+            fixture.finish();
+            let document = fixture.app.document.as_ref().unwrap();
+            assert_eq!(document.id, target);
+            assert_eq!(
+                document.source,
+                fs::read_to_string(fixture.root().join(target)).unwrap()
+            );
+            if target == GLOBAL_ID {
+                assert!(!fixture.app.editable());
+            }
+            assert!(matches!(fixture.app.navigation_state().unwrap().location,
+                NavigationLocation::Note { ref id, .. } if id == target));
+            press(&mut fixture.app, KeyCode::Esc);
+            assert_eq!(fixture.app.body, body);
+            assert_eq!(fixture.app.body_title, title);
+            assert_eq!(fixture.app.scroll, 3);
+            assert!(fixture.app.document.is_none() && fixture.app.editor.is_none());
+            fixture.app.command("back");
+            assert!(!fixture.app.has_link_report() && fixture.app.link_return.is_none());
+            assert_eq!(link_snapshot(&fixture.root()), before);
+        }
+    }
+
+    #[test]
+    fn link_follow_occurrences_preserve_unicode_crlf_aliases_and_self_edges() {
+        let mut fixture = Fixture::new();
+        let source = fs::read_to_string(fixture.root().join(ID)).unwrap();
+        let replacement = format!("{source}\nПривет 😀 ![[{GLOBAL_ID}#heading|same alias]] [[{GLOBAL_ID}|same alias]]\n[[#self|世界]]\n").replace('\n', "\r\n");
+        replace_library_document(&fixture.app.request, ID, &source, &replacement).unwrap();
+        let before = link_snapshot(&fixture.root());
+        fixture.app.command(&format!("links {ID}"));
+        fixture.finish();
+        assert_eq!(
+            fixture.app.link_report.as_ref().unwrap().result.links.len(),
+            2
+        );
+        for (number, target) in [(1, GLOBAL_ID), (2, ID)] {
+            fixture.app.command(&format!("follow {number}"));
+            fixture.finish();
+            assert_eq!(fixture.app.document.as_ref().unwrap().id, target);
+            if target == ID {
+                assert_eq!(fixture.app.document.as_ref().unwrap().source, replacement);
+            }
+            fixture.app.command("back");
+        }
+        assert_eq!(link_snapshot(&fixture.root()), before);
+    }
+
+    #[test]
+    fn link_follow_refuses_noncanonical_projection_reports_and_out_of_bound_results() {
+        let mut fixture = Fixture::new();
+        let source = fs::read_to_string(fixture.root().join(ID)).unwrap();
+        fs::create_dir(fixture.root().join("Other")).unwrap();
+        fs::write(fixture.root().join("Other/世界.md"), "# Other\n").unwrap();
+        let index = fs::read_to_string(fixture.root().join("Projects/example/index.md")).unwrap();
+        akasha_core::update_entity(
+            &fixture.app.request,
+            ID,
+            &source,
+            &format!("{source}\n[[Projects/example/index]] [[Other/世界]]\n"),
+            &format!("{index}\n[[{ID}]]\n"),
+        )
+        .unwrap();
+        let before = link_snapshot(&fixture.root());
+        for command in [
+            format!("links {ID}"),
+            "links Projects/example/index.md".into(),
+            format!("backlinks {ID} --limit 1"),
+        ] {
+            fixture.app.command(&command);
+            fixture.finish();
+            let body = fixture.app.body.clone();
+            let report = fixture.app.link_report.as_ref().unwrap();
+            let unavailable: Vec<_> = report
+                .result
+                .links
+                .iter()
+                .enumerate()
+                .filter(|(_, link)| {
+                    report.source.is_none() || link.kind != akasha_core::NoteLinkKind::Canonical
+                })
+                .map(|(index, _)| index + 1)
+                .chain([report.result.links.len() + 1])
+                .collect();
+            for number in unavailable {
+                fixture.app.command(&format!("follow {number}"));
+                fixture.finish();
+                assert_eq!(fixture.app.body, body);
+                assert!(fixture.app.document.is_none());
+                assert!(
+                    fixture
+                        .app
+                        .messages
+                        .back()
+                        .unwrap()
+                        .starts_with("Operation failed:")
+                );
+            }
+        }
+        assert_eq!(link_snapshot(&fixture.root()), before);
+    }
+
+    #[test]
+    fn link_follow_stale_source_removed_edge_and_pending_journal_retain_report_without_writes() {
+        for failure in [
+            "outgoing-source",
+            "incoming-baseline",
+            "removed-edge",
+            "journal",
+        ] {
+            let mut fixture = Fixture::new();
+            fixture.app.command(&format!(
+                "{} {ID}",
+                if failure == "outgoing-source" {
+                    "links"
+                } else {
+                    "backlinks"
+                }
+            ));
+            // Give the outgoing canonical source a real edge before inspecting.
+            if failure == "outgoing-source" {
+                let source = fs::read_to_string(fixture.root().join(ID)).unwrap();
+                replace_library_document(
+                    &fixture.app.request,
+                    ID,
+                    &source,
+                    &format!("{source}\n[[{GLOBAL_ID}]]\n"),
+                )
+                .unwrap();
+            }
+            fixture.finish();
+            let body = fixture.app.body.clone();
+            fixture.app.scroll = 2;
+            match failure {
+                "outgoing-source" | "incoming-baseline" => {
+                    let source = fs::read_to_string(fixture.root().join(ID)).unwrap();
+                    replace_library_document(
+                        &fixture.app.request,
+                        ID,
+                        &source,
+                        &format!("{source}\nExternally changed.\n"),
+                    )
+                    .unwrap();
+                }
+                "removed-edge" => {
+                    let source = fs::read_to_string(fixture.root().join(GLOBAL_ID)).unwrap();
+                    fs::write(
+                        fixture.root().join(GLOBAL_ID),
+                        source.replace(
+                            "[[Projects/example/entities/core|the example core]]",
+                            "edge removed",
+                        ),
+                    )
+                    .unwrap();
+                }
+                _ => fs::write(
+                    fixture
+                        .root()
+                        .join("Projects/example/.akasha-edit-journal.json"),
+                    "Do not parse or recover\n",
+                )
+                .unwrap(),
+            }
+            let before = link_snapshot(&fixture.root());
+            fixture.app.command("follow 1");
+            fixture.finish();
+            assert_eq!(fixture.app.body, body, "{failure}");
+            assert_eq!(fixture.app.scroll, 2);
+            assert!(fixture.app.document.is_none(), "{failure}");
+            assert!(!fixture.app.recovery_visible && !fixture.app.recovery_blocked);
+            assert!(
+                fixture
+                    .app
+                    .messages
+                    .back()
+                    .unwrap()
+                    .starts_with("Operation failed:"),
+                "{failure}"
+            );
+            assert_eq!(link_snapshot(&fixture.root()), before);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn link_follow_symlink_target_refusal_preserves_types_modes_and_external_bytes() {
+        let mut fixture = Fixture::new();
+        fixture.app.command(&format!("backlinks {ID}"));
+        fixture.finish();
+        let outside = fixture.temp.join("outside.md");
+        fs::copy(fixture.root().join(GLOBAL_ID), &outside).unwrap();
+        fs::remove_file(fixture.root().join(GLOBAL_ID)).unwrap();
+        std::os::unix::fs::symlink(&outside, fixture.root().join(GLOBAL_ID)).unwrap();
+        let before = link_snapshot(&fixture.root());
+        let external = fs::read(&outside).unwrap();
+        let body = fixture.app.body.clone();
+        fixture.app.command("follow 1");
+        fixture.finish();
+        assert_eq!(fixture.app.body, body);
+        assert!(fixture.app.document.is_none());
+        assert_eq!(link_snapshot(&fixture.root()), before);
+        assert_eq!(fs::read(&outside).unwrap(), external);
+    }
+
+    #[test]
+    fn link_follow_guards_dirty_undo_forms_reviews_busy_and_obsolete_replies() {
+        let mut fixture = Fixture::new();
+        fixture
+            .app
+            .command("links Projects/example/events/sessions/2026-07-13.md");
+        fixture.finish();
+        let report = fixture.app.link_report.as_ref().unwrap().clone();
+        let response = execute_job(Job::FollowLink(
+            fixture.app.request.clone(),
+            Box::new(report.clone()),
+            0,
+            4,
+        ));
+        fixture.open_editor();
+        fixture.app.paste("\nDirty 世界\n");
+        let draft = fixture.app.editor.as_ref().unwrap().source();
+        let before = link_snapshot(&fixture.root());
+        fixture.app.receive(response);
+        fixture.app.command("follow 1");
+        fixture.app.command("back");
+        assert!(fixture.jobs.try_recv().is_err());
+        assert_eq!(fixture.app.editor.as_ref().unwrap().source(), draft);
+        control(&mut fixture.app, 'z');
+        assert!(!fixture.app.dirty());
+        control(&mut fixture.app, 'y');
+        assert_eq!(fixture.app.editor.as_ref().unwrap().source(), draft);
+        assert_eq!(link_snapshot(&fixture.root()), before);
+        for command in ["create task", "link example repository"] {
+            let mut fixture = Fixture::new();
+            fixture.app.command(command);
+            fixture.finish();
+            let body = fixture.app.body.clone();
+            fixture.app.command("follow 1");
+            assert!(fixture.jobs.try_recv().is_err());
+            assert_eq!(fixture.app.body, body);
+        }
+        let mut fixture = Fixture::new();
+        fixture.app.command(&format!("backlinks {ID}"));
+        fixture.finish();
+        fixture.app.command("follow 1");
+        fixture.app.command("follow 2");
+        fixture.finish();
+        assert!(fixture.jobs.try_recv().is_err(), "busy guard");
+        fixture.app.command("back");
+        let report = fixture.app.link_report.as_ref().unwrap().clone();
+        let response = execute_job(Job::FollowLink(
+            fixture.app.request.clone(),
+            Box::new(report),
+            0,
+            1,
+        ));
+        fixture.app.command("home");
+        let body = fixture.app.body.clone();
+        fixture.app.receive(response);
+        assert_eq!(fixture.app.body, body, "obsolete clean response");
+        assert!(fixture.app.document.is_none());
+    }
+
+    #[test]
+    fn link_follow_discovery_background_retention_and_unrelated_navigation_clear_bindings() {
+        let mut fixture = Fixture::new();
+        fixture.app.command(&format!("backlinks {ID}"));
+        fixture.finish();
+        let body = fixture.app.body.clone();
+        fixture.app.command("follow");
+        assert_eq!(fixture.app.prompt.lines(), ["/follow "]);
+        assert_eq!(fixture.app.completions()[0].command, "follow 1");
+        press(&mut fixture.app, KeyCode::Tab);
+        assert_eq!(fixture.app.prompt.lines(), ["/follow 1"]);
+        fixture.app.reset_prompt();
+        for argument in ["0", "-1", "+1", "1 extra", "999999999999999999999999999999"] {
+            fixture.app.command(&format!("follow {argument}"));
+            assert!(fixture.jobs.try_recv().is_err());
+            assert_eq!(fixture.app.body, body);
+        }
+        let source = fs::read_to_string(fixture.root().join(ID)).unwrap();
+        replace_library_document(
+            &fixture.app.request,
+            ID,
+            &source,
+            &format!("{source}\nSaved external change\n"),
+        )
+        .unwrap();
+        fixture.app.check_external_changes();
+        fixture.finish();
+        assert_eq!(fixture.app.body, body);
+        assert!(fixture.app.has_link_report() && fixture.app.external_change_pending);
+        fixture.app.command(&format!("open {ID}"));
+        fixture.finish();
+        assert!(!fixture.app.has_link_report() && fixture.app.link_return.is_none());
+        fixture.app.command("back");
+        assert_eq!(fixture.app.body_title, "WELCOME TO AKASHA");
+    }
+
+    #[test]
     fn note_link_reports_use_saved_graph_both_directions_and_projection_inputs() {
         let mut fixture = Fixture::new();
         fixture.app.open(ID);
@@ -5558,6 +6088,7 @@ mod tests {
             ID.into(),
             NoteLinkDirection::Incoming,
             30,
+            true,
         ));
         fixture
             .app

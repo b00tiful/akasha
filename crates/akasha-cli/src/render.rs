@@ -80,6 +80,14 @@ pub(crate) fn render_note_links(
 }
 
 pub(crate) fn note_links_text(result: &akasha_core::NoteLinksResult) -> String {
+    note_links_report_text(result, false)
+}
+
+pub(crate) fn numbered_note_links_text(result: &akasha_core::NoteLinksResult) -> String {
+    note_links_report_text(result, true)
+}
+
+fn note_links_report_text(result: &akasha_core::NoteLinksResult, numbered: bool) -> String {
     let display = |id: &str| {
         id.chars()
             .map(|c| if c.is_control() { ' ' } else { c })
@@ -102,12 +110,15 @@ pub(crate) fn note_links_text(result: &akasha_core::NoteLinksResult) -> String {
             ""
         },
     );
-    for link in &result.links {
+    for (index, link) in result.links.iter().enumerate() {
         let kind = match link.kind {
             akasha_core::NoteLinkKind::Canonical => "canonical",
             akasha_core::NoteLinkKind::Projection => "projection",
             akasha_core::NoteLinkKind::Other => "other",
         };
+        if numbered {
+            write!(text, "{}. ", index + 1).expect("writing to a string cannot fail");
+        }
         writeln!(text, "{} [{kind}]", display(&link.id)).expect("writing to a string cannot fail");
     }
     text

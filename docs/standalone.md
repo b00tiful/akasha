@@ -23,6 +23,7 @@ checks. Its [Backlinks panel](backlinks.md) now shows bounded incoming identitie
 totals/coverage and checked canonical source opening while retaining dirty and stale views.
 The terminal's `/links [NOTE] [--limit N]` and `/backlinks [NOTE] [--limit N]` now show the
 same saved-file graph in bounded read-only reports; omit NOTE while a canonical note is open.
+Numbered `/follow` activation rechecks canonical source/edge bindings; Esc returns to its report.
 See [terminal controls](note-links.md#in-the-terminal-interface).
 
 The former REST/MCP bridge, launcher, fallback logger, dedicated credentials and native

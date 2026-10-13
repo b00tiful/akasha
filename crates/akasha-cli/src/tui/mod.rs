@@ -3,6 +3,7 @@ mod editor;
 mod init;
 mod integration;
 mod link;
+mod links;
 mod starlight;
 mod state;
 mod view;

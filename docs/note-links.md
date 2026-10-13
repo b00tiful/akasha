@@ -54,6 +54,8 @@ The persistent TUI exposes the same saved-file graph through `/links` and `/back
 ```text
 /open Projects/example/entities/core.md
 /backlinks
+/follow 1
+/back
 /links Projects/example/entities/core.md --limit 100
 /backlinks Projects/example/index.md --limit 1
 ```
@@ -64,15 +66,24 @@ identity; paths with spaces need no quotes. The only option is a trailing ` --li
 loaded canonical note identities; configured indexes and roadmaps can be entered explicitly.
 
 The scrollable report shows direction, exact totals/truncation, canonical/projection coverage
-and classifications across all registered projects and global knowledge. Arrow and Page keys
-scroll; Esc returns to the library list. `/open PATH` opens a canonical result through the existing
-checked loader. Projection and `other` results remain inspection entries. A successful report
+and numbered classifications across all registered projects and global knowledge. Arrow and Page
+keys scroll. `/follow NUMBER` opens a canonical result in a report about a loaded canonical note,
+rechecking the saved baseline and outgoing occurrence or current bounded incoming edge through
+the core. `/follow` then Tab lists canonical result numbers and exact identities. Esc from the
+followed clean note returns to the report at its previous scroll position; Esc from the report
+returns to the library list. `/open PATH` remains available through the existing checked loader.
+Projection reports and projection/`other` results remain inspection entries. Refresh the library
+before binding newly added canonical notes. A successful report
 replaces the clean reader, so subsequent inspection commands need an explicit NOTE until another
 canonical note is opened.
 
 Dirty editors, unfinished forms, pending administration reviews and running operations block
 inspection. Failures retain the current reader/report, with a visible error. Pending journals
-refuse without parsing, recovering or writing; use `/recovery` and the existing recovery workflow
+refuse without parsing, recovering or writing; activation failures also retain the report.
+Dirty followed notes block report return until saved or discarded. Background changes retain
+the report behind the external-change signal; refresh or inspect again to obtain fresh results.
+Reports and their single return parent are kept only in memory and cleared by unrelated successful
+navigation. Use `/recovery` and the existing recovery workflow
 when appropriate. Reports use saved files and exclude drafts; they are point-in-time inspection,
 without inline edge activation or automatic refresh of the report. Display replaces controls
 with spaces; use the named command's explicit JSON for exact control-bearing identities.
