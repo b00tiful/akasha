@@ -21,6 +21,9 @@ the shared core; see [note-link inspection](note-links.md). The desktop now prov
 [guarded inline navigation](inline-navigation.md) using core-bound occurrences and exact-source
 checks. Its [Backlinks panel](backlinks.md) now shows bounded incoming identities, exact
 totals/coverage and checked canonical source opening while retaining dirty and stale views.
+The terminal's `/links [NOTE] [--limit N]` and `/backlinks [NOTE] [--limit N]` now show the
+same saved-file graph in bounded read-only reports; omit NOTE while a canonical note is open.
+See [terminal controls](note-links.md#in-the-terminal-interface).
 
 The former REST/MCP bridge, launcher, fallback logger, dedicated credentials and native
 backlink prototype have been removed. Historical development evidence remains archived

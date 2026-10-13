@@ -79,7 +79,7 @@ pub(crate) fn render_note_links(
     write_stdout(&note_links_text(result))
 }
 
-fn note_links_text(result: &akasha_core::NoteLinksResult) -> String {
+pub(crate) fn note_links_text(result: &akasha_core::NoteLinksResult) -> String {
     let display = |id: &str| {
         id.chars()
             .map(|c| if c.is_control() { ' ' } else { c })

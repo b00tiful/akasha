@@ -46,3 +46,33 @@ incoming inspection and baseline/edge-checked canonical opening in the shared no
 Plain output replaces control characters in displayed identities with spaces. Opt-in JSON
 preserves exact identities as escaped data. Akasha needs no external editor, plugin or model
 for inspection.
+
+## In the terminal interface
+
+The persistent TUI exposes the same saved-file graph through `/links` and `/backlinks`:
+
+```text
+/open Projects/example/entities/core.md
+/backlinks
+/links Projects/example/entities/core.md --limit 100
+/backlinks Projects/example/index.md --limit 1
+```
+
+Omit NOTE only while a canonical note is open. Otherwise supply the exact full vault-relative
+identity; paths with spaces need no quotes. The only option is a trailing ` --limit N`, with
+30 results by default and explicit limits from 1 to 100. Tab after either command suggests
+loaded canonical note identities; configured indexes and roadmaps can be entered explicitly.
+
+The scrollable report shows direction, exact totals/truncation, canonical/projection coverage
+and classifications across all registered projects and global knowledge. Arrow and Page keys
+scroll; Esc returns to the library list. `/open PATH` opens a canonical result through the existing
+checked loader. Projection and `other` results remain inspection entries. A successful report
+replaces the clean reader, so subsequent inspection commands need an explicit NOTE until another
+canonical note is opened.
+
+Dirty editors, unfinished forms, pending administration reviews and running operations block
+inspection. Failures retain the current reader/report, with a visible error. Pending journals
+refuse without parsing, recovering or writing; use `/recovery` and the existing recovery workflow
+when appropriate. Reports use saved files and exclude drafts; they are point-in-time inspection,
+without inline edge activation or automatic refresh of the report. Display replaces controls
+with spaces; use the named command's explicit JSON for exact control-bearing identities.

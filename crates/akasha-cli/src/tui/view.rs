@@ -870,6 +870,7 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
             || app.event_stage() == Some(true)
             || app.creation_review().is_some()
             || app.lifecycle_review().is_some()
+            || matches!(app.body_title.as_str(), "NOTE LINKS" | "NOTE BACKLINKS")
         {
             Text::from(safe_text(&source))
         } else {
@@ -1151,6 +1152,55 @@ mod tests {
             assert!(!visible.contains('\u{1b}'));
             assert!(visible.contains("private backup"));
             assert!(!visible.contains("Project memory"));
+        }
+    }
+
+    #[test]
+    fn note_link_reports_are_literal_scrollable_and_keep_compact_return_controls() {
+        use super::super::app::Response;
+        use akasha_core::{NoteLink, NoteLinkDirection, NoteLinkKind, NoteLinksResult};
+        for (width, height) in [(40, 12), (80, 24), (120, 38)] {
+            let mut app = test_app();
+            app.receive(Ok(Response::NoteLinks(NoteLinksResult {
+                note: "Projects/example/entities/Привет 世界.md".into(),
+                direction: NoteLinkDirection::Incoming,
+                scanned_canonical_notes: 35,
+                scanned_projections: 2,
+                total_matches: 32,
+                truncated: true,
+                links: (0..30)
+                    .map(|number| NoteLink {
+                        id: format!("#literal/{number:02}.md\u{1b}[2J"),
+                        kind: NoteLinkKind::Canonical,
+                    })
+                    .collect(),
+            })));
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let mut visible = screen(&terminal);
+            assert!(visible.contains("NOTE BACKLINKS"));
+            assert!(
+                app.hits
+                    .iter()
+                    .any(|(_, hit)| matches!(hit, Action::Command("back")))
+            );
+            assert!(
+                app.hits
+                    .iter()
+                    .any(|(_, hit)| matches!(hit, Action::Command("quit")))
+            );
+            assert!(app.max_scroll > 0);
+            for scroll in 1..=app.max_scroll {
+                app.scroll = scroll;
+                terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                visible.push_str(&screen(&terminal));
+            }
+            assert!(visible.contains("#literal/29.md"), "{visible}");
+            assert!(!visible.contains('\u{1b}'));
+            assert!(visible.contains("32 matches; showing 30"), "{visible}");
+            app.command("back");
+            assert_eq!(app.body_title, "WELCOME TO AKASHA");
+            assert!(app.focus == Focus::List);
         }
     }
 }

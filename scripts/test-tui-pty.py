@@ -100,6 +100,18 @@ class Screen:
                          for row in range(rows))
 
 
+def report_body_text(screen):
+    lines = screen.text().splitlines()
+    top = next(index for index, line in enumerate(lines)
+               if 'NOTE LINKS' in line or 'NOTE BACKLINKS' in line)
+    status = next(index for index in range(top + 1, len(lines))
+                  if re.fullmatch(r'\s*\d+-\d+ / \d+ lines\s*', lines[index]))
+    # The reader has only a top rail and one padding row below it. Its final
+    # content row is the scroll status; there are no side or bottom borders.
+    assert top + 2 < status, f'Report body missing: {screen.text()}'
+    return ''.join(line.strip() for line in lines[top + 2:status])
+
+
 def check_screen_observer():
     screen = Screen()
     # Text kept from earlier frames must survive cursor-addressed partial changes.
@@ -112,6 +124,19 @@ def check_screen_observer():
     assert 'CREATE' not in screen.text(), 'old frames must not satisfy current-state checks'
     screen.feed(b'\x1b[2J')
     assert screen.text() == ''
+    # Compact wrapped phrases span frames, with status/messages/prompt between
+    # them. Only body rows may be concatenated, and source edge characters stay.
+    fragments = []
+    for body in ['4 project', 'projections across all projects.', '#literal/世界.md [canonical]']:
+        frame = '\r\n'.join([
+            'AKASHA', 'example', '-- NOTE BACKLINKS --------------------', '',
+            f' {body}', ' 1-1 / 20 lines  ', 'Operation failed: previous check',
+            'Command prompt', 'Esc Back   Ctrl-Q quit',
+        ])
+        screen.feed(('\x1b[2J\x1b[1;1H' + frame).encode())
+        fragments.append(report_body_text(screen))
+    assert fragments == ['4 project', 'projections across all projects.', '#literal/世界.md [canonical]']
+    assert '4projectprojections' in ''.join(''.join(fragments).split())
 
 
 def check(binary, root, agent_home, term, full=False, expect_restore=False,
@@ -393,6 +418,68 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
         assert b'\x1b[?2004h' in output
         assert b'\x1b[?1004h' in output
         assert b'\x1b[?1006h' in output
+        if keyboard:
+            def graph_snapshot():
+                paths = [root, *root.rglob('*')]
+                return {str(path.relative_to(root)): (
+                    path.lstat().st_mode,
+                    os.readlink(path) if path.is_symlink() else
+                    path.read_bytes() if path.is_file() else None,
+                ) for path in paths}
+
+            def collect_report():
+                # The 40x12 viewport exposes only a few wrapped lines. Read the
+                # whole bounded report with the same keyboard scroll path.
+                visible = report_body_text(screen)
+                for _ in range(36):
+                    send(b'\x1b[B')
+                    visible += report_body_text(screen)
+                return ''.join(visible.split())
+
+            identity = 'Projects/example/entities/core.md'
+            baseline = graph_snapshot()
+            expected = json.loads(subprocess.check_output([
+                str(binary), '--root', str(root), '--project', 'example', '--json',
+                'backlinks', identity, '--limit', '1',
+            ]))
+            command(f'open {identity}')
+            wait_for(b'READING')
+            command('backlinks --limit 1')
+            wait_for(b'NOTE BACKLINKS')
+            report = collect_report()
+            assert f"{expected['total_matches']}matches;showing1" in report
+            assert ''.join(expected['links'][0]['id'].split()) in report
+            assert f"{expected['scanned_canonical_notes']}canonicalnotes" in report
+            assert f"{expected['scanned_projections']}projectprojections" in report, report
+            assert 'Savedfilesonly' in report
+            assert ('truncated' in report) == expected['truncated']
+            assert graph_snapshot() == baseline, 'backlink inspection must preserve bytes/types/modes'
+            command('links Projects/example/entities/missing.md')
+            wait_for_refusal()
+            wait_for(b'NOTE BACKLINKS')
+            command('links Projects/example/index.md --limit 100')
+            wait_for(b'NOTE LINKS')
+            report = collect_report()
+            assert 'Outgoinglinks:Projects/example/index.md' in report
+            command('links --limit 0')
+            # Compact message rows show the validation prefix; the appended
+            # usage guidance is outside the viewport at 40 columns.
+            wait_for(b'Limit must be an integer')
+            wait_for(b'NOTE LINKS')
+            command(f'open {identity}')
+            wait_for(b'READING')
+            command('edit')
+            wait_for(b'SOURCE')
+            send(b'\x1b[1;5F')
+            send(b'\x1b[200~\nGraph inspection dirty guard: \xe4\xb8\x96\xe7\x95\x8c\x1b[201~')
+            command('backlinks', from_editor=True)
+            wait_for(b'Unsaved changes')
+            command('discard')
+            assert graph_snapshot() == baseline, 'refusal and discard must preserve bytes/types/modes'
+            command('back')
+            command('home')
+            print(f'PASS graph reports TERM={term} {size[1]}x{size[0]}: keyboard scroll, '
+                  'bounds, coverage, projection input, failure/dirty retention, exact bytes/types/modes', flush=True)
         if full:
             idle_before = len(output)
             drain(0.7)
@@ -911,7 +998,12 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             repository_link_review()
             project_initialization_review()
             # Preserve the established cross-launch task navigation checkpoint.
-            command('open Projects/example/records/tasks/pty-created.md')
+            # A standalone --profile keyboard run has no preceding full-profile
+            # creation; use the fixture's existing task in that case.
+            checkpoint = 'Projects/example/records/tasks/pty-created.md'
+            if not (root / checkpoint).is_file():
+                checkpoint = 'Projects/example/records/tasks/active.md'
+            command(f'open {checkpoint}')
             wait_for(b'READING')
         command('quit')
         process.wait(timeout=8)

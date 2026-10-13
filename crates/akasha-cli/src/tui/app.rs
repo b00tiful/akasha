@@ -16,10 +16,11 @@ use akasha_core::{
     InitPlan, InitRequest, LibraryBook, LibraryDocument, LibraryProjection, LibraryScope,
     LibrarySearchResult, LinkPlan, LinkRequest, MutableNoteCreationForm,
     MutableNoteCreationPreview, MutableNoteCreationResult, MutableNoteLifecycleForm,
-    MutableNoteLifecyclePreview, MutableNoteLifecycleResult, NoteClass, PendingNoteEditInspection,
-    ResolveRequest, SessionHookWiringPlan, apply_event_creation,
-    apply_mutable_note_creation_preview, apply_mutable_note_lifecycle_preview, assemble_context,
-    assemble_session_breadcrumb, build_library_projection, capture_handoff, create_event,
+    MutableNoteLifecyclePreview, MutableNoteLifecycleResult, NoteClass, NoteLinkDirection,
+    NoteLinksResult, PendingNoteEditInspection, ResolveRequest, SessionHookWiringPlan,
+    apply_event_creation, apply_mutable_note_creation_preview,
+    apply_mutable_note_lifecycle_preview, assemble_context, assemble_session_breadcrumb,
+    build_library_projection, capture_handoff, create_event, inspect_note_links,
     inspect_pending_note_edit, load_library_document, prepare_agent_wiring, prepare_event_creation,
     prepare_handoff_creation, prepare_mutable_note_creation, prepare_mutable_note_lifecycle,
     prepare_session_hook_wiring, preview_event_creation, preview_mutable_note_creation,
@@ -129,6 +130,16 @@ const COMMANDS: &[Completion] = &[
         description: "Search the current project or global scope",
     },
     Completion {
+        command: "links",
+        argument: "NOTE [--limit N]",
+        description: "Inspect saved outgoing links; omit NOTE for the open note",
+    },
+    Completion {
+        command: "backlinks",
+        argument: "NOTE [--limit N]",
+        description: "Inspect saved incoming files across projects and global knowledge",
+    },
+    Completion {
         command: "search-all",
         argument: "TEXT",
         description: "Search every project and shared knowledge",
@@ -236,7 +247,7 @@ fn prompt_area(text: String) -> TextArea<'static> {
     prompt_area_with_placeholder(text, PROMPT_PLACEHOLDER)
 }
 
-pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nsetup PATH      review a new private data root (first run)\nonboard         prepare external-agent onboarding instructions\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       edit and review the open record/entity and its projection\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff         guided multiline handoff authoring and exact review\nhandoff PATH | NAME=VALUE | ...\n                inline capture from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE      guided multiline event authoring and exact review\nevent TYPE PATH | NAME=VALUE | ...\n                inline configured immutable event creation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\ninit PROJECT [REPOSITORY]\n                review an empty project scaffold and registry update\nlink PROJECT [REPOSITORY]\n                review an exclusive repository pointer creation\nconfirm PLAN_ID authorize the displayed administration plan\nrecovery        inspect note journal presence without writing; Esc returns\nrecover-init    review root initialization recovery; confirm PLAN_ID applies\nrefresh         retry core recovery and reload validated data (F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and lifecycle forms show exact configured templates and\nmaintained projections. Creation and lifecycle use Ctrl-N to review the exact note and projection\nbefore Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. All guided template fields support multiline text;\nCtrl-N/Ctrl-P navigate and Ctrl-S publishes only after exact source review.\nIntegration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nFirst run: /setup PATH, /confirm PLAN_ID, /init PROJECT [REPOSITORY], then /onboard.\nOtherwise open from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
+pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nsetup PATH      review a new private data root (first run)\nonboard         prepare external-agent onboarding instructions\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to previous list\nlinks [NOTE] [--limit N]\n                saved outgoing files (open note by default)\nbacklinks [NOTE] [--limit N]\n                saved incoming files; 30 default, 1..100 explicit\nsearch TEXT     literal text search in current scope\nsearch-all TEXT search every project and global notes\ncreate TYPE     guided configured record/entity creation\nlifecycle       edit and review the open record/entity and its projection\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\ncontext         bounded project orientation\nbreadcrumb      open tasks and latest handoff\nhandoff         guided multiline handoff authoring and exact review\nhandoff PATH | NAME=VALUE | ...\n                inline capture from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE      guided multiline event authoring and exact review\nevent TYPE PATH | NAME=VALUE | ...\n                inline configured immutable event creation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\ninit PROJECT [REPOSITORY]\n                review an empty project scaffold and registry update\nlink PROJECT [REPOSITORY]\n                review an exclusive repository pointer creation\nconfirm PLAN_ID authorize the displayed administration plan\nrecovery        inspect note journal presence without writing; Esc returns\nrecover-init    review root initialization recovery; confirm PLAN_ID applies\nrefresh         retry core recovery and reload validated data (F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and lifecycle forms show exact configured templates and\nmaintained projections. Creation and lifecycle use Ctrl-N to review the exact note and projection\nbefore Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. All guided template fields support multiline text;\nCtrl-N/Ctrl-P navigate and Ctrl-S publishes only after exact source review.\nIntegration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nFirst run: /setup PATH, /confirm PLAN_ID, /init PROJECT [REPOSITORY], then /onboard.\nOtherwise open from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Focus {
@@ -345,6 +356,7 @@ pub(super) enum Job {
     Search(ResolveRequest, String, Option<LibraryScope>),
     Context(ResolveRequest),
     Breadcrumb(ResolveRequest),
+    NoteLinks(ResolveRequest, String, NoteLinkDirection, usize),
     CaptureHandoff(ResolveRequest, PathBuf, BTreeMap<String, String>),
     Template(ResolveRequest, String),
     CreateEvent(ResolveRequest, String, PathBuf, BTreeMap<String, String>),
@@ -393,6 +405,7 @@ pub(super) enum Response {
     Checked(Result<RefreshCheck, String>),
     Opened(LibraryDocument),
     Found(LibrarySearchResult),
+    NoteLinks(NoteLinksResult),
     Text(String, String),
     Saved(String),
     EventCreated(EventCreationResult),
@@ -582,6 +595,11 @@ fn execute_job_inner(job: Job) -> WorkResult {
         Job::Breadcrumb(request) => assemble_session_breadcrumb(&request)
             .map(|breadcrumb| Response::Text("PROJECT BREADCRUMB".into(), render_session_breadcrumb(&breadcrumb)))
             .map_err(|e| err(&e)),
+        // Keep read-only inspection failures in the current view. In particular,
+        // do not route pending journals through a recovery/load response.
+        Job::NoteLinks(request, id, direction, limit) => inspect_note_links(&request, &id, direction, limit)
+            .map(Response::NoteLinks)
+            .map_err(|e| err(&e)),
         Job::CaptureHandoff(request, path, fields) => capture_handoff(&request, &path, &fields)
             .map(Response::EventCreated)
             .map_err(|e| err(&e)),
@@ -717,6 +735,36 @@ fn integration_arguments(argument: &str) -> Result<(AgentClient, PathBuf), Strin
     discover_agent_home(client, explicit_home)
         .map(|home| (client, home))
         .map_err(|error| format!("{error}; pass an explicit HOME path."))
+}
+
+fn note_link_arguments(argument: &str, current: Option<&str>) -> Result<(String, usize), String> {
+    let argument = argument.trim();
+    let (id, limit) = if let Some(limit) = argument.strip_prefix("--limit ") {
+        ("", Some(limit))
+    } else if let Some((id, limit)) = argument.rsplit_once(" --limit ") {
+        (id.trim(), Some(limit))
+    } else if argument == "--limit" || argument.ends_with(" --limit") {
+        return Err("Missing limit".into());
+    } else {
+        (argument, None)
+    };
+    let limit = match limit {
+        None => 30,
+        Some(value) if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) => {
+            value
+                .parse::<usize>()
+                .ok()
+                .filter(|limit| (1..=100).contains(limit))
+                .ok_or("Limit must be an integer from 1 to 100")?
+        }
+        Some(_) => return Err("Limit must be an integer from 1 to 100".into()),
+    };
+    let id = if id.is_empty() {
+        current.ok_or("Open a note or supply its exact identity")?
+    } else {
+        id
+    };
+    Ok((id.to_owned(), limit))
 }
 
 fn handoff_arguments(argument: &str) -> Result<(PathBuf, BTreeMap<String, String>), String> {
@@ -2228,6 +2276,27 @@ impl App {
                     }
                 ));
             }
+            Ok(Response::NoteLinks(_))
+                if self.dirty() || self.recovery_visible || self.recovery_blocked =>
+            {
+                self.message("Link inspection finished; unfinished work or recovery view retained. Retry after resolving it.");
+            }
+            Ok(Response::NoteLinks(result)) => {
+                self.body_title = match result.direction {
+                    NoteLinkDirection::Outgoing => "NOTE LINKS",
+                    NoteLinkDirection::Incoming => "NOTE BACKLINKS",
+                }
+                .into();
+                self.body = format!(
+                    "{}\nSaved files only; editor drafts are excluded.\nOpen canonical notes with /open PATH. Projection/other entries are inspection only.\nEsc returns to the library list.\n",
+                    crate::render::note_links_text(&result)
+                );
+                self.scroll = 0;
+                self.document = None;
+                self.editor = None;
+                self.editing = false;
+                self.focus = Focus::Reader;
+            }
             Ok(Response::Text(title, text)) => {
                 self.body_title = title;
                 self.body = text;
@@ -2670,6 +2739,17 @@ impl App {
                 ));
             }
             "context" => self.submit(Job::Context(self.request.clone())),
+            "links" | "backlinks" => {
+                match note_link_arguments(argument, self.document.as_ref().map(|document| document.id.as_str())) {
+                    Ok((id, limit)) => self.submit(Job::NoteLinks(
+                        self.request.clone(),
+                        id,
+                        if command == "links" { NoteLinkDirection::Outgoing } else { NoteLinkDirection::Incoming },
+                        limit,
+                    )),
+                    Err(error) => self.message(&format!("{error}. Usage: /{command} [NOTE] [--limit 1..100]; omit NOTE only while a note is open.")),
+                }
+            }
             "breadcrumb" if argument.is_empty() => {
                 self.submit(Job::Breadcrumb(self.request.clone()))
             }
@@ -2879,7 +2959,15 @@ impl App {
                 })
                 .collect();
         }
-        if let Some(query) = prefix.strip_prefix("open ") {
+        if let Some((command, query)) =
+            ["open", "links", "backlinks"]
+                .into_iter()
+                .find_map(|command| {
+                    prefix
+                        .strip_prefix(&format!("{command} "))
+                        .map(|query| (command, query))
+                })
+        {
             let query = query.trim().to_lowercase();
             if query.parse::<usize>().is_ok() {
                 return vec![];
@@ -2893,7 +2981,7 @@ impl App {
                 })
                 .take(100)
                 .map(|book| Suggestion {
-                    command: format!("open {}", book.id),
+                    command: format!("{command} {}", book.id),
                     argument: String::new(),
                     description: book.label.clone(),
                 })
@@ -5256,6 +5344,340 @@ mod tests {
         assert_eq!(fs::read(state).unwrap(), before);
         fixture.app.command("breadcrumb extra");
         assert!(!fixture.app.busy);
+    }
+
+    fn link_snapshot(root: &Path) -> BTreeMap<PathBuf, (String, Vec<u8>)> {
+        fn visit(root: &Path, path: &Path, entries: &mut BTreeMap<PathBuf, (String, Vec<u8>)>) {
+            let metadata = fs::symlink_metadata(path).unwrap();
+            let bytes = if metadata.is_symlink() {
+                fs::read_link(path)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .as_bytes()
+                    .to_vec()
+            } else if metadata.is_file() {
+                fs::read(path).unwrap()
+            } else {
+                vec![]
+            };
+            entries.insert(
+                path.strip_prefix(root).unwrap().to_owned(),
+                (
+                    format!("{:?} {:?}", metadata.file_type(), metadata.permissions()),
+                    bytes,
+                ),
+            );
+            if metadata.is_dir() {
+                for entry in fs::read_dir(path).unwrap() {
+                    visit(root, &entry.unwrap().path(), entries);
+                }
+            }
+        }
+        let mut entries = BTreeMap::new();
+        visit(root, root, &mut entries);
+        entries
+    }
+
+    #[test]
+    fn note_link_reports_use_saved_graph_both_directions_and_projection_inputs() {
+        let mut fixture = Fixture::new();
+        fixture.app.open(ID);
+        fixture.finish();
+        let before = link_snapshot(&fixture.root());
+        fixture.app.command("backlinks");
+        fixture.finish();
+        assert_eq!(fixture.app.body_title, "NOTE BACKLINKS");
+        assert!(
+            fixture
+                .app
+                .body
+                .contains("7 canonical notes and 2 project projections")
+        );
+        assert!(fixture.app.body.contains("2 matches; showing 2"));
+        assert!(
+            fixture
+                .app
+                .body
+                .contains(&format!("{GLOBAL_ID} [canonical]"))
+        );
+        assert!(
+            fixture
+                .app
+                .body
+                .contains("Projects/example/events/sessions/2026-07-13.md [canonical]")
+        );
+        assert!(fixture.app.body.contains("Saved files only"));
+        assert!(fixture.app.document.is_none() && fixture.app.editor.is_none());
+        for (command, expected) in [
+            (
+                format!("backlinks {ID} --limit 1"),
+                "2 matches; showing 1 (truncated",
+            ),
+            (
+                "links Projects/example/events/sessions/2026-07-13.md".into(),
+                "1 matches; showing 1",
+            ),
+            (
+                "links Projects/example/index.md".into(),
+                "0 matches; showing 0",
+            ),
+        ] {
+            fixture.app.command(&command);
+            fixture.finish();
+            assert!(fixture.app.body.contains(expected), "{}", fixture.app.body);
+            assert!(fixture.app.focus == Focus::Reader);
+            assert_eq!(link_snapshot(&fixture.root()), before);
+        }
+        fixture.app.command("edit");
+        assert!(!fixture.app.editing && fixture.app.editor.is_none());
+        fixture.app.command(&format!("open {ID}"));
+        fixture.finish();
+        assert_eq!(fixture.app.document.as_ref().unwrap().id, ID);
+        assert_eq!(link_snapshot(&fixture.root()), before);
+    }
+
+    #[test]
+    fn note_link_bounds_and_spaced_unicode_inputs_are_exact() {
+        let mut fixture = Fixture::new();
+        let root = fixture.root();
+        fs::write(root.join("Projects/example/templates/entity.md"),
+            "---\nschema_version: 1\nentity: {{entity}}\nkind: subsystem\nstatus: active\nreviewed: 2026-10-13\n---\n# {{title}}\n{{body}}\n").unwrap();
+        fs::create_dir(root.join("Other")).unwrap();
+        let mut body =
+            "[[Projects/example/entities/core]]\n[[Projects/example/index]]\n".to_owned();
+        for number in 0..35 {
+            let id = format!("Other/{number:02}.md");
+            fs::write(root.join(&id), "# Other Markdown\n").unwrap();
+            body.push_str(&format!("[[{id}]]\n"));
+        }
+        let id = "Projects/example/entities/Привет 世界.md";
+        let index = fs::read_to_string(root.join("Projects/example/index.md")).unwrap();
+        akasha_core::create_mutable_note(
+            &fixture.app.request,
+            "entity",
+            Path::new("Привет 世界.md"),
+            &BTreeMap::from([
+                ("entity".into(), "unicode".into()),
+                ("title".into(), "Unicode".into()),
+                ("body".into(), body),
+            ]),
+            &format!("{index}\n[[{id}]]\n"),
+        )
+        .unwrap();
+        let before = link_snapshot(&root);
+        for (suffix, showing) in [("", 30), (" --limit 1", 1), (" --limit 100", 37)] {
+            fixture.app.command(&format!("links {id}{suffix}"));
+            fixture.finish();
+            assert!(
+                fixture
+                    .app
+                    .body
+                    .starts_with(&format!("Outgoing links: {id}\n"))
+            );
+            assert!(
+                fixture
+                    .app
+                    .body
+                    .contains(&format!("37 matches; showing {showing}"))
+            );
+            assert_eq!(fixture.app.body.contains("(truncated"), showing < 37);
+            assert_eq!(link_snapshot(&root), before);
+        }
+        assert!(
+            fixture
+                .app
+                .body
+                .contains("Projects/example/index.md [projection]")
+        );
+        assert!(fixture.app.body.contains("Other/34.md [other]"));
+        assert!(fixture.app.body.contains(&format!("{ID} [canonical]")));
+    }
+
+    #[test]
+    fn note_link_usage_and_discovery_do_not_submit_invalid_or_partial_commands() {
+        let mut fixture = Fixture::new();
+        let before = link_snapshot(&fixture.root());
+        for command in [
+            "links",
+            "backlinks",
+            "links --limit",
+            "links --limit 0",
+            "backlinks --limit 101",
+            "links --limit -1",
+            "links --limit +1",
+            "links --limit 1 extra",
+            "links --limit 999999999999999999999999999999",
+        ] {
+            fixture.app.command(command);
+            assert!(!fixture.app.busy, "{command}");
+            assert!(fixture.jobs.try_recv().is_err());
+            assert!(fixture.app.messages.back().unwrap().contains("Usage:"));
+        }
+        for command in ["links", "backlinks"] {
+            fixture.app.focus = Focus::Prompt;
+            fixture.app.prompt = prompt_area(format!("/{command}"));
+            fixture.app.prompt_changed();
+            let suggestions = fixture.app.completions();
+            assert_eq!(suggestions[0].command, command);
+            press(&mut fixture.app, KeyCode::Tab);
+            assert_eq!(fixture.app.prompt.lines(), [format!("/{command} ")]);
+            assert!(!fixture.app.busy);
+            fixture.app.prompt = prompt_area(format!("/{command} core"));
+            fixture.app.prompt_changed();
+            assert!(
+                fixture
+                    .app
+                    .completions()
+                    .iter()
+                    .any(|item| item.command == format!("{command} {ID}"))
+            );
+            press(&mut fixture.app, KeyCode::Tab);
+            assert_eq!(fixture.app.prompt.lines(), [format!("/{command} {ID}")]);
+            assert!(fixture.jobs.try_recv().is_err());
+        }
+        assert_eq!(link_snapshot(&fixture.root()), before);
+    }
+
+    #[test]
+    fn note_link_guards_and_delayed_results_retain_drafts_undo_forms_and_reviews() {
+        let mut fixture = Fixture::new();
+        fixture.open_editor();
+        let before = link_snapshot(&fixture.root());
+        fixture.app.command("backlinks");
+        fixture.app.command(&format!("links {ID}"));
+        assert!(fixture.app.busy);
+        fixture.app.paste("Ignored while the worker is busy");
+        assert!(!fixture.app.dirty());
+        fixture.finish();
+        assert!(fixture.jobs.try_recv().is_err(), "busy guard");
+        fixture.open_editor();
+        // Exercise receiver retention independently of the input's busy guard.
+        let response = execute_job(Job::NoteLinks(
+            fixture.app.request.clone(),
+            ID.into(),
+            NoteLinkDirection::Incoming,
+            30,
+        ));
+        fixture
+            .app
+            .paste("\nDraft typed while inspection runs. Привет 世界");
+        let draft = fixture.app.editor.as_ref().unwrap().source();
+        fixture.app.receive(response);
+        assert_eq!(fixture.app.document.as_ref().unwrap().id, ID);
+        assert_eq!(fixture.app.editor.as_ref().unwrap().source(), draft);
+        assert!(fixture.app.editing && fixture.app.dirty());
+        fixture.app.command("links");
+        assert!(fixture.jobs.try_recv().is_err(), "dirty guard");
+        control(&mut fixture.app, 'z');
+        assert!(!fixture.app.dirty());
+        control(&mut fixture.app, 'y');
+        assert_eq!(fixture.app.editor.as_ref().unwrap().source(), draft);
+        assert_eq!(link_snapshot(&fixture.root()), before);
+        for review in [false, true] {
+            let mut fixture = Fixture::new();
+            fixture.app.command(if review {
+                "link example repository"
+            } else {
+                "create task"
+            });
+            fixture.finish();
+            let body = fixture.app.body.clone();
+            let before = link_snapshot(&fixture.root());
+            for command in [format!("links {ID}"), format!("backlinks {ID}")] {
+                fixture.app.command(&command);
+                assert!(fixture.jobs.try_recv().is_err());
+                assert_eq!(fixture.app.body, body);
+                assert!(fixture.app.dirty());
+            }
+            assert_eq!(link_snapshot(&fixture.root()), before);
+        }
+    }
+
+    #[test]
+    fn note_link_refusals_retain_reader_report_and_journal_without_recovery() {
+        for failure in ["unknown", "stale", "journal"] {
+            let mut fixture = Fixture::new();
+            fixture.app.open(ID);
+            fixture.finish();
+            let command = if failure == "unknown" {
+                "backlinks Projects/example/entities/missing.md".to_owned()
+            } else {
+                "backlinks".into()
+            };
+            if failure == "stale" {
+                fs::write(
+                    fixture
+                        .root()
+                        .join("Projects/example/events/sessions/2026-07-13.md"),
+                    "externally changed immutable source\n",
+                )
+                .unwrap();
+            } else if failure == "journal" {
+                fs::write(
+                    fixture
+                        .root()
+                        .join("Projects/example/.akasha-edit-journal.json"),
+                    "do not parse or recover this journal\n",
+                )
+                .unwrap();
+            }
+            let before = link_snapshot(&fixture.root());
+            let body = fixture.app.body.clone();
+            fixture.app.scroll = 2;
+            fixture.app.command(&command);
+            fixture.finish();
+            assert_eq!(fixture.app.body, body);
+            assert_eq!(fixture.app.document.as_ref().unwrap().id, ID);
+            assert_eq!(fixture.app.scroll, 2);
+            assert!(
+                fixture
+                    .app
+                    .messages
+                    .back()
+                    .unwrap()
+                    .starts_with("Operation failed:")
+            );
+            assert!(!fixture.app.recovery_visible && !fixture.app.recovery_blocked);
+            assert_eq!(link_snapshot(&fixture.root()), before);
+        }
+        let mut fixture = Fixture::new();
+        fixture.app.command(&format!("backlinks {ID}"));
+        fixture.finish();
+        let body = fixture.app.body.clone();
+        fixture
+            .app
+            .command("links Projects/example/entities/missing.md");
+        fixture.finish();
+        assert_eq!(fixture.app.body, body);
+        assert_eq!(fixture.app.body_title, "NOTE BACKLINKS");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn note_link_symlink_refusal_preserves_entry_types_modes_and_current_reader() {
+        let mut fixture = Fixture::new();
+        fixture.app.open(ID);
+        fixture.finish();
+        let target = fixture.temp.join("outside.md");
+        fs::copy(fixture.root().join(GLOBAL_ID), &target).unwrap();
+        fs::remove_file(fixture.root().join(GLOBAL_ID)).unwrap();
+        std::os::unix::fs::symlink(&target, fixture.root().join(GLOBAL_ID)).unwrap();
+        let before = link_snapshot(&fixture.root());
+        let outside = fs::read(&target).unwrap();
+        fixture.app.command("links");
+        fixture.finish();
+        assert_eq!(fixture.app.document.as_ref().unwrap().id, ID);
+        assert!(
+            fixture
+                .app
+                .messages
+                .back()
+                .unwrap()
+                .starts_with("Operation failed:")
+        );
+        assert_eq!(link_snapshot(&fixture.root()), before);
+        assert_eq!(fs::read(&target).unwrap(), outside);
     }
 
     #[test]
