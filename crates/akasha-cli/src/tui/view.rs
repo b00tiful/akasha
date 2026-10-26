@@ -11,6 +11,7 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap},
 };
+use std::borrow::Cow;
 
 fn ink(app: &App) -> Style {
     if app.color {
@@ -872,17 +873,13 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
             );
         }
     } else {
-        let source = if app.recovery_visible {
+        let recovery_source = app.recovery_visible.then(|| {
             app.recovery
                 .as_ref()
                 .map(super::app::RecoveryNotice::text)
                 .unwrap_or_default()
-        } else if let Some(editor) = app.active_editor() {
-            editor.source()
-        } else {
-            app.body.clone()
-        };
-        let text = if app.recovery_visible
+        });
+        let literal = app.recovery_visible
             || app.reviewing_administration()
             || app.event_stage() == Some(true)
             || app.creation_review().is_some()
@@ -900,19 +897,44 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
                     | "AGENT ONBOARDING HANDOFF"
             )
             || app.body_title.starts_with("TEMPLATE · ")
-            || app.body_title.starts_with("INTEGRATIONS · ")
-        {
-            Text::from(safe_text(&source))
+            || app.body_title.starts_with("INTEGRATIONS · ");
+        let cached = if let Some(source) = &recovery_source {
+            app.reader_cache
+                .matches(source, body.width, literal, app.color)
+        } else if let Some(editor) = app.active_editor() {
+            app.reader_cache
+                .matches_editor(editor, body.width, literal, app.color)
         } else {
-            reading_text(&source, app)
+            app.reader_cache
+                .matches(&app.body, body.width, literal, app.color)
         };
-        let paragraph = Paragraph::new(text).style(style).wrap(Wrap { trim: false });
-        let count = paragraph.line_count(body.width);
+        if !cached {
+            let source = if let Some(source) = recovery_source {
+                Cow::Owned(source)
+            } else if let Some(editor) = app.active_editor() {
+                Cow::Owned(editor.source())
+            } else {
+                Cow::Borrowed(app.body.as_str())
+            };
+            let text = if literal {
+                Text::from(safe_text(&source))
+            } else {
+                reading_text(&source, app)
+            };
+            app.reader_cache
+                .update(source.into_owned(), text, body.width, literal, app.color);
+        }
+        let count = app.reader_cache.line_count();
         app.max_scroll = count
             .saturating_sub(usize::from(body.height))
             .min(u16::MAX as usize) as u16;
         app.scroll = app.scroll.min(app.max_scroll);
-        frame.render_widget(paragraph.scroll((app.scroll, 0)), body);
+        frame.render_widget(
+            app.reader_cache
+                .viewport(app.scroll, body.height)
+                .style(style),
+            body,
+        );
         frame.render_widget(
             Paragraph::new(format!(
                 "{}-{} / {} lines  {}",
@@ -1067,6 +1089,75 @@ mod tests {
             .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn reader_cache_invalidates_for_exact_source_width_presentation_and_palette() {
+        let mut app = test_app();
+        app.body_title = "HELP".into();
+        app.body = "# First 世界\n\n```\n# code\n```\n".into();
+        app.focus = Focus::Reader;
+        let draw_at = |app: &mut App, width| {
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal.draw(|frame| draw(frame, app)).unwrap();
+            screen(&terminal)
+        };
+        let initial = draw_at(&mut app, 80);
+        assert!(initial.contains("First"));
+        assert!(!initial.contains("# First"));
+        assert!(initial.contains("# code"));
+        let width = (1..80)
+            .find(|width| app.reader_cache.matches(&app.body, *width, false, true))
+            .unwrap();
+        let pointer = app.body.as_ptr();
+        assert_eq!(draw_at(&mut app, 80), initial);
+        assert_eq!(app.body.as_ptr(), pointer);
+        app.body = app.body.replace("First", "Other"); // same byte length
+        assert!(draw_at(&mut app, 80).contains("Other"));
+        assert!(!app.reader_cache.matches(
+            "# First 世界\n\n```\n# code\n```\n",
+            width,
+            false,
+            true
+        ));
+        app.body_title = "VALIDATION".into();
+        assert!(draw_at(&mut app, 80).contains("# Other"));
+        assert!(app.reader_cache.matches(&app.body, width, true, true));
+        app.color = false;
+        draw_at(&mut app, 80);
+        assert!(app.reader_cache.matches(&app.body, width, true, false));
+        draw_at(&mut app, 40);
+        assert!(!app.reader_cache.matches(&app.body, width, true, false));
+        app.body = "# literal\u{1b}[2J\n".into();
+        let literal = draw_at(&mut app, 80);
+        assert!(literal.contains("# literal�[2J"));
+        assert!(app.body.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn animation_freezes_in_readers_editors_unfocused_and_reduced_motion() {
+        let mut app = test_app();
+        app.no_motion = false;
+        app.focus = Focus::List;
+        assert!(app.animation_active(true)); // dashboard
+        app.body_title = "HELP".into();
+        for editing in [false, true] {
+            app.editing = editing;
+            for focus in [Focus::Reader, Focus::List] {
+                app.focus = focus;
+                assert!(!app.animation_active(true));
+            }
+            app.focus = Focus::Prompt;
+            assert!(app.animation_active(true));
+            assert!(!app.animation_active(false));
+            app.no_motion = true;
+            assert!(!app.animation_active(true));
+            app.no_motion = false;
+        }
+        app.body_title = "WELCOME TO AKASHA".into();
+        app.focus = Focus::Reader;
+        app.recovery_visible = true;
+        assert!(!app.animation_active(true));
     }
 
     #[test]

@@ -44,7 +44,14 @@ impl Editor {
         Ok(editor)
     }
     pub fn dirty(&self) -> bool {
-        self.source() != self.original
+        !self.matches_source(&self.original)
+    }
+    pub fn matches_source(&self, source: &str) -> bool {
+        self.area
+            .lines()
+            .iter()
+            .map(String::as_str)
+            .eq(source.split(self.separator))
     }
 }
 
@@ -93,5 +100,29 @@ mod tests {
         assert!(Editor::new("one\r\ntwo\n").is_err());
         assert!(Editor::new("a\x1b[2J").is_err());
         assert!(!safe_text("a\x1b[2J\u{9b}").contains('\x1b'));
+    }
+
+    #[test]
+    fn dirty_checks_match_exact_serialization_through_edits_undo_redo_and_save() {
+        for source in ["", "\n\n", "Привет 世界  \n", "first\r\nlast\r\n"] {
+            let mut editor = Editor::new(source).unwrap();
+            let check =
+                |editor: &Editor| assert_eq!(editor.dirty(), editor.source() != editor.original);
+            check(&editor);
+            editor.area.move_cursor(CursorMove::Bottom);
+            editor.area.move_cursor(CursorMove::End);
+            editor.area.insert_str("\n追加 e\u{301}\n");
+            check(&editor);
+            assert!(editor.area.undo());
+            check(&editor);
+            assert!(!editor.dirty());
+            assert!(editor.area.redo());
+            check(&editor);
+            editor.original = editor.source();
+            check(&editor);
+            assert!(!editor.dirty());
+            editor.area.delete_char();
+            check(&editor);
+        }
     }
 }

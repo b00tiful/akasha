@@ -971,6 +971,7 @@ pub(super) struct App {
     pub body: String,
     pub scroll: u16,
     pub max_scroll: u16,
+    pub reader_cache: super::reader::ReaderCache,
     pub messages: VecDeque<String>,
     pub busy: bool,
     pub checking: bool,
@@ -1035,6 +1036,7 @@ impl App {
             body: HELP.into(),
             scroll: 0,
             max_scroll: 0,
+            reader_cache: super::reader::ReaderCache::default(),
             messages: VecDeque::new(),
             busy: false,
             checking: false,
@@ -1511,6 +1513,14 @@ impl App {
         while self.messages.len() > 3 {
             self.messages.pop_front();
         }
+    }
+    pub fn animation_active(&self, focused: bool) -> bool {
+        focused
+            && !self.no_motion
+            && (self.focus == Focus::Prompt
+                || (!self.recovery_visible
+                    && self.document.is_none()
+                    && self.body_title == "WELCOME TO AKASHA"))
     }
     pub fn dirty(&self) -> bool {
         self.reviewing_administration()

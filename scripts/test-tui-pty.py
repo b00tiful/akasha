@@ -841,8 +841,17 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             send(b'\x1b[<0;7;6M\x1b[<0;7;6m')
 
             wait_for(b'Synthetic entity')
+            wait_for_ready()
+            paused = len(output)
+            drain(0.4)
+            assert len(output) == paused, 'focused reader must freeze all decoration'
+            assert process.poll() is None
             command('edit')
             wait_for(b'SOURCE')
+            wait_for_ready()
+            paused = len(output)
+            drain(0.4)
+            assert len(output) == paused, 'focused source editor must freeze all decoration'
             # Ctrl-End in the textarea moves to the end of the buffer.
             send(b'\x1b[1;5F')
             note = root / 'Projects/example/entities/core.md'

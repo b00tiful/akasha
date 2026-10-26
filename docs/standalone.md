@@ -14,6 +14,8 @@ Creation, lifecycle and administration keep newer work when preparation or previ
 obsolete; see [workflow review controls](terminal-workflows.md).
 Argument-free terminal commands reject extra text before changing drafts, reviews, recovery
 views or files; see [command syntax](terminal-command-syntax.md).
+Readers reuse one exact document layout for scrolling; reader/editor focus pauses prompt
+decoration. See [terminal runtime and measurement limits](terminal-runtime.md).
 
 Agents read files directly or use bounded `akasha context` and named CLI commands. Humans
 use Akasha's own terminal or desktop interface. Development notes under `akasha/` remain a

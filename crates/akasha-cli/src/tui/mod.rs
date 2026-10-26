@@ -4,6 +4,7 @@ mod init;
 mod integration;
 mod link;
 mod links;
+mod reader;
 mod starlight;
 mod state;
 mod view;
@@ -156,7 +157,15 @@ fn terminal_session(
     let mut last_tick = Instant::now();
     let mut last_refresh_check = Instant::now();
     let mut focused = true;
+    let mut size = terminal.size()?;
     while !app.quit {
+        // A PTY/emulator may change dimensions without delivering a Resize event. Paused
+        // animation must still rebuild the layout and mouse hit regions promptly.
+        let current_size = terminal.size()?;
+        if current_size != size {
+            size = current_size;
+            redraw = true;
+        }
         match responses.try_recv() {
             Ok(result) => {
                 redraw |= app.receive(result);
@@ -166,11 +175,9 @@ fn terminal_session(
                 return Err(io::Error::other("memory worker stopped unexpectedly"));
             }
         }
-        if !app.no_motion && focused && last_tick.elapsed() >= Duration::from_millis(50) {
+        if app.animation_active(focused) && last_tick.elapsed() >= Duration::from_millis(50) {
             app.sigil_tick = (started.elapsed().as_millis() / 50) as u64;
-            if app.focus == app::Focus::Prompt || app.body_title == "WELCOME TO AKASHA" {
-                app.tick = app.sigil_tick;
-            }
+            app.tick = app.sigil_tick;
             last_tick = Instant::now();
             redraw = true;
         }
