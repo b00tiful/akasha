@@ -391,20 +391,26 @@ pub(super) enum Job {
     CaptureHandoff(ResolveRequest, PathBuf, BTreeMap<String, String>),
     Template(ResolveRequest, String),
     CreateEvent(ResolveRequest, String, PathBuf, BTreeMap<String, String>),
-    PrepareEvent(ResolveRequest, Option<String>),
-    PreviewEvent(Box<EventCreationForm>, PathBuf, BTreeMap<String, String>),
+    PrepareEvent(ViewOrigin, Option<String>),
+    PreviewEvent(
+        ResolveRequest,
+        Box<EventCreationForm>,
+        PathBuf,
+        BTreeMap<String, String>,
+    ),
     ApplyEvent(ResolveRequest, Box<EventCreationPreview>),
     Validate(ResolveRequest),
     Save(ResolveRequest, String, String, String),
-    PrepareCreate(ResolveRequest, String),
+    PrepareCreate(ViewOrigin, String),
     PreviewCreate(
+        ResolveRequest,
         Box<MutableNoteCreationForm>,
         PathBuf,
         BTreeMap<String, String>,
         String,
     ),
     Create(ResolveRequest, Box<MutableNoteCreationPreview>),
-    PrepareLifecycle(ResolveRequest, String),
+    PrepareLifecycle(ViewOrigin, String),
     UpdateLifecycle(ResolveRequest, Box<MutableNoteLifecyclePreview>),
     PreviewLifecycle(
         ResolveRequest,
@@ -413,16 +419,16 @@ pub(super) enum Job {
         String,
     ),
     InspectIntegrations(ResolveRequest, AgentClient, PathBuf),
-    PrepareIntegration(IntegrationOperation),
+    PrepareIntegration(ViewOrigin, IntegrationOperation),
     CommitIntegration(IntegrationOperation, String),
-    PrepareSetup(PathBuf),
+    PrepareSetup(ViewOrigin, PathBuf),
     CommitSetup(Box<akasha_core::RootSetupPlan>),
     Onboard(ResolveRequest),
-    PrepareInit(InitRequest),
+    PrepareInit(ViewOrigin, InitRequest),
     CommitInit(InitRequest, Box<InitPlan>),
-    PrepareInitRecovery(ResolveRequest),
+    PrepareInitRecovery(ViewOrigin),
     CommitInitRecovery(ResolveRequest, Box<akasha_core::InitRecoveryPlan>),
-    PrepareLink(LinkRequest),
+    PrepareLink(ViewOrigin, LinkRequest),
     CommitLink(LinkRequest, LinkPlan),
 }
 pub(super) enum Response {
@@ -445,23 +451,23 @@ pub(super) enum Response {
     Text(ResolveRequest, String, String),
     Saved(String),
     EventCreated(EventCreationResult),
-    EventPrepared(EventCreationForm),
-    EventPreviewed(Box<EventCreationPreview>),
-    CreatePrepared(MutableNoteCreationForm),
-    CreatePreviewed(Box<MutableNoteCreationPreview>),
+    EventPrepared(ViewOrigin, EventCreationForm),
+    EventPreviewed(ResolveRequest, Box<EventCreationPreview>),
+    CreatePrepared(ViewOrigin, MutableNoteCreationForm),
+    CreatePreviewed(ResolveRequest, Box<MutableNoteCreationPreview>),
     Created(MutableNoteCreationResult),
-    LifecyclePrepared(MutableNoteLifecycleForm),
-    LifecyclePreviewed(Box<MutableNoteLifecyclePreview>),
+    LifecyclePrepared(ViewOrigin, MutableNoteLifecycleForm),
+    LifecyclePreviewed(ResolveRequest, Box<MutableNoteLifecyclePreview>),
     LifecycleUpdated(MutableNoteLifecycleResult),
-    IntegrationPrepared(Box<IntegrationReview>),
+    IntegrationPrepared(ViewOrigin, Box<IntegrationReview>),
     IntegrationCommitted(Result<String, String>),
-    SetupPrepared(Box<akasha_core::RootSetupPlan>),
+    SetupPrepared(ViewOrigin, Box<akasha_core::RootSetupPlan>),
     SetupCommitted(Result<akasha_core::RootSetupResult, String>),
-    InitPrepared(Box<InitReview>),
+    InitPrepared(ViewOrigin, Box<InitReview>),
     InitCommitted(Result<String, String>),
-    InitRecoveryPrepared(Result<Option<Box<InitRecoveryReview>>, String>),
+    InitRecoveryPrepared(ViewOrigin, Result<Option<Box<InitRecoveryReview>>, String>),
     InitRecoveryCommitted(Result<akasha_core::InitRecoveryResult, String>),
-    LinkPrepared(Box<LinkReview>),
+    LinkPrepared(ViewOrigin, Box<LinkReview>),
     LinkCommitted(Result<String, String>),
 }
 pub(super) type WorkResult = Result<Response, String>;
@@ -506,7 +512,11 @@ pub(super) fn worker() -> (Sender<Job>, Receiver<WorkResult>) {
 
 fn execute_job(job: Job) -> WorkResult {
     let request = match &job {
-        Job::Load(origin) | Job::Open(origin, _) => Some(origin.request.clone()),
+        Job::Load(origin)
+        | Job::Open(origin, _)
+        | Job::PrepareEvent(origin, _)
+        | Job::PrepareCreate(origin, _)
+        | Job::PrepareLifecycle(origin, _) => Some(origin.request.clone()),
         Job::Search(request, ..)
         | Job::Onboard(request)
         | Job::Context(request, _)
@@ -514,13 +524,10 @@ fn execute_job(job: Job) -> WorkResult {
         | Job::CaptureHandoff(request, _, _)
         | Job::Template(request, _)
         | Job::CreateEvent(request, _, _, _)
-        | Job::PrepareEvent(request, _)
         | Job::ApplyEvent(request, _)
         | Job::Validate(request)
         | Job::Save(request, _, _, _)
-        | Job::PrepareCreate(request, _)
         | Job::Create(request, _)
-        | Job::PrepareLifecycle(request, _)
         | Job::PreviewLifecycle(request, _, _, _)
         | Job::UpdateLifecycle(request, _)
         | Job::Check(request, _, _) => Some(request.clone()),
@@ -558,32 +565,33 @@ fn execute_job(job: Job) -> WorkResult {
 fn execute_job_inner(job: Job) -> WorkResult {
     let err = |error: &dyn std::fmt::Display| error.to_string();
     match job {
-        Job::PrepareSetup(path) => akasha_core::prepare_root_setup(&path)
-            .map(|plan| Response::SetupPrepared(Box::new(plan))).map_err(|error| err(&error)),
+        Job::PrepareSetup(origin, path) => akasha_core::prepare_root_setup(&path)
+            .map(|plan| Response::SetupPrepared(origin, Box::new(plan))).map_err(|error| err(&error)),
         Job::CommitSetup(plan) => Ok(Response::SetupCommitted(
             akasha_core::apply_root_setup(&plan).map_err(|error| err(&error)))),
         Job::Onboard(request) => akasha_core::prepare_onboarding_handoff(&request)
             .map(|handoff| Response::Text(request, "AGENT ONBOARDING HANDOFF".into(), crate::render::onboarding_handoff_text(&handoff)))
             .map_err(|error| err(&error)),
-        Job::PrepareInit(request) => InitReview::prepare(request)
-            .map(|review| Response::InitPrepared(Box::new(review))),
+        Job::PrepareInit(origin, request) => InitReview::prepare(request)
+            .map(|review| Response::InitPrepared(origin, Box::new(review))),
         Job::CommitInit(request, plan) =>
             Ok(Response::InitCommitted(InitReview::commit(&request, &plan))),
-        Job::PrepareInitRecovery(request) => Ok(Response::InitRecoveryPrepared(
-            InitRecoveryReview::prepare(request).map(|review| review.map(Box::new)),
-        )),
+        Job::PrepareInitRecovery(origin) => {
+            let review = InitRecoveryReview::prepare(origin.request.clone());
+            Ok(Response::InitRecoveryPrepared(origin, review.map(|review| review.map(Box::new))))
+        }
         Job::CommitInitRecovery(request, plan) => Ok(Response::InitRecoveryCommitted(
             InitRecoveryReview::commit(&request, &plan),
         )),
-        Job::PrepareLink(request) => LinkReview::prepare(request)
-            .map(|review| Response::LinkPrepared(Box::new(review))),
+        Job::PrepareLink(origin, request) => LinkReview::prepare(request)
+            .map(|review| Response::LinkPrepared(origin, Box::new(review))),
         Job::CommitLink(request, plan) =>
             Ok(Response::LinkCommitted(LinkReview::commit(&request, &plan))),
         Job::InspectRecovery(request) => Ok(Response::RecoveryInspected(
             inspect_pending_note_edit(&request).map_err(|error| err(&error)),
         )),
-        Job::PrepareIntegration(operation) => operation.prepare()
-            .map(|review| Response::IntegrationPrepared(Box::new(review))),
+        Job::PrepareIntegration(origin, operation) => operation.prepare()
+            .map(|review| Response::IntegrationPrepared(origin, Box::new(review))),
         Job::CommitIntegration(operation, plan_id) =>
             Ok(Response::IntegrationCommitted(operation.commit(&plan_id))),
         Job::Load(origin) => {
@@ -679,41 +687,41 @@ fn execute_job_inner(job: Job) -> WorkResult {
             replace_library_document(&request, &id, &expected, &replacement).map_err(|e| err(&e))?;
             Ok(Response::Saved(replacement))
         }
-        Job::PrepareCreate(request, note_type) => {
-            prepare_mutable_note_creation(&request, &note_type)
-                .map(Response::CreatePrepared)
+        Job::PrepareCreate(origin, note_type) => {
+            prepare_mutable_note_creation(&origin.request, &note_type)
+                .map(|form| Response::CreatePrepared(origin, form))
                 .map_err(|e| err(&e))
         }
-        Job::PrepareEvent(request, note_type) => {
+        Job::PrepareEvent(origin, note_type) => {
             let form = match note_type {
-                Some(note_type) => prepare_event_creation(&request, &note_type),
-                None => prepare_handoff_creation(&request),
+                Some(note_type) => prepare_event_creation(&origin.request, &note_type),
+                None => prepare_handoff_creation(&origin.request),
             };
-            form.map(Response::EventPrepared).map_err(|e| err(&e))
+            form.map(|form| Response::EventPrepared(origin, form)).map_err(|e| err(&e))
         }
-        Job::PreviewEvent(form, path, fields) => preview_event_creation(&form, &path, &fields)
-            .map(|preview| Response::EventPreviewed(Box::new(preview)))
+        Job::PreviewEvent(request, form, path, fields) => preview_event_creation(&form, &path, &fields)
+            .map(|preview| Response::EventPreviewed(request, Box::new(preview)))
             .map_err(|e| err(&e)),
         Job::ApplyEvent(request, preview) => apply_event_creation(&request, &preview)
             .map(Response::EventCreated)
             .map_err(|e| err(&e)),
-        Job::PreviewCreate(prepared, path, fields, projection) => preview_mutable_note_creation(
+        Job::PreviewCreate(request, prepared, path, fields, projection) => preview_mutable_note_creation(
             &prepared,
             &path,
             &fields,
             &projection,
         )
-        .map(|preview| Response::CreatePreviewed(Box::new(preview)))
+        .map(|preview| Response::CreatePreviewed(request, Box::new(preview)))
         .map_err(|e| err(&e)),
         Job::Create(request, preview) => apply_mutable_note_creation_preview(&request, &preview)
         .map(Response::Created)
         .map_err(|e| err(&e)),
-        Job::PrepareLifecycle(request, id) => prepare_mutable_note_lifecycle(&request, &id)
-            .map(Response::LifecyclePrepared)
+        Job::PrepareLifecycle(origin, id) => prepare_mutable_note_lifecycle(&origin.request, &id)
+            .map(|form| Response::LifecyclePrepared(origin, form))
             .map_err(|e| err(&e)),
         Job::PreviewLifecycle(request, prepared, replacement, projection) =>
             preview_mutable_note_lifecycle(&request, &prepared, &replacement, &projection)
-                .map(|preview| Response::LifecyclePreviewed(Box::new(preview)))
+                .map(|preview| Response::LifecyclePreviewed(request, Box::new(preview)))
                 .map_err(|e| err(&e)),
         Job::UpdateLifecycle(request, preview) => {
             apply_mutable_note_lifecycle_preview(&request, &preview)
@@ -1697,6 +1705,7 @@ impl App {
             return;
         };
         self.submit(Job::PreviewEvent(
+            self.request.clone(),
             Box::new(form.prepared.clone()),
             PathBuf::from(&form.path),
             form.fields
@@ -1710,6 +1719,7 @@ impl App {
             return;
         };
         self.submit(Job::PreviewCreate(
+            self.request.clone(),
             Box::new(form.prepared.clone()),
             PathBuf::from(&form.path),
             form.fields
@@ -2129,6 +2139,91 @@ impl App {
         ));
     }
     pub fn receive(&mut self, response: WorkResult) -> bool {
+        if matches!(&response, Ok(Response::Checked(..))) {
+            self.checking = false;
+        } else {
+            self.busy = false;
+        }
+        let preparation_origin = match &response {
+            Ok(
+                Response::EventPrepared(origin, _)
+                | Response::CreatePrepared(origin, _)
+                | Response::LifecyclePrepared(origin, _)
+                | Response::IntegrationPrepared(origin, _)
+                | Response::SetupPrepared(origin, _)
+                | Response::InitPrepared(origin, _)
+                | Response::InitRecoveryPrepared(origin, _)
+                | Response::LinkPrepared(origin, _),
+            ) => Some(origin),
+            _ => None,
+        };
+        if let Some(origin) = preparation_origin {
+            if !self.request_is_current(&origin.request) {
+                self.message(
+                    "Preparation reply is obsolete; current view retained. Prepare again.",
+                );
+                return true;
+            }
+            if self.dirty()
+                || self.editing != origin.editing
+                || self.recovery_visible
+                || self.recovery_blocked
+                || self.recovery_visible != origin.recovery_visible
+                || self.recovery_blocked != origin.recovery_blocked
+            {
+                self.message("Preparation finished; unfinished work or changed recovery view retained. Resolve it, then prepare again.");
+                return true;
+            }
+            if let Ok(Response::LifecyclePrepared(_, prepared)) = &response
+                && self.document.as_ref().map(|document| &document.id) != Some(&prepared.id)
+            {
+                self.message(
+                    "Lifecycle preparation is obsolete; current document retained. Prepare again.",
+                );
+                return true;
+            }
+        }
+        let preview_binding = match &response {
+            Ok(Response::EventPreviewed(request, preview)) => Some((
+                request,
+                matches!(&self.workflow, Some(Workflow::Event(form))
+                    if form.prepared == preview.form
+                        && preview.relative_path.as_os_str() == std::ffi::OsStr::new(&form.path)
+                        && fields_match(&form.fields, &preview.fields)
+                        && (form.stage == EventStage::Path && form.fields.is_empty()
+                            || matches!(form.stage, EventStage::Field(index)
+                                if index + 1 == form.fields.len()))),
+            )),
+            Ok(Response::CreatePreviewed(request, preview)) => Some((
+                request,
+                matches!(&self.workflow, Some(Workflow::Creation(form))
+                    if form.prepared == preview.form
+                        && preview.relative_path.as_os_str() == std::ffi::OsStr::new(&form.path)
+                        && fields_match(&form.fields, &preview.fields)
+                        && form.projection.source() == preview.projection_source
+                        && form.stage == CreationStage::Projection),
+            )),
+            Ok(Response::LifecyclePreviewed(request, preview)) => Some((
+                request,
+                matches!(&self.workflow, Some(Workflow::Lifecycle(form))
+                    if form.prepared == preview.prepared
+                        && form.note.source() == preview.replacement_source
+                        && form.projection.source() == preview.projection_source
+                        && form.pane == LifecyclePane::Projection
+                        && !form.reviewing),
+            )),
+            _ => None,
+        };
+        if let Some((request, matches_draft)) = preview_binding
+            && (!self.request_is_current(request)
+                || !matches_draft
+                || self.reviewing_administration()
+                || self.recovery_visible
+                || self.recovery_blocked)
+        {
+            self.message("Preview reply is obsolete or drafts changed; current view retained. Review again after resolving recovery.");
+            return true;
+        }
         if !matches!(
             &response,
             Err(_)
@@ -2143,6 +2238,14 @@ impl App {
                     | Response::Opened(..)
                     | Response::Checked(..)
                     | Response::Saved(_)
+                    | Response::EventPrepared(..)
+                    | Response::CreatePrepared(..)
+                    | Response::LifecyclePrepared(..)
+                    | Response::IntegrationPrepared(..)
+                    | Response::SetupPrepared(..)
+                    | Response::InitPrepared(..)
+                    | Response::InitRecoveryPrepared(..)
+                    | Response::LinkPrepared(..)
                     | Response::RecoveryInspected(_)
                     | Response::RecoveryRequired(..))
         ) {
@@ -2156,11 +2259,6 @@ impl App {
                 Ok(RefreshCheck { changed: false, .. })
             ))
         );
-        if matches!(&response, Ok(Response::Checked(..))) {
-            self.checking = false;
-        } else {
-            self.busy = false;
-        }
         match response {
             Ok(Response::RecoveryInspected(inspection)) => {
                 let blocked = !inspection
@@ -2187,7 +2285,9 @@ impl App {
                 }
                 self.require_recovery(notice);
             }
-            Ok(Response::IntegrationPrepared(review)) => {
+            Ok(Response::IntegrationPrepared(_, review)) => {
+                self.link_report = None;
+                self.link_return = None;
                 self.body_title = "INTEGRATION REVIEW".into();
                 self.body = review.body.clone();
                 self.integration_review = Some(*review);
@@ -2197,7 +2297,9 @@ impl App {
                 self.scroll = 0;
                 self.focus = Focus::Reader;
             }
-            Ok(Response::SetupPrepared(plan)) => {
+            Ok(Response::SetupPrepared(_, plan)) => {
+                self.link_report = None;
+                self.link_return = None;
                 self.body_title = "ROOT SETUP REVIEW".into();
                 self.body = format!(
                     "{}\n/confirm {} authorizes this exact plan.\n/discard cancels without writing.",
@@ -2230,7 +2332,9 @@ impl App {
                 self.scroll = 0;
                 self.focus = Focus::Reader;
             }
-            Ok(Response::InitPrepared(review)) => {
+            Ok(Response::InitPrepared(_, review)) => {
+                self.link_report = None;
+                self.link_return = None;
                 self.body_title = "PROJECT INITIALIZATION REVIEW".into();
                 self.body = review.body.clone();
                 self.init_review = Some(*review);
@@ -2257,7 +2361,9 @@ impl App {
                 self.scroll = 0;
                 self.focus = Focus::Reader;
             }
-            Ok(Response::InitRecoveryPrepared(result)) => {
+            Ok(Response::InitRecoveryPrepared(_, result)) => {
+                self.link_report = None;
+                self.link_return = None;
                 self.body_title = "INITIALIZATION RECOVERY REVIEW".into();
                 self.body = match result {
                     Ok(Some(review)) => {
@@ -2294,7 +2400,9 @@ impl App {
                 self.scroll = 0;
                 self.focus = Focus::Reader;
             }
-            Ok(Response::LinkPrepared(review)) => {
+            Ok(Response::LinkPrepared(_, review)) => {
+                self.link_report = None;
+                self.link_return = None;
                 self.body_title = "REPOSITORY LINK REVIEW".into();
                 self.body = review.body.clone();
                 self.link_review = Some(*review);
@@ -2637,7 +2745,7 @@ impl App {
                     "Saved through the core. Refresh to update library metrics and lists.",
                 );
             }
-            Ok(Response::EventPrepared(prepared)) => {
+            Ok(Response::EventPrepared(_, prepared)) => {
                 let fields = prepared
                     .fields
                     .iter()
@@ -2653,6 +2761,8 @@ impl App {
                         return true;
                     }
                 };
+                self.link_report = None;
+                self.link_return = None;
                 self.document = None;
                 self.editor = None;
                 self.workflow = Some(Workflow::Event(Box::new(EventForm {
@@ -2665,7 +2775,7 @@ impl App {
                 self.show_creation_input();
                 self.message("Event form loaded; enter a path, then author its template fields. Nothing is published before exact review and Ctrl-S.");
             }
-            Ok(Response::EventPreviewed(preview)) => {
+            Ok(Response::EventPreviewed(_, preview)) => {
                 if let Some(Workflow::Event(form)) = &mut self.workflow {
                     self.body = preview.source.clone();
                     form.preview = Some(*preview);
@@ -2677,7 +2787,7 @@ impl App {
                     self.message("Review the exact immutable source. Ctrl-S creates it; Ctrl-P returns to fields; discard writes nothing.");
                 }
             }
-            Ok(Response::CreatePrepared(prepared)) => {
+            Ok(Response::CreatePrepared(_, prepared)) => {
                 let projection = match Editor::new(&prepared.projection_source) {
                     Ok(editor) => editor,
                     Err(error) => {
@@ -2700,6 +2810,8 @@ impl App {
                         return true;
                     }
                 };
+                self.link_report = None;
+                self.link_return = None;
                 self.document = None;
                 self.editor = None;
                 self.workflow = Some(Workflow::Creation(Box::new(CreationForm {
@@ -2715,7 +2827,7 @@ impl App {
                     "Creation form loaded from the configured template; values are not written until Ctrl-S.",
                 );
             }
-            Ok(Response::CreatePreviewed(preview)) => {
+            Ok(Response::CreatePreviewed(_, preview)) => {
                 if let Some(Workflow::Creation(form)) = &mut self.workflow {
                     form.preview = Some(*preview);
                     self.show_creation_review(LifecyclePane::Note);
@@ -2750,7 +2862,7 @@ impl App {
                 ));
                 self.load();
             }
-            Ok(Response::LifecyclePrepared(prepared)) => {
+            Ok(Response::LifecyclePrepared(_, prepared)) => {
                 let note = match Editor::new(&prepared.source) {
                     Ok(editor) => editor,
                     Err(error) => {
@@ -2765,6 +2877,8 @@ impl App {
                         return true;
                     }
                 };
+                self.link_report = None;
+                self.link_return = None;
                 self.workflow = Some(Workflow::Lifecycle(Box::new(LifecycleForm {
                     prepared,
                     note,
@@ -2781,7 +2895,7 @@ impl App {
                     self.lifecycle_projection_label().unwrap().to_lowercase(),
                 ));
             }
-            Ok(Response::LifecyclePreviewed(preview)) => {
+            Ok(Response::LifecyclePreviewed(_, preview)) => {
                 if let Some(Workflow::Lifecycle(form)) = &mut self.workflow {
                     form.preview = Some(*preview);
                     self.show_lifecycle_review(LifecyclePane::Note);
@@ -2953,17 +3067,17 @@ impl App {
             "projects" => self.projects(),
             "setup" if argument.is_empty() => self.message("Usage: /setup PATH. Choose a new directory with an existing parent."),
             "setup" if self.projection.is_some() => self.message("A project is already loaded. To set up another root, open a separate Akasha session with --root pointing to the new destination."),
-            "setup" => self.submit(Job::PrepareSetup(self.request.cwd.join(argument))),
+            "setup" => self.submit(Job::PrepareSetup(self.view_origin(), self.request.cwd.join(argument))),
             "onboard" if !argument.is_empty() => self.message("Usage: /onboard"),
             "onboard" => self.submit(Job::Onboard(self.request.clone())),
             "init" => match init::arguments(&self.request, argument) {
-                Ok(request) => self.submit(Job::PrepareInit(request)),
+                Ok(request) => self.submit(Job::PrepareInit(self.view_origin(), request)),
                 Err(error) => self.message(&error),
             },
             "recover-init" if !argument.is_empty() => self.message("Usage: /recover-init. Recovery uses this session's data root."),
-            "recover-init" => self.submit(Job::PrepareInitRecovery(self.request.clone())),
+            "recover-init" => self.submit(Job::PrepareInitRecovery(self.view_origin())),
             "link" => match link::arguments(&self.request, argument) {
-                Ok(request) => self.submit(Job::PrepareLink(request)),
+                Ok(request) => self.submit(Job::PrepareLink(self.view_origin(), request)),
                 Err(error) => self.message(&error),
             },
             "project" => self.categories(LibraryScope::Project {
@@ -3046,7 +3160,7 @@ impl App {
                     return;
                 }
                 self.submit(Job::PrepareCreate(
-                    self.request.clone(),
+                    self.view_origin(),
                     argument.to_owned(),
                 ));
             }
@@ -3061,7 +3175,7 @@ impl App {
                     return;
                 };
                 self.submit(Job::PrepareLifecycle(
-                    self.request.clone(),
+                    self.view_origin(),
                     document.id.clone(),
                 ));
             }
@@ -3145,7 +3259,7 @@ impl App {
                     return;
                 }
                 if argument.is_empty() {
-                    self.submit(Job::PrepareEvent(self.request.clone(), None));
+                    self.submit(Job::PrepareEvent(self.view_origin(), None));
                     return;
                 }
                 match handoff_arguments(argument) {
@@ -3181,7 +3295,7 @@ impl App {
                 }
                 if argument.split_whitespace().count() == 1 {
                     self.submit(Job::PrepareEvent(
-                        self.request.clone(),
+                        self.view_origin(),
                         Some(argument.to_owned()),
                     ));
                     return;
@@ -3221,7 +3335,7 @@ impl App {
                 }
                 match integration_arguments(client_home) {
                     Ok((client, home)) => {
-                        self.submit(Job::PrepareIntegration(IntegrationOperation {
+                        self.submit(Job::PrepareIntegration(self.view_origin(), IntegrationOperation {
                             request: self.request.clone(),
                             client,
                             home,
@@ -3874,6 +3988,15 @@ impl App {
     }
 }
 
+fn fields_match(editors: &[(String, Editor)], fields: &BTreeMap<String, String>) -> bool {
+    editors.len() == fields.len()
+        && editors.iter().all(|(name, editor)| {
+            fields
+                .get(name)
+                .is_some_and(|source| *source == editor.source())
+        })
+}
+
 pub(super) fn scope_name(scope: &LibraryScope) -> String {
     match scope {
         LibraryScope::Global => "GLOBAL".into(),
@@ -3904,6 +4027,10 @@ mod tests {
 
     mod read_only_readers {
         include!("read_only_reader_tests.rs");
+    }
+
+    mod workflow_replies {
+        include!("workflow_reply_tests.rs");
     }
 
     fn guided_event(fixture: &mut Fixture, handoff: bool, crlf: bool) {

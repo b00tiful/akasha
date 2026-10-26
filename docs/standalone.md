@@ -10,6 +10,8 @@ cache and UI belong to that application. Akasha treats edits to shared Markdown 
 file changes and applies its existing validation, refresh and conflict safeguards.
 The terminal retains active readers and source buffers when changes arrive, and refreshes idle
 browser selections in place; see [document opening and refresh](terminal-refresh.md).
+Creation, lifecycle and administration keep newer work when preparation or preview replies become
+obsolete; see [workflow review controls](terminal-workflows.md).
 
 Agents read files directly or use bounded `akasha context` and named CLI commands. Humans
 use Akasha's own terminal or desktop interface. Development notes under `akasha/` remain a
