@@ -41,3 +41,7 @@ provenance without changing files. See [resolution inspection](resolution.md).
 
 Named and terminal search share core matching, scopes and exact identities. The terminal now
 accepts explicit 1..100 limits while keeping its 100-hit default. See [search usage](search.md).
+
+Validation, breadcrumb, template, onboarding and integration inspection use literal terminal
+readers with request-bound replies and retained unfinished/recovery views. See
+[read-only terminal inspection](terminal-inspection.md) for syntax and controls.

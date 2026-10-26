@@ -100,18 +100,24 @@ class Screen:
                          for row in range(rows))
 
 
-def report_body_text(screen):
+def report_body_lines(screen):
     lines = screen.text().splitlines()
     top = next(index for index, line in enumerate(lines)
                if any(title in line for title in ('NOTE LINKS', 'NOTE BACKLINKS',
                                                    'CROSS-PROJECT STATUS', 'CROSS-PROJECT DIGEST',
-                                                   'PROJECT RESOLUTION', 'PROJECT CONTEXT')))
+                                                   'PROJECT RESOLUTION', 'PROJECT CONTEXT',
+                                                   'VALIDATION', 'PROJECT BREADCRUMB', 'TEMPLATE · ',
+                                                   'AGENT ONBOARDING HANDOFF', 'INTEGRATIONS · ')))
     status = next(index for index in range(top + 1, len(lines))
                   if re.fullmatch(r'\s*\d+-\d+ / \d+ lines\s*', lines[index]))
     # The reader has only a top rail and one padding row below it. Its final
     # content row is the scroll status; there are no side or bottom borders.
     assert top + 2 < status, f'Report body missing: {screen.text()}'
-    return ''.join(line.strip() for line in lines[top + 2:status])
+    return [line.strip() for line in lines[top + 2:status]]
+
+
+def report_body_text(screen):
+    return ''.join(report_body_lines(screen))
 
 
 def check_screen_observer():
@@ -139,6 +145,17 @@ def check_screen_observer():
         fragments.append(report_body_text(screen))
     assert fragments == ['4 project', 'projections across all projects.', '#literal/世界.md [canonical]']
     assert '4projectprojections' in ''.join(''.join(fragments).split())
+    # One-line scrolling overlaps all but the newly exposed last row. Long exact
+    # reports must be reconstructed without appending the overlapping viewport.
+    reconstructed = []
+    for index, rows in enumerate([['# start', 'Привет 世界'], ['Привет 世界', '---'], ['---', '```end']]):
+        frame = '\r\n'.join(['AKASHA', 'example', '-- TEMPLATE · task --', '',
+                             *rows, f' {index + 1}-{index + 2} / 4 lines ', 'Command prompt'])
+        screen.feed(('\x1b[2J\x1b[1;1H' + frame).encode())
+        observed = report_body_lines(screen)
+        assert observed == rows
+        reconstructed.extend(observed if index == 0 else observed[-1:])
+    assert reconstructed == ['# start', 'Привет 世界', '---', '```end']
 
 
 def check(binary, root, agent_home, term, full=False, expect_restore=False,
@@ -563,6 +580,62 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             assert graph_snapshot() == baseline, 'resolution inspection must preserve bytes/types/modes'
             print(f'PASS resolution TERM={term} {size[1]}x{size[0]}: named plain parity, '
                   'all provenance fields, keyboard scroll/return, invalid arguments and no writes', flush=True)
+
+            def client_snapshot():
+                return {str(path.relative_to(agent_home)): (
+                    path.lstat().st_mode,
+                    os.readlink(path) if path.is_symlink() else
+                    path.read_bytes() if path.is_file() else None,
+                ) for path in [agent_home, *agent_home.rglob('*')]}
+
+            def collect_inspection():
+                visible = report_body_text(screen)
+                for _ in range(512):
+                    position = re.search(r'\b(\d+)-(\d+) / (\d+) lines\b', screen.text())
+                    assert position is not None, screen.text()
+                    if int(position[2]) >= int(position[3]):
+                        return ''.join(visible.split())
+                    send(b'\x1b[B')
+                    visible += report_body_lines(screen)[-1]
+                raise AssertionError('inspection did not reach the reader end')
+
+            home_before = client_snapshot()
+            plain = [str(binary), '--root', str(root), '--project', 'example']
+            breadcrumb = subprocess.check_output([*plain, 'breadcrumb']).decode()
+            onboarding = subprocess.check_output([*plain, 'onboard']).decode()
+            validation = json.loads(subprocess.check_output([*plain, '--json', 'validate']))
+            template = (root / 'Projects/example/templates/task.md').read_text()
+            inspection_cases = [
+                ('validate', b'VALIDATION', 'validate extra', b'Usage: /validate',
+                 ['Validation passed', f'Project: {validation["project"]}', f'Root: {validation["root"]}']),
+                ('breadcrumb', b'PROJECT BREADCRUMB', 'breadcrumb extra', b'Usage: /breadcrumb', [breadcrumb]),
+                ('template task', 'TEMPLATE · task'.encode(), 'template task extra', b'Usage: /template', [template]),
+                ('onboard', b'AGENT ONBOARDING HANDOFF', 'onboard extra', b'Usage: /onboard', [onboarding]),
+                (f'integrations codex {agent_home}', 'INTEGRATIONS · CODEX'.encode(),
+                 'integrations invalid', b'Usage: /integrations',
+                 ['READ-ONLY INSPECTION', 'INSTRUCTION POINTER', 'SESSIONSTART HOOK', str(agent_home)]),
+            ]
+            for operation in ('prepare-agent-wiring', 'prepare-session-hook'):
+                prepared = subprocess.run([*plain, '--json', operation, 'codex', '--home', str(agent_home)],
+                                          capture_output=True, text=True)
+                inspection_cases[-1][-1].append(json.loads(prepared.stdout)['plan_id']
+                                               if prepared.returncode == 0 else 'Status: unavailable')
+            for value, title, invalid, usage, expected_fields in inspection_cases:
+                command(value)
+                wait_for(title)
+                report = collect_inspection()
+                for expected in expected_fields:
+                    assert ''.join(expected.split()) in report, (value, expected, report)
+                command(invalid)
+                wait_for(usage)
+                assert title.decode() in screen.text(), (value, screen.text())
+                command('back')
+                command('home')
+                assert graph_snapshot() == baseline, f'{value}: data root changed'
+                assert client_snapshot() == home_before, f'{value}: client home changed'
+            print(f'PASS read-only readers TERM={term} {size[1]}x{size[0]}: all five core results, '
+                  'literal templates, full keyboard scroll/return, strict syntax and exact '
+                  'root/client-home bytes/types/modes', flush=True)
             for budget in (None, 32000, 1200):
                 arguments = [] if budget is None else ['--max-chars', str(budget)]
                 expected = json.loads(subprocess.check_output([
@@ -907,6 +980,14 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             wait_for(b'Unsaved changes')
             assert process.poll() is None
             assert note.read_bytes() == original
+            for index, value in enumerate(('validate', 'breadcrumb', 'template task', 'onboard',
+                                           f'integrations codex {agent_home}')):
+                command(value, from_editor=index == 0)
+                wait_for(b'Unsaved changes')
+                assert 'SOURCE' in screen.text() and note.read_bytes() == original
+            # The refused commands leave focus in the prompt. Return to the source
+            # editor before continuing the existing save/paste/discard sequence.
+            send(b'\x1b[Z')
             send(b'\x13')
             wait_for(b'Saved through the core')
             assert note.read_bytes() == original + paste, 'fragmented paste/resize must preserve exact bytes'

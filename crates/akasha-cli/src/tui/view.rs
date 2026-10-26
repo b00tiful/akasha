@@ -895,7 +895,13 @@ fn draw_reader(frame: &mut Frame, app: &mut App, area: Rect) {
                     | "CROSS-PROJECT DIGEST"
                     | "PROJECT RESOLUTION"
                     | "PROJECT CONTEXT"
-            ) {
+                    | "VALIDATION"
+                    | "PROJECT BREADCRUMB"
+                    | "AGENT ONBOARDING HANDOFF"
+            )
+            || app.body_title.starts_with("TEMPLATE · ")
+            || app.body_title.starts_with("INTEGRATIONS · ")
+        {
             Text::from(safe_text(&source))
         } else {
             reading_text(&source, app)
@@ -1349,6 +1355,80 @@ mod tests {
             );
             app.command("back");
             assert_eq!(app.body_title, "WELCOME TO AKASHA");
+        }
+    }
+
+    #[test]
+    fn read_only_reader_text_is_literal_unicode_safe_scrollable_and_returnable() {
+        use super::super::app::Response;
+        fn glyph_screen(terminal: &Terminal<TestBackend>) -> String {
+            let buffer = terminal.backend().buffer();
+            let mut text = String::new();
+            for row in buffer.content.chunks(usize::from(buffer.area.width)) {
+                let mut continuation = 0;
+                for cell in row {
+                    if continuation > 0 {
+                        continuation -= 1;
+                        continue;
+                    }
+                    text.push_str(cell.symbol());
+                    continuation = ratatui::text::Span::raw(cell.symbol())
+                        .width()
+                        .saturating_sub(1);
+                }
+                text.push('\n');
+            }
+            text
+        }
+        let source = "# literal\n---\n```\n{{field}}\n```\n[[link]]\nПривет 世界\nCONTROL\u{1b}[2J\n  leading  \nend";
+        for title in [
+            "VALIDATION",
+            "PROJECT BREADCRUMB",
+            "TEMPLATE · task",
+            "AGENT ONBOARDING HANDOFF",
+            "INTEGRATIONS · CODEX",
+        ] {
+            for (width, height) in [(40, 12), (80, 24), (120, 38)] {
+                let mut app = test_app();
+                app.receive(Ok(Response::Text(
+                    app.request.clone(),
+                    title.into(),
+                    source.into(),
+                )));
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                let mut visible = glyph_screen(&terminal);
+                for scroll in 1..=app.max_scroll {
+                    app.scroll = scroll;
+                    terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                    visible.push_str(&glyph_screen(&terminal));
+                }
+                for literal in [
+                    "# literal",
+                    "---",
+                    "```",
+                    "{{field}}",
+                    "[[link]]",
+                    "Привет 世界",
+                    "CONTROL",
+                    "  leading  ",
+                    "end",
+                ] {
+                    assert!(
+                        visible.contains(literal),
+                        "{title} {width}x{height}: {literal}"
+                    );
+                }
+                assert!(!visible.contains('\u{1b}'));
+                assert_eq!(app.body, source);
+                assert!(
+                    app.hits
+                        .iter()
+                        .any(|(_, action)| matches!(action, Action::Command("back")))
+                );
+                app.command("back");
+                assert_eq!(app.body_title, "WELCOME TO AKASHA");
+            }
         }
     }
 

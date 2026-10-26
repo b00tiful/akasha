@@ -434,7 +434,7 @@ pub(super) enum Response {
     Resolved(ResolveRequest, Box<akasha_core::ResolvedProject>),
     Context(ResolveRequest, Box<akasha_core::ContextBundle>),
     LinkFollowed(Box<(LinkReport, u16, LibraryDocument)>),
-    Text(String, String),
+    Text(ResolveRequest, String, String),
     Saved(String),
     EventCreated(EventCreationResult),
     EventPrepared(EventCreationForm),
@@ -553,7 +553,7 @@ fn execute_job_inner(job: Job) -> WorkResult {
         Job::CommitSetup(plan) => Ok(Response::SetupCommitted(
             akasha_core::apply_root_setup(&plan).map_err(|error| err(&error)))),
         Job::Onboard(request) => akasha_core::prepare_onboarding_handoff(&request)
-            .map(|handoff| Response::Text("AGENT ONBOARDING HANDOFF".into(), crate::render::onboarding_handoff_text(&handoff)))
+            .map(|handoff| Response::Text(request, "AGENT ONBOARDING HANDOFF".into(), crate::render::onboarding_handoff_text(&handoff)))
             .map_err(|error| err(&error)),
         Job::PrepareInit(request) => InitReview::prepare(request)
             .map(|review| Response::InitPrepared(Box::new(review))),
@@ -624,7 +624,7 @@ fn execute_job_inner(job: Job) -> WorkResult {
             .map(|bundle| Response::Context(request, Box::new(bundle)))
             .map_err(|e| err(&e)),
         Job::Breadcrumb(request) => assemble_session_breadcrumb(&request)
-            .map(|breadcrumb| Response::Text("PROJECT BREADCRUMB".into(), render_session_breadcrumb(&breadcrumb)))
+            .map(|breadcrumb| Response::Text(request, "PROJECT BREADCRUMB".into(), render_session_breadcrumb(&breadcrumb)))
             .map_err(|e| err(&e)),
         Job::LibraryReport(request, kind, limit) => akasha_core::inspect_library_report(&request, kind, limit)
             .map(Response::LibraryReport).map_err(|error| err(&error)),
@@ -644,6 +644,7 @@ fn execute_job_inner(job: Job) -> WorkResult {
         Job::Template(request, note_type) => resolve_note_template(&request, &note_type)
             .map(|template| {
                 Response::Text(
+                    request,
                     format!("TEMPLATE · {}", template.note_type),
                     format!(
                         "Class: {:?}\nSource: {}\nScope: {:?}\n\n{}",
@@ -660,7 +661,7 @@ fn execute_job_inner(job: Job) -> WorkResult {
                 .map(Response::EventCreated)
                 .map_err(|e| err(&e)),
         Job::Validate(request) => validate_project(&request)
-            .map(|report| Response::Text("VALIDATION".into(), format!("Validation passed\n\nProject: {}\nRoot: {}\n\nCanonical metadata, configured layout, links and project state were checked.", report.project, report.root.display())))
+            .map(|report| Response::Text(request, "VALIDATION".into(), format!("Validation passed\n\nProject: {}\nRoot: {}\n\nCanonical metadata, configured layout, links and project state were checked.", report.project, report.root.display())))
             .map_err(|e| err(&e)),
         Job::Save(request, id, expected, replacement) => {
             replace_library_document(&request, &id, &expected, &replacement).map_err(|e| err(&e))?;
@@ -708,10 +709,12 @@ fn execute_job_inner(job: Job) -> WorkResult {
                 .map_err(|e| err(&e))
         }
         Job::InspectIntegrations(mut request, client, home) => {
+            let origin = request.clone();
             request.project_override = None;
             let instructions = prepare_agent_wiring(&request, client, &home);
             let hook = prepare_session_hook_wiring(&request, client, &home);
             Ok(Response::Text(
+                origin,
                 format!("INTEGRATIONS · {}", client.as_str().to_uppercase()),
                 render_integration_inspection(client, &home, instructions, hook),
             ))
@@ -1203,6 +1206,14 @@ impl App {
             Ok(()) => self.busy = true,
             Err(_) => self.message("Memory worker unavailable; exit and restart Akasha."),
         }
+    }
+    fn request_is_current(&self, request: &ResolveRequest) -> bool {
+        request.root_override == self.request.root_override
+            && request.project_override == self.request.project_override
+            && request.cwd == self.request.cwd
+            && request.environment.akasha_root == self.request.environment.akasha_root
+            && request.environment.xdg_config_home == self.request.environment.xdg_config_home
+            && request.environment.home == self.request.environment.home
     }
     pub fn message(&mut self, message: &str) {
         self.messages.push_back(
@@ -2100,6 +2111,7 @@ impl App {
                     | Response::LibraryReport(_)
                     | Response::Resolved(..)
                     | Response::Context(..)
+                    | Response::Text(..)
                     | Response::LinkFollowed(_)
                     | Response::Checked(_)
                     | Response::Saved(_)
@@ -2368,15 +2380,7 @@ impl App {
                     self.message("Search finished; unfinished work or recovery view retained. Retry after resolving it.");
                     return true;
                 }
-                if scope != self.scope
-                    || request.root_override != self.request.root_override
-                    || request.project_override != self.request.project_override
-                    || request.cwd != self.request.cwd
-                    || request.environment.akasha_root != self.request.environment.akasha_root
-                    || request.environment.xdg_config_home
-                        != self.request.environment.xdg_config_home
-                    || request.environment.home != self.request.environment.home
-                {
+                if scope != self.scope || !self.request_is_current(&request) {
                     self.message("Search reply is obsolete; current view retained. Search again.");
                     return true;
                 }
@@ -2484,14 +2488,7 @@ impl App {
                     self.message("Resolution finished; unfinished work or recovery view retained. Retry after resolving it.");
                     return true;
                 }
-                if request.root_override != self.request.root_override
-                    || request.project_override != self.request.project_override
-                    || request.cwd != self.request.cwd
-                    || request.environment.akasha_root != self.request.environment.akasha_root
-                    || request.environment.xdg_config_home
-                        != self.request.environment.xdg_config_home
-                    || request.environment.home != self.request.environment.home
-                {
+                if !self.request_is_current(&request) {
                     self.message(
                         "Resolution reply is obsolete; current view retained. Inspect again.",
                     );
@@ -2512,14 +2509,7 @@ impl App {
                     self.message("Context finished; unfinished work or recovery view retained. Retry after resolving it.");
                     return true;
                 }
-                if request.root_override != self.request.root_override
-                    || request.project_override != self.request.project_override
-                    || request.cwd != self.request.cwd
-                    || request.environment.akasha_root != self.request.environment.akasha_root
-                    || request.environment.xdg_config_home
-                        != self.request.environment.xdg_config_home
-                    || request.environment.home != self.request.environment.home
-                {
+                if !self.request_is_current(&request) {
                     self.message(
                         "Context reply is obsolete; current view retained. Inspect again.",
                     );
@@ -2535,7 +2525,17 @@ impl App {
                 self.editing = false;
                 self.focus = Focus::Reader;
             }
-            Ok(Response::Text(title, text)) => {
+            Ok(Response::Text(request, title, text)) => {
+                if self.dirty() || self.editing || self.recovery_visible || self.recovery_blocked {
+                    self.message("Inspection finished; unfinished work or recovery view retained. Retry after resolving it.");
+                    return true;
+                }
+                if !self.request_is_current(&request) {
+                    self.message(
+                        "Inspection reply is obsolete; current view retained. Inspect again.",
+                    );
+                    return true;
+                }
                 self.link_report = None;
                 self.link_return = None;
                 self.body_title = title;
@@ -3116,6 +3116,7 @@ impl App {
                     Err(error) => self.message(&error),
                 }
             }
+            "validate" if !argument.is_empty() => self.message("Usage: /validate"),
             "validate" => self.submit(Job::Validate(self.request.clone())),
             "integrations" => match integration_arguments(argument) {
                 Ok((client, home)) => {
@@ -3816,6 +3817,10 @@ mod tests {
     const CREATED_TASK_ID: &str = "Projects/example/records/tasks/tui-created.md";
     const TASK_TEMPLATE: &str = "---\nschema_version: 1\nproject: {{project}}\ntype: {{type}}\nstatus: {{status}}\ncreated: {{created}}\nupdated: {{updated}}\n---\n\n# {{title}}\n\n{{body}}\n";
     const EVENT_TEMPLATE: &str = "---\nschema_version: 1\nproject: {{project}}\ntype: {{type}}\ndate: {{date}}\n---\n\n# {{title}}\n\n{{body}}\n";
+
+    mod read_only_readers {
+        include!("read_only_reader_tests.rs");
+    }
 
     fn guided_event(fixture: &mut Fixture, handoff: bool, crlf: bool) {
         let note_type = if handoff { "handoff" } else { "session" };
