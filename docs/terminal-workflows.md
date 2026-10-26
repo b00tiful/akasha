@@ -22,6 +22,20 @@ is running. Preparation/preview retention does not cancel a write already submit
 Ctrl-S or `/confirm`. Checked core writes still revalidate current files and refuse drift;
 administration apply attempts consume their review and require fresh preparation after failure.
 
+Save and apply results are bound to the submitted session, document/source, exact reviewed form
+or administration plan. If newer work or a recovery view is present when a write finishes,
+Akasha retains that view and reports whether the write completed or failed. A completed write
+has already changed files. The same session shows `external change`; resolve retained drafts
+and refresh/reopen before retrying. Drafts and undo history remain exact; Akasha does not
+silently rebase them onto the completed write. A different newer administration plan survives;
+the attempted plan is consumed even if its result can no longer replace the current view.
+New commands typed or pasted into the prompt while a write runs also survive. A matching
+source save can acknowledge its baseline while retaining the command draft and prompt focus;
+creation, lifecycle and administration completions retain the view until that draft is resolved.
+
+Recovery inspection also binds the session, visible/refused state and original failure guidance.
+A dismissed or obsolete inspection cannot reopen the overlay or consume newer failure details.
+
 Use `/recovery` for metadata-only journal inspection; Esc returns to retained work. Follow
 [the recovery runbook](recovery.md) before retrying a refused transaction. F5 reloads the
 library and retries note recovery; root initialization recovery uses `/recover-init` and its

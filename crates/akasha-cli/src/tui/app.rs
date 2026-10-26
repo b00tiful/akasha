@@ -376,9 +376,45 @@ pub(super) struct ViewOrigin {
     recovery_blocked: bool,
 }
 
+pub(super) struct RecoveryOrigin {
+    view: ViewOrigin,
+    failure: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum AdministrationKind {
+    Integration,
+    Setup,
+    Init,
+    InitRecovery,
+    Link,
+}
+
+enum WriteTarget {
+    Save(String, String, String),
+    Event(Box<EventCreationPreview>),
+    Creation(Box<MutableNoteCreationPreview>),
+    Lifecycle(Box<MutableNoteLifecyclePreview>),
+    InlineEvent,
+    Administration(AdministrationKind, String),
+}
+
+pub(super) struct WriteBinding {
+    origin: ViewOrigin,
+    target: WriteTarget,
+    document: Option<(String, String)>,
+    body_title: String,
+    body: String,
+    scope: LibraryScope,
+    report: Option<LinkReport>,
+    parent: Option<(LinkReport, u16)>,
+    label: String,
+}
+
 pub(super) enum Job {
+    Write(Box<WriteBinding>, Box<Job>),
     Load(ViewOrigin),
-    InspectRecovery(ResolveRequest),
+    InspectRecovery(RecoveryOrigin),
     Check(ResolveRequest, Box<LibraryProjection>, Vec<WatchedSource>),
     Open(ViewOrigin, String),
     Search(ResolveRequest, String, LibraryScope, bool, usize),
@@ -432,7 +468,8 @@ pub(super) enum Job {
     CommitLink(LinkRequest, LinkPlan),
 }
 pub(super) enum Response {
-    RecoveryInspected(Result<PendingNoteEditInspection, String>),
+    WriteFinished(Box<WriteBinding>, Box<WorkResult>),
+    RecoveryInspected(RecoveryOrigin, Result<PendingNoteEditInspection, String>),
     RecoveryRequired(ResolveRequest, RecoveryNotice),
     Loaded(
         ViewOrigin,
@@ -565,6 +602,7 @@ fn execute_job(job: Job) -> WorkResult {
 fn execute_job_inner(job: Job) -> WorkResult {
     let err = |error: &dyn std::fmt::Display| error.to_string();
     match job {
+        Job::Write(binding, job) => Ok(Response::WriteFinished(binding, Box::new(execute_job(*job)))),
         Job::PrepareSetup(origin, path) => akasha_core::prepare_root_setup(&path)
             .map(|plan| Response::SetupPrepared(origin, Box::new(plan))).map_err(|error| err(&error)),
         Job::CommitSetup(plan) => Ok(Response::SetupCommitted(
@@ -587,9 +625,10 @@ fn execute_job_inner(job: Job) -> WorkResult {
             .map(|review| Response::LinkPrepared(origin, Box::new(review))),
         Job::CommitLink(request, plan) =>
             Ok(Response::LinkCommitted(LinkReview::commit(&request, &plan))),
-        Job::InspectRecovery(request) => Ok(Response::RecoveryInspected(
-            inspect_pending_note_edit(&request).map_err(|error| err(&error)),
-        )),
+        Job::InspectRecovery(origin) => {
+            let inspection = inspect_pending_note_edit(&origin.view.request).map_err(|error| err(&error));
+            Ok(Response::RecoveryInspected(origin, inspection))
+        }
         Job::PrepareIntegration(origin, operation) => operation.prepare()
             .map(|review| Response::IntegrationPrepared(origin, Box::new(review))),
         Job::CommitIntegration(operation, plan_id) =>
@@ -1033,12 +1072,21 @@ impl App {
         }
     }
 
-    fn view_origin(&self) -> ViewOrigin {
+    pub(super) fn view_origin(&self) -> ViewOrigin {
         ViewOrigin {
             request: self.request.clone(),
             editing: self.editing,
             recovery_visible: self.recovery_visible,
             recovery_blocked: self.recovery_blocked,
+        }
+    }
+    pub(super) fn recovery_origin(&self) -> RecoveryOrigin {
+        RecoveryOrigin {
+            view: self.view_origin(),
+            failure: self
+                .recovery
+                .as_ref()
+                .and_then(|notice| notice.failure.clone()),
         }
     }
     pub fn load(&mut self) {
@@ -1230,6 +1278,10 @@ impl App {
             self.message("An operation is running; please wait.");
             return;
         }
+        let job = match self.write_binding(&job) {
+            Some(binding) => Job::Write(Box::new(binding), Box::new(job)),
+            None => job,
+        };
         match self.jobs.send(job) {
             Ok(()) => self.busy = true,
             Err(_) => self.message("Memory worker unavailable; exit and restart Akasha."),
@@ -1242,6 +1294,211 @@ impl App {
             && request.environment.akasha_root == self.request.environment.akasha_root
             && request.environment.xdg_config_home == self.request.environment.xdg_config_home
             && request.environment.home == self.request.environment.home
+    }
+    fn administration_id(&self, kind: AdministrationKind) -> Option<&str> {
+        match kind {
+            AdministrationKind::Integration => {
+                self.integration_review.as_ref().map(|r| r.plan_id.as_str())
+            }
+            AdministrationKind::Setup => self.setup_review.as_ref().map(|r| r.plan_id.as_str()),
+            AdministrationKind::Init => self.init_review.as_ref().map(|r| r.plan.plan_id.as_str()),
+            AdministrationKind::InitRecovery => self
+                .init_recovery_review
+                .as_ref()
+                .map(|r| r.plan.plan_id.as_str()),
+            AdministrationKind::Link => self.link_review.as_ref().map(|r| r.plan.plan_id.as_str()),
+        }
+    }
+    fn write_binding(&self, job: &Job) -> Option<WriteBinding> {
+        let (target, label) = match job {
+            Job::Save(_, id, expected, replacement) => (
+                WriteTarget::Save(id.clone(), expected.clone(), replacement.clone()),
+                format!("Save {id}"),
+            ),
+            Job::ApplyEvent(_, preview) => (
+                WriteTarget::Event(preview.clone()),
+                "Reviewed event creation".into(),
+            ),
+            Job::Create(_, preview) => (
+                WriteTarget::Creation(preview.clone()),
+                "Reviewed note creation".into(),
+            ),
+            Job::UpdateLifecycle(_, preview) => (
+                WriteTarget::Lifecycle(preview.clone()),
+                "Reviewed lifecycle update".into(),
+            ),
+            Job::CaptureHandoff(_, path, _) | Job::CreateEvent(_, _, path, _) => (
+                WriteTarget::InlineEvent,
+                format!("Event creation {}", path.display()),
+            ),
+            Job::CommitIntegration(_, id) => (
+                WriteTarget::Administration(AdministrationKind::Integration, id.clone()),
+                format!("Integration plan {id}"),
+            ),
+            Job::CommitSetup(plan) => (
+                WriteTarget::Administration(AdministrationKind::Setup, plan.plan_id.clone()),
+                format!("Root setup {}", plan.root.display()),
+            ),
+            Job::CommitInit(_, plan) => (
+                WriteTarget::Administration(AdministrationKind::Init, plan.plan_id.clone()),
+                format!("Initialization plan {}", plan.plan_id),
+            ),
+            Job::CommitInitRecovery(_, plan) => (
+                WriteTarget::Administration(AdministrationKind::InitRecovery, plan.plan_id.clone()),
+                format!("Initialization recovery plan {}", plan.plan_id),
+            ),
+            Job::CommitLink(_, plan) => (
+                WriteTarget::Administration(AdministrationKind::Link, plan.plan_id.clone()),
+                format!("Repository link plan {}", plan.plan_id),
+            ),
+            _ => return None,
+        };
+        Some(WriteBinding {
+            origin: self.view_origin(),
+            target,
+            document: self
+                .document
+                .as_ref()
+                .map(|d| (d.id.clone(), d.source.clone())),
+            body_title: self.body_title.clone(),
+            body: self.body.clone(),
+            scope: self.scope.clone(),
+            report: self.link_report.clone(),
+            parent: self.link_return.clone(),
+            label,
+        })
+    }
+    fn write_is_current(&self, binding: &WriteBinding) -> bool {
+        let origin = &binding.origin;
+        if !self.request_is_current(&origin.request)
+            || self.editing != origin.editing
+            || (!matches!(&binding.target, WriteTarget::Save(..))
+                && !self.prompt.lines()[0].is_empty())
+            || self.recovery_visible
+            || self.recovery_blocked
+            || self.recovery_visible != origin.recovery_visible
+            || self.recovery_blocked != origin.recovery_blocked
+            || self.document.as_ref().map(|d| (&d.id, &d.source))
+                != binding.document.as_ref().map(|(id, source)| (id, source))
+            || self.body_title != binding.body_title
+            || self.body != binding.body
+            || self.scope != binding.scope
+            || self.link_report != binding.report
+            || self.link_return != binding.parent
+        {
+            return false;
+        }
+        match &binding.target {
+            WriteTarget::Save(id, expected, replacement) => {
+                !self.reviewing_administration()
+                    && self.workflow.is_none()
+                    && self
+                        .document
+                        .as_ref()
+                        .is_some_and(|d| d.id == *id && d.source == *expected)
+                    && self
+                        .editor
+                        .as_ref()
+                        .is_some_and(|e| e.original == *expected && e.source() == *replacement)
+            }
+            WriteTarget::InlineEvent => {
+                !self.dirty() && self.editor.as_ref().is_none_or(|e| !e.dirty())
+            }
+            WriteTarget::Event(preview) => {
+                !self.reviewing_administration()
+                    && matches!(&self.workflow, Some(Workflow::Event(form))
+                    if form.stage == EventStage::Review && form.preview.as_ref() == Some(preview.as_ref())
+                        && form.prepared == preview.form
+                        && preview.relative_path.as_os_str() == std::ffi::OsStr::new(&form.path)
+                        && fields_match(&form.fields, &preview.fields))
+            }
+            WriteTarget::Creation(preview) => {
+                !self.reviewing_administration()
+                    && matches!(&self.workflow, Some(Workflow::Creation(form))
+                    if form.stage == CreationStage::Review(LifecyclePane::Projection)
+                        && form.preview.as_ref() == Some(preview.as_ref()) && form.prepared == preview.form
+                        && preview.relative_path.as_os_str() == std::ffi::OsStr::new(&form.path)
+                        && fields_match(&form.fields, &preview.fields)
+                        && form.projection.source() == preview.projection_source)
+            }
+            WriteTarget::Lifecycle(preview) => {
+                !self.reviewing_administration()
+                    && matches!(&self.workflow, Some(Workflow::Lifecycle(form))
+                    if form.reviewing && form.pane == LifecyclePane::Projection
+                        && form.preview.as_ref() == Some(preview.as_ref()) && form.prepared == preview.prepared
+                        && form.note.source() == preview.replacement_source
+                        && form.projection.source() == preview.projection_source)
+            }
+            WriteTarget::Administration(kind, id) => {
+                self.workflow.is_none()
+                    && self.editor.is_none()
+                    && self.administration_id(*kind) == Some(id.as_str())
+                    && [
+                        self.integration_review.is_some(),
+                        self.setup_review.is_some(),
+                        self.init_review.is_some(),
+                        self.init_recovery_review.is_some(),
+                        self.link_review.is_some(),
+                    ]
+                    .into_iter()
+                    .filter(|present| *present)
+                    .count()
+                        == 1
+            }
+        }
+    }
+    fn retain_write_outcome(&mut self, binding: &WriteBinding, result: WorkResult) {
+        // Consume the attempted plan only. A different, newer review must survive.
+        if let WriteTarget::Administration(kind, id) = &binding.target
+            && self.administration_id(*kind) == Some(id.as_str())
+        {
+            match kind {
+                AdministrationKind::Integration => self.integration_review = None,
+                AdministrationKind::Setup => self.setup_review = None,
+                AdministrationKind::Init => self.init_review = None,
+                AdministrationKind::InitRecovery => self.init_recovery_review = None,
+                AdministrationKind::Link => self.link_review = None,
+            }
+        }
+        let outcome = match result {
+            Err(error) => Err(error),
+            Ok(Response::RecoveryRequired(_, notice)) => Err(format!(
+                "{}; pending or unreadable journal requires /recovery",
+                notice.failure.as_deref().unwrap_or("Core recovery refused")
+            )),
+            Ok(
+                Response::IntegrationCommitted(result)
+                | Response::InitCommitted(result)
+                | Response::LinkCommitted(result),
+            ) => result,
+            Ok(Response::SetupCommitted(result)) => {
+                result.map(|r| crate::render::setup_result_text(&r))
+            }
+            Ok(Response::InitRecoveryCommitted(result)) => {
+                result.map(|r| crate::render::init_recovery_result_text(&r))
+            }
+            Ok(Response::EventCreated(result)) => Ok(format!("Created {}.", result.id)),
+            Ok(Response::Created(result)) => Ok(format!(
+                "Created {} and applied its maintained projection.",
+                result.id
+            )),
+            Ok(Response::LifecycleUpdated(_)) => {
+                Ok("Reviewed note/projection transaction completed.".into())
+            }
+            Ok(Response::Saved(_)) => Ok("Submitted source saved through the core.".into()),
+            _ => unreachable!("write binding must contain a write outcome"),
+        };
+        if self.request_is_current(&binding.origin.request) {
+            self.external_change_pending = true;
+        }
+        let (status, details) = match outcome {
+            Ok(details) => ("completed", details),
+            Err(error) => (
+                "failed",
+                format!("{error}. Inspect recovery before retrying."),
+            ),
+        };
+        self.message(&format!("Write {status}; current view retained. {}. {details} Resolve retained work and refresh before retrying.", binding.label));
     }
     pub fn message(&mut self, message: &str) {
         self.messages.push_back(
@@ -2144,6 +2401,16 @@ impl App {
         } else {
             self.busy = false;
         }
+        let response = match response {
+            Ok(Response::WriteFinished(binding, result)) => {
+                if !self.write_is_current(&binding) {
+                    self.retain_write_outcome(&binding, *result);
+                    return true;
+                }
+                *result
+            }
+            response => response,
+        };
         let preparation_origin = match &response {
             Ok(
                 Response::EventPrepared(origin, _)
@@ -2246,7 +2513,7 @@ impl App {
                     | Response::InitPrepared(..)
                     | Response::InitRecoveryPrepared(..)
                     | Response::LinkPrepared(..)
-                    | Response::RecoveryInspected(_)
+                    | Response::RecoveryInspected(..)
                     | Response::RecoveryRequired(..))
         ) {
             self.link_report = None;
@@ -2260,7 +2527,20 @@ impl App {
             ))
         );
         match response {
-            Ok(Response::RecoveryInspected(inspection)) => {
+            Ok(Response::WriteFinished(..)) => unreachable!("write outcome already unwrapped"),
+            Ok(Response::RecoveryInspected(origin, inspection)) => {
+                if !self.request_is_current(&origin.view.request)
+                    || self.recovery_visible != origin.view.recovery_visible
+                    || self.recovery_blocked != origin.view.recovery_blocked
+                    || self
+                        .recovery
+                        .as_ref()
+                        .and_then(|notice| notice.failure.as_ref())
+                        != origin.failure.as_ref()
+                {
+                    self.message("Recovery inspection reply is obsolete; current view retained. Inspect /recovery again.");
+                    return true;
+                }
                 let blocked = !inspection
                     .as_ref()
                     .is_ok_and(|inspection| !inspection.pending);
@@ -2939,7 +3219,7 @@ impl App {
         match command {
             "" => {}
             "recovery" if !argument.is_empty() => self.message("Usage: /recovery"),
-            "recovery" => self.submit(Job::InspectRecovery(self.request.clone())),
+            "recovery" => self.submit(Job::InspectRecovery(self.recovery_origin())),
             "back" if self.recovery_visible && self.recovery_blocked && !self.dirty() =>
                 self.message("Library remains closed. Reconcile the source, then press F5 to retry."),
             "back" if self.recovery_visible => self.hide_recovery(),
@@ -4031,6 +4311,10 @@ mod tests {
 
     mod workflow_replies {
         include!("workflow_reply_tests.rs");
+    }
+
+    mod write_completions {
+        include!("write_completion_tests.rs");
     }
 
     fn guided_event(fixture: &mut Fixture, handoff: bool, crlf: bool) {

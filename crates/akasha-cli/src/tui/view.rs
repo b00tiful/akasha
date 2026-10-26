@@ -1147,13 +1147,14 @@ mod tests {
         use akasha_core::PendingNoteEditInspection;
         for (width, height) in [(40, 12), (80, 24), (120, 38)] {
             let mut app = test_app();
-            app.receive(Ok(Response::RecoveryInspected(Ok(
-                PendingNoteEditInspection {
+            app.receive(Ok(Response::RecoveryInspected(
+                app.recovery_origin(),
+                Ok(PendingNoteEditInspection {
                     project: "example".into(),
                     journal_path: "/tmp/Привет\n#literal\u{1b}[2J".into(),
                     pending: true,
-                },
-            ))));
+                }),
+            )));
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|frame| draw(frame, &mut app)).unwrap();
             let initial = screen(&terminal);
