@@ -1,5 +1,9 @@
 # Terminal creation, lifecycle and administration reviews
 
+`/save`, `/discard`, `/previous`, `/next` and other argument-free commands reject extra text
+before acting. `/discard keep`, for example, retains the draft or review and shows usage.
+See [command syntax](terminal-command-syntax.md) for the complete list and path rules.
+
 Use `/event TYPE` or bare `/handoff` for a guided immutable event, `/create TYPE` for a
 configured record/entity, and `/lifecycle` while a project record/entity is open. Enter an
 explicit path where requested. Ctrl-N advances through multiline fields and the maintained

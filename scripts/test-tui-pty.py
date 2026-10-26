@@ -849,6 +849,11 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             original = note.read_bytes()
             paste = '\n\nPTY acceptance: Привет 世界\n'.encode()
             send(b'\x1b[200~' + paste + b'\x1b[201~')
+            for value in ['save', 'discard', 'read', 'previous', 'next', 'quit', 'exit', 'q']:
+                command(f'{value} unexpected')
+                wait_for(f'Usage: /{value}'.encode())
+                assert process.poll() is None and 'SOURCE' in screen.text()
+                assert note.read_bytes() == original, 'malformed commands must not save or discard'
             command('quit')
             wait_for(b'Unsaved changes')
             assert process.poll() is None
@@ -1078,12 +1083,23 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
                 command(value, from_editor=index == 0)
                 wait_for(b'Unsaved changes')
                 assert 'SOURCE' in screen.text() and note.read_bytes() == original
+            argument_baseline = graph_snapshot()
+            for value in ['save', 'discard', 'read', 'edit', 'previous', 'next', 'quit', 'exit', 'q',
+                          'home', 'back', 'projects', 'global', 'ls', 'help', 'motion',
+                          'recovery', 'refresh', 'onboard', 'recover-init', 'lifecycle',
+                          'resolve', 'breadcrumb', 'validate']:
+                command(f'{value} unexpected')
+                wait_for(f'Usage: /{value}'.encode())
+                assert process.poll() is None and 'SOURCE' in screen.text()
+                assert graph_snapshot() == argument_baseline, 'invalid syntax must preserve bytes/types/modes'
             # The refused commands leave focus in the prompt. Return to the source
             # editor before continuing the existing save/paste/discard sequence.
             send(b'\x1b[Z')
             send(b'\x13')
             wait_for(b'Saved through the core')
             assert note.read_bytes() == original + paste, 'fragmented paste/resize must preserve exact bytes'
+            print(f'PASS command arguments TERM={term} {size[1]}x{size[0]}: 24 malformed '
+                  'commands retain the exact draft for checked save; bytes/types/modes preserved', flush=True)
             send(b'\x1b[200~Discard this draft\x1b[201~')
             command('discard', from_editor=True)
             wait_for(b'READING')
@@ -1349,6 +1365,10 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
                 checkpoint = 'Projects/example/records/tasks/active.md'
             command(f'open {checkpoint}')
             wait_for(b'READING')
+        for value in ['quit', 'exit', 'q']:
+            command(f'{value} unexpected')
+            wait_for(f'Usage: /{value}'.encode())
+            assert process.poll() is None, 'malformed exit must retain the clean session'
         command('quit')
         process.wait(timeout=8)
         drain()

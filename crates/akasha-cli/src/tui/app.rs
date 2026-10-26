@@ -3216,14 +3216,45 @@ impl App {
             .split_once(char::is_whitespace)
             .unwrap_or((trimmed, ""));
         let argument = argument.trim();
+        // Reject syntax before any draft/recovery guard or state-changing handler.
+        if !argument.is_empty()
+            && matches!(
+                command,
+                "save"
+                    | "discard"
+                    | "edit"
+                    | "read"
+                    | "previous"
+                    | "next"
+                    | "quit"
+                    | "exit"
+                    | "q"
+                    | "motion"
+                    | "back"
+                    | "home"
+                    | "projects"
+                    | "global"
+                    | "ls"
+                    | "help"
+                    | "recovery"
+                    | "refresh"
+                    | "onboard"
+                    | "recover-init"
+                    | "lifecycle"
+                    | "resolve"
+                    | "breadcrumb"
+                    | "validate"
+            )
+        {
+            self.message(&format!("Usage: /{command}"));
+            return;
+        }
         match command {
             "" => {}
-            "recovery" if !argument.is_empty() => self.message("Usage: /recovery"),
             "recovery" => self.submit(Job::InspectRecovery(self.recovery_origin())),
             "back" if self.recovery_visible && self.recovery_blocked && !self.dirty() =>
                 self.message("Library remains closed. Reconcile the source, then press F5 to retry."),
             "back" if self.recovery_visible => self.hide_recovery(),
-            "refresh" if !argument.is_empty() => self.message("Usage: /refresh"),
             "refresh" if self.can_leave() => self.load(),
             "refresh" => {},
             "confirm" => {
@@ -3348,13 +3379,11 @@ impl App {
             "setup" if argument.is_empty() => self.message("Usage: /setup PATH. Choose a new directory with an existing parent."),
             "setup" if self.projection.is_some() => self.message("A project is already loaded. To set up another root, open a separate Akasha session with --root pointing to the new destination."),
             "setup" => self.submit(Job::PrepareSetup(self.view_origin(), self.request.cwd.join(argument))),
-            "onboard" if !argument.is_empty() => self.message("Usage: /onboard"),
             "onboard" => self.submit(Job::Onboard(self.request.clone())),
             "init" => match init::arguments(&self.request, argument) {
                 Ok(request) => self.submit(Job::PrepareInit(self.view_origin(), request)),
                 Err(error) => self.message(&error),
             },
-            "recover-init" if !argument.is_empty() => self.message("Usage: /recover-init. Recovery uses this session's data root."),
             "recover-init" => self.submit(Job::PrepareInitRecovery(self.view_origin())),
             "link" => match link::arguments(&self.request, argument) {
                 Ok(request) => self.submit(Job::PrepareLink(self.view_origin(), request)),
@@ -3444,9 +3473,6 @@ impl App {
                     argument.to_owned(),
                 ));
             }
-            "lifecycle" if !argument.is_empty() => {
-                self.message("Usage: /lifecycle while a project record or entity is open.");
-            }
             "lifecycle" => {
                 let Some(document) = &self.document else {
                     self.message(
@@ -3473,7 +3499,6 @@ impl App {
                     self.message("Usage: /context [--max-chars N]; N is a positive decimal character budget.");
                 }
             }
-            "resolve" if !argument.is_empty() => self.message("Usage: /resolve"),
             "resolve" => self.submit(Job::Resolve(self.request.clone())),
             "status" | "digest" => {
                 let limit = if argument.is_empty() {
@@ -3529,10 +3554,9 @@ impl App {
                 };
                 self.submit(Job::FollowLink(self.request.clone(), Box::new(report.clone()), index, self.scroll));
             }
-            "breadcrumb" if argument.is_empty() => {
+            "breadcrumb" => {
                 self.submit(Job::Breadcrumb(self.request.clone()))
             }
-            "breadcrumb" => self.message("Usage: /breadcrumb"),
             "handoff" => {
                 if !matches!(self.scope, LibraryScope::Project { .. }) {
                     self.message("Select a project before capturing a handoff.");
@@ -3590,7 +3614,6 @@ impl App {
                     Err(error) => self.message(&error),
                 }
             }
-            "validate" if !argument.is_empty() => self.message("Usage: /validate"),
             "validate" => self.submit(Job::Validate(self.request.clone())),
             "integrations" => match integration_arguments(argument) {
                 Ok((client, home)) => {
@@ -4315,6 +4338,10 @@ mod tests {
 
     mod write_completions {
         include!("write_completion_tests.rs");
+    }
+
+    mod command_arguments {
+        include!("command_argument_tests.rs");
     }
 
     fn guided_event(fixture: &mut Fixture, handoff: bool, crlf: bool) {
