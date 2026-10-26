@@ -17,7 +17,9 @@ mouse targets even when the terminal does not deliver a resize event.
 
 The initial layout still processes the whole document. A single very long logical line still
 requires reflow, and checking source equality still scans its bytes. These changes do not provide
-a full-archive loading, search, background-validation or parser resource-limit guarantee.
+a full-archive loading, search or background-validation latency guarantee. The shared core's
+[YAML resource limits](resource-limits.md) separately bound metadata parsing and registry reads;
+that guide also provides a reproducible full-archive measurement.
 
 For a reproducible synthetic debug-build comparison of 100, 1,000 and 10,000 Unicode lines:
 

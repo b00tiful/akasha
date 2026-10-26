@@ -18,6 +18,9 @@ mod support;
 #[path = "support/library_report.rs"]
 mod library_report_tests;
 
+#[path = "support/archive_runtime.rs"]
+mod archive_runtime_tests;
+
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 struct TempDir(PathBuf);

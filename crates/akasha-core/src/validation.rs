@@ -9,6 +9,8 @@ use serde_json::Value;
 use serde_saphyr::options::{DuplicateKeyPolicy, MergeKeyPolicy};
 
 const NOTE_SCHEMA_VERSION: u32 = 1;
+const MAX_FRONTMATTER_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_REGISTRY_BYTES: usize = 1024 * 1024;
 
 /// A canonical Markdown note split without changing any source bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -300,10 +302,19 @@ fn split_frontmatter(source: &str) -> Result<FrontmatterSlices<'_>, ValidationEr
         return Err(ValidationError::MissingFrontmatter);
     };
     let bytes = source.as_bytes();
+    // Include enough lookahead for a closing delimiter with CRLF, but never scan the body
+    // or an arbitrarily long unterminated line while looking for that delimiter.
+    let scan_end = bytes.len().min(yaml_start + MAX_FRONTMATTER_BYTES + 5);
     let mut line_start = yaml_start;
 
     loop {
-        match source[line_start..].find('\n') {
+        if line_start - yaml_start > MAX_FRONTMATTER_BYTES {
+            return Err(yaml_size_error("note frontmatter", MAX_FRONTMATTER_BYTES));
+        }
+        match bytes[line_start..scan_end]
+            .iter()
+            .position(|&byte| byte == b'\n')
+        {
             Some(relative_newline) => {
                 let newline = line_start + relative_newline;
                 let line_end = if newline > line_start && bytes[newline - 1] == b'\r' {
@@ -319,11 +330,14 @@ fn split_frontmatter(source: &str) -> Result<FrontmatterSlices<'_>, ValidationEr
                 }
                 line_start = newline + 1;
             }
-            None if &source[line_start..] == "---" => {
+            None if scan_end == bytes.len() && &bytes[line_start..] == b"---" => {
                 return Ok(FrontmatterSlices {
                     raw_end: source.len(),
                     yaml: &source[yaml_start..line_start],
                 });
+            }
+            None if bytes.len() - yaml_start > MAX_FRONTMATTER_BYTES => {
+                return Err(yaml_size_error("note frontmatter", MAX_FRONTMATTER_BYTES));
             }
             None => return Err(ValidationError::UnterminatedFrontmatter),
         }
@@ -331,17 +345,50 @@ fn split_frontmatter(source: &str) -> Result<FrontmatterSlices<'_>, ValidationEr
 }
 
 fn parse_yaml_value(source: &str, document: &'static str) -> Result<Value, ValidationError> {
-    reject_yaml_tags(source, document)?;
-    serde_saphyr::from_str_with_options(
+    let (max_bytes, max_nodes) = if document == "project registry" {
+        (MAX_REGISTRY_BYTES, 65_536)
+    } else {
+        (MAX_FRONTMATTER_BYTES, 8_192)
+    };
+    if source.len() > max_bytes {
+        return Err(yaml_size_error(document, max_bytes));
+    }
+    let value = serde_saphyr::from_str_with_options(
         source,
         serde_saphyr::options! {
+            budget: serde_saphyr::budget! {
+                max_depth: 32,
+                max_documents: 1,
+                max_nodes: max_nodes,
+                max_events: 2 * max_nodes + 8,
+                max_aliases: 128,
+                max_anchors: 128,
+                max_total_scalar_bytes: max_bytes,
+                max_total_comment_bytes: max_bytes,
+            },
+            alias_limits: serde_saphyr::alias_limits! {
+                max_total_replayed_events: 2 * max_nodes,
+                max_replay_stack_depth: 16,
+                max_alias_expansions_per_anchor: 32,
+            },
             duplicate_keys: DuplicateKeyPolicy::Error,
             merge_keys: MergeKeyPolicy::Error,
             strict_booleans: true,
             with_snippet: false,
         },
     )
-    .map_err(|source| ValidationError::InvalidYaml { document, source })
+    .map_err(|source| ValidationError::InvalidYaml { document, source })?;
+    // The raw event iterator has no Akasha budget. Run it only after the bounded
+    // deserializer accepted the structure; tags still never escape this function.
+    reject_yaml_tags(source, document)?;
+    Ok(value)
+}
+
+pub(crate) fn yaml_size_error(document: &'static str, max_bytes: usize) -> ValidationError {
+    ValidationError::InvalidSchema {
+        document,
+        message: format!("YAML exceeds the {max_bytes}-byte resource limit"),
+    }
 }
 
 fn reject_yaml_tags(source: &str, document: &'static str) -> Result<(), ValidationError> {
@@ -354,7 +401,7 @@ fn reject_yaml_tags(source: &str, document: &'static str) -> Result<(), Validati
                 });
             }
             Ok(_) => {}
-            // The typed deserializer below owns syntax diagnostics and their stable error type.
+            // Typed deserialization already accepted the syntax and owns its diagnostics.
             Err(_) => break,
         }
     }

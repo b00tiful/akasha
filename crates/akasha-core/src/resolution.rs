@@ -3,12 +3,14 @@ use std::env;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::validation::{ProjectRegistry, ValidationError, parse_project_registry};
+use crate::validation::{
+    MAX_REGISTRY_BYTES, ProjectRegistry, ValidationError, parse_project_registry, yaml_size_error,
+};
 
 pub(crate) const CONFIG_SCHEMA_VERSION: u32 = 1;
 pub(crate) const ROOT_CONFIG_FILE: &str = "akasha.toml";
@@ -351,12 +353,31 @@ pub(crate) fn load_project_registry(
         )));
     }
 
-    let source = fs::read_to_string(&path).map_err(|source| ResolveError::FileSystem {
+    // A sentinel byte distinguishes an exactly full registry from oversized input,
+    // including files that grow after opening. Do not allocate the whole file first.
+    let mut bytes = Vec::new();
+    fs::File::open(&path)
+        .and_then(|file| {
+            file.take((MAX_REGISTRY_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)
+        })
+        .map_err(|source| ResolveError::FileSystem {
+            operation: "read project registry",
+            path: path.clone(),
+            source,
+        })?;
+    if bytes.len() > MAX_REGISTRY_BYTES {
+        return Err(ResolveError::Validation {
+            path,
+            source: Box::new(yaml_size_error("project registry", MAX_REGISTRY_BYTES)),
+        });
+    }
+    let source = std::str::from_utf8(&bytes).map_err(|error| ResolveError::FileSystem {
         operation: "read project registry",
         path: path.clone(),
-        source,
+        source: io::Error::new(io::ErrorKind::InvalidData, error),
     })?;
-    let registry = parse_project_registry(&source).map_err(|source| ResolveError::Validation {
+    let registry = parse_project_registry(source).map_err(|source| ResolveError::Validation {
         path: path.clone(),
         source: Box::new(source),
     })?;

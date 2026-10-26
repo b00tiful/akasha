@@ -5,6 +5,53 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
+#[test]
+fn parser_resource_failures_use_class_four_empty_stdout_and_preserve_sources() {
+    for registry in [false, true] {
+        let temp = TempDir::copy_of(&fixtures());
+        let root = temp.path().join("valid-root");
+        let (path, source, limit) = if registry {
+            (
+                root.join("Meta/projects.yaml"),
+                "#é".repeat(400_000),
+                "1048576",
+            )
+        } else {
+            (
+                root.join("Projects/example/entities/core.md"),
+                format!("---\nschema_version: 1\n#{}\n---\n", "x".repeat(65_536)),
+                "65536",
+            )
+        };
+        fs::write(&path, &source).unwrap();
+        for json in [false, true] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_akasha"));
+            command
+                .arg("--root")
+                .arg(&root)
+                .args(["--project", "example"]);
+            if json {
+                command.arg("--json");
+            }
+            let output = command
+                .arg("validate")
+                .env_remove("AKASHA_ROOT")
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(4), "{:?}", output);
+            assert!(output.stdout.is_empty());
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            assert!(stderr.starts_with("akasha:"));
+            assert!(
+                stderr.contains(&format!("{limit}-byte resource limit")),
+                "{stderr}"
+            );
+            assert!(!stderr.contains("#é"));
+            assert_eq!(fs::read(&path).unwrap(), source.as_bytes());
+        }
+    }
+}
+
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/resolution")
 }
