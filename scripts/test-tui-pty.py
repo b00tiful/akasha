@@ -636,6 +636,99 @@ def check(binary, root, agent_home, term, full=False, expect_restore=False,
             print(f'PASS read-only readers TERM={term} {size[1]}x{size[0]}: all five core results, '
                   'literal templates, full keyboard scroll/return, strict syntax and exact '
                   'root/client-home bytes/types/modes', flush=True)
+
+            # Real cadence-driven refresh must retain readers/source editing and
+            # refresh an idle browser in place. Only this disposable global note
+            # is changed externally; each check must preserve all resulting bytes.
+            global_note = root / 'Global/entities/rust-pattern.md'
+            global_before = global_note.read_bytes()
+            refresh_before = graph_snapshot()
+
+            def external_global_change(marker):
+                source = global_note.read_bytes()
+                old, new = ((b'status: stable', b'status: reviewed') if b'status: stable' in source
+                            else (b'status: reviewed', b'status: stable'))
+                assert old in source, source
+                global_note.write_bytes(source.replace(old, new) + b'\n' + marker + b'\n')
+                return graph_snapshot()
+
+            def reader_position():
+                position = re.search(r'\b(\d+)-(\d+) / (\d+) lines\b', screen.text())
+                assert position is not None, screen.text()
+                return position.groups()
+
+            try:
+                command('open Global/entities/rust-pattern.md')
+                wait_for(b'READ ONLY')
+                wait_for_ready()
+                position = reader_position()
+                external = external_global_change(b'refresh-note-marker')
+                drain(5.3)
+                wait_for(b'external change')
+                assert 'READ ONLY' in screen.text(), screen.text()
+                assert reader_position() == position
+                assert 'refresh-note-marker' not in screen.text()
+                assert graph_snapshot() == external
+                command('refresh extra')
+                wait_for(b'Usage: /refresh')
+                assert 'READ ONLY' in screen.text()
+                assert graph_snapshot() == external
+                command('refresh')
+                wait_for_ready()
+                command('open Global/entities/rust-pattern.md')
+                wait_for(b'READ ONLY')
+                send(b'\x1b[F')
+                wait_for(b'refresh-note-marker')
+                assert graph_snapshot() == external
+
+                command('open Projects/example/entities/core.md')
+                wait_for(b'READING')
+                command('edit')
+                wait_for(b'SOURCE')
+                entity_before = (root / 'Projects/example/entities/core.md').read_bytes()
+                external = external_global_change(b'refresh-editor-marker')
+                drain(5.3)
+                wait_for(b'external change')
+                assert 'SOURCE' in screen.text(), screen.text()
+                assert (root / 'Projects/example/entities/core.md').read_bytes() == entity_before
+                assert graph_snapshot() == external
+                command('read', from_editor=True)
+                command('refresh')
+                wait_for_ready()
+
+                command('template task')
+                wait_for('TEMPLATE · task'.encode())
+                send(b'\x1b[B')
+                position = reader_position()
+                external = external_global_change(b'refresh-report-marker')
+                drain(5.3)
+                wait_for(b'external change')
+                assert 'TEMPLATE · task' in screen.text(), screen.text()
+                assert reader_position() == position
+                assert graph_snapshot() == external
+                command('refresh')
+                wait_for_ready()
+
+                command('global')
+                command('type entity')
+                external = external_global_change(b'refresh-browser-marker')
+                drain(5.3)
+                wait_for(b'Library refreshed')
+                # Opening the selected row proves the browser retained the note
+                # category rather than returning to project categories.
+                command('open 1')
+                wait_for(b'READ ONLY')
+                send(b'\x1b[F')
+                wait_for(b'refresh-browser-marker')
+                assert graph_snapshot() == external
+                assert client_snapshot() == home_before
+            finally:
+                global_note.write_bytes(global_before)
+            command('refresh')
+            wait_for_ready()
+            assert graph_snapshot() == refresh_before
+            print(f'PASS refresh retention TERM={term} {size[1]}x{size[0]}: clean reader/source/report, '
+                  'scroll, explicit reload, strict syntax, browser selection and exact preservation', flush=True)
             for budget in (None, 32000, 1200):
                 arguments = [] if budget is None else ['--max-chars', str(budget)]
                 expected = json.loads(subprocess.check_output([

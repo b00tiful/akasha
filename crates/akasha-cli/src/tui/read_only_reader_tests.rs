@@ -289,7 +289,7 @@ fn read_only_reader_failures_keep_graph_and_existing_pending_journal_policy() {
         let invalid = link_snapshot(&fixture.temp);
         let response = execute_job(job(&fixture, reader));
         if matches!(reader, 0 | 1 | 3) {
-            assert!(matches!(response, Ok(Response::RecoveryRequired(_))));
+            assert!(matches!(response, Ok(Response::RecoveryRequired(..))));
         } else {
             // Template resolution and root-level planning are not full project validation.
             assert!(matches!(response, Ok(Response::Text(..))));

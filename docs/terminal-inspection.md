@@ -29,3 +29,5 @@ inspection applies neither plan. A failure retains the current reader under exis
 guidance. A successful read does not treat journal presence alone as failed recovery. Use
 [`/recovery` and the recovery runbook](recovery.md) when an operation reports a pending journal;
 F5 or `/refresh` remains the explicit existing retry after reconciliation and resolving drafts.
+External changes also retain these diagnostics and their scroll position until explicit reload;
+see [terminal refresh behavior](terminal-refresh.md).

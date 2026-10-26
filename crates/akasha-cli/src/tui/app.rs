@@ -369,11 +369,18 @@ pub(super) struct RefreshCheck {
     changed: bool,
 }
 
+pub(super) struct ViewOrigin {
+    request: ResolveRequest,
+    editing: bool,
+    recovery_visible: bool,
+    recovery_blocked: bool,
+}
+
 pub(super) enum Job {
-    Load(ResolveRequest),
+    Load(ViewOrigin),
     InspectRecovery(ResolveRequest),
     Check(ResolveRequest, Box<LibraryProjection>, Vec<WatchedSource>),
-    Open(ResolveRequest, String),
+    Open(ViewOrigin, String),
     Search(ResolveRequest, String, LibraryScope, bool, usize),
     Context(ResolveRequest, usize),
     Breadcrumb(ResolveRequest),
@@ -420,14 +427,15 @@ pub(super) enum Job {
 }
 pub(super) enum Response {
     RecoveryInspected(Result<PendingNoteEditInspection, String>),
-    RecoveryRequired(RecoveryNotice),
+    RecoveryRequired(ResolveRequest, RecoveryNotice),
     Loaded(
+        ViewOrigin,
         ResolveRequest,
         Box<LibraryProjection>,
         akasha_core::NoteEditRecovery,
     ),
-    Checked(Result<RefreshCheck, String>),
-    Opened(LibraryDocument),
+    Checked(ResolveRequest, Result<RefreshCheck, String>),
+    Opened(ViewOrigin, LibraryDocument),
     Found(ResolveRequest, LibraryScope, LibrarySearchResult),
     NoteLinks(LinkReport),
     LibraryReport(akasha_core::LibraryReport),
@@ -498,9 +506,8 @@ pub(super) fn worker() -> (Sender<Job>, Receiver<WorkResult>) {
 
 fn execute_job(job: Job) -> WorkResult {
     let request = match &job {
-        Job::Load(request)
-        | Job::Open(request, _)
-        | Job::Search(request, ..)
+        Job::Load(origin) | Job::Open(origin, _) => Some(origin.request.clone()),
+        Job::Search(request, ..)
         | Job::Onboard(request)
         | Job::Context(request, _)
         | Job::Breadcrumb(request)
@@ -536,10 +543,13 @@ fn execute_job(job: Job) -> WorkResult {
             .as_ref()
             .is_ok_and(|inspection| !inspection.pending)
         {
-            return Ok(Response::RecoveryRequired(RecoveryNotice {
-                inspection,
-                failure: Some(error.clone()),
-            }));
+            return Ok(Response::RecoveryRequired(
+                request,
+                RecoveryNotice {
+                    inspection,
+                    failure: Some(error.clone()),
+                },
+            ));
         }
     }
     result
@@ -576,14 +586,16 @@ fn execute_job_inner(job: Job) -> WorkResult {
             .map(|review| Response::IntegrationPrepared(Box::new(review))),
         Job::CommitIntegration(operation, plan_id) =>
             Ok(Response::IntegrationCommitted(operation.commit(&plan_id))),
-        Job::Load(mut request) => {
+        Job::Load(origin) => {
+            let mut request = origin.request.clone();
             let recovery = recover_pending_note_edit(&request).map_err(|e| err(&e))?;
             let projection = build_library_projection(&request).map_err(|e| err(&e))?;
             request.root_override = Some(projection.root.clone());
             request.project_override = Some(projection.selected_project.clone());
-            Ok(Response::Loaded(request, Box::new(projection), recovery))
+            Ok(Response::Loaded(origin, request, Box::new(projection), recovery))
         }
-        Job::Check(mut request, previous, watched) => {
+        Job::Check(origin, previous, watched) => {
+            let mut request = origin.clone();
             let checked = (|| {
                 let inspection = inspect_pending_note_edit(&request).map_err(|e| err(&e))?;
                 if inspection.pending {
@@ -609,11 +621,11 @@ fn execute_job_inner(job: Job) -> WorkResult {
                     changed,
                 })
             })();
-            Ok(Response::Checked(checked))
+            Ok(Response::Checked(origin, checked))
         }
-        Job::Open(request, id) => {
-            recover_pending_note_edit(&request).map_err(|e| err(&e))?;
-            load_library_document(&request, &id).map(Response::Opened).map_err(|e| err(&e))
+        Job::Open(origin, id) => {
+            recover_pending_note_edit(&origin.request).map_err(|e| err(&e))?;
+            load_library_document(&origin.request, &id).map(|document| Response::Opened(origin, document)).map_err(|e| err(&e))
         }
         Job::Search(request, query, scope, all, limit) => {
             let result = search_library(&request, &query, if all { None } else { Some(&scope) }, limit)
@@ -1013,8 +1025,16 @@ impl App {
         }
     }
 
+    fn view_origin(&self) -> ViewOrigin {
+        ViewOrigin {
+            request: self.request.clone(),
+            editing: self.editing,
+            recovery_visible: self.recovery_visible,
+            recovery_blocked: self.recovery_blocked,
+        }
+    }
     pub fn load(&mut self) {
-        self.submit(Job::Load(self.request.clone()));
+        self.submit(Job::Load(self.view_origin()));
     }
     fn show_recovery(&mut self) {
         if !self.recovery_visible {
@@ -1875,7 +1895,7 @@ impl App {
         self.list.select(Some(index));
         true
     }
-    fn restore_loaded_navigation(&mut self) -> bool {
+    fn restore_loaded_navigation(&mut self, respect_launch_scope: bool) -> bool {
         let Some(state) = self.restored_navigation.take() else {
             return false;
         };
@@ -1887,7 +1907,7 @@ impl App {
         }
         match state.location {
             NavigationLocation::Projects { selected_scope } => {
-                if self.pinned_project.is_some() {
+                if respect_launch_scope && self.pinned_project.is_some() {
                     return false;
                 }
                 self.projects();
@@ -1901,7 +1921,9 @@ impl App {
                 scope,
                 selected_note_type,
             } => {
-                if !self.scope_allowed_by_request(&scope) || !self.scope_exists(&scope) {
+                if (respect_launch_scope && !self.scope_allowed_by_request(&scope))
+                    || !self.scope_exists(&scope)
+                {
                     return false;
                 }
                 self.categories(scope);
@@ -1917,7 +1939,9 @@ impl App {
                 note_type,
                 selected_note,
             } => {
-                if !self.scope_allowed_by_request(&scope) || !self.scope_exists(&scope) {
+                if (respect_launch_scope && !self.scope_allowed_by_request(&scope))
+                    || !self.scope_exists(&scope)
+                {
                     return false;
                 }
                 self.categories(scope.clone());
@@ -1940,7 +1964,9 @@ impl App {
                 note_type,
                 id,
             } => {
-                if !self.scope_allowed_by_request(&scope) || !self.scope_exists(&scope) {
+                if (respect_launch_scope && !self.scope_allowed_by_request(&scope))
+                    || !self.scope_exists(&scope)
+                {
                     return false;
                 }
                 self.categories(scope.clone());
@@ -2001,7 +2027,7 @@ impl App {
         if !self.can_leave() {
             return;
         }
-        self.submit(Job::Open(self.request.clone(), id.to_owned()));
+        self.submit(Job::Open(self.view_origin(), id.to_owned()));
     }
     pub fn editable(&self) -> bool {
         self.book().is_some_and(|book| book.class != NoteClass::Event && matches!(&book.scope, LibraryScope::Project { project } if Some(project) == self.request.project_override.as_ref()))
@@ -2113,19 +2139,24 @@ impl App {
                     | Response::Context(..)
                     | Response::Text(..)
                     | Response::LinkFollowed(_)
-                    | Response::Checked(_)
+                    | Response::Loaded(..)
+                    | Response::Opened(..)
+                    | Response::Checked(..)
                     | Response::Saved(_)
                     | Response::RecoveryInspected(_)
-                    | Response::RecoveryRequired(_))
+                    | Response::RecoveryRequired(..))
         ) {
             self.link_report = None;
             self.link_return = None;
         }
         let redraw = !matches!(
             &response,
-            Ok(Response::Checked(Ok(RefreshCheck { changed: false, .. })))
+            Ok(Response::Checked(
+                _,
+                Ok(RefreshCheck { changed: false, .. })
+            ))
         );
-        if matches!(&response, Ok(Response::Checked(_))) {
+        if matches!(&response, Ok(Response::Checked(..))) {
             self.checking = false;
         } else {
             self.busy = false;
@@ -2149,7 +2180,11 @@ impl App {
                     self.show_recovery();
                 }
             }
-            Ok(Response::RecoveryRequired(notice)) => {
+            Ok(Response::RecoveryRequired(request, notice)) => {
+                if !self.request_is_current(&request) {
+                    self.message("Recovery reply is obsolete; current view retained. Inspect /recovery again.");
+                    return true;
+                }
                 self.require_recovery(notice);
             }
             Ok(Response::IntegrationPrepared(review)) => {
@@ -2291,7 +2326,23 @@ impl App {
                 self.focus = Focus::Reader;
             }
             Err(error) => self.message(&format!("Operation failed: {error}")),
-            Ok(Response::Loaded(request, projection, recovery)) => {
+            Ok(Response::Loaded(origin, request, projection, recovery)) => {
+                if self.dirty()
+                    || self.editing != origin.editing
+                    || self.recovery_visible != origin.recovery_visible
+                    || self.recovery_blocked != origin.recovery_blocked
+                {
+                    self.message("Reload finished; unfinished work or changed recovery view retained. Resolve it, then press F5.");
+                    return true;
+                }
+                if !self.request_is_current(&origin.request) {
+                    self.message(
+                        "Reload reply is obsolete; current view retained. Press F5 again.",
+                    );
+                    return true;
+                }
+                self.link_report = None;
+                self.link_return = None;
                 self.recovery = None;
                 self.recovery_visible = false;
                 self.recovery_blocked = false;
@@ -2311,7 +2362,7 @@ impl App {
                 self.categories(self.scope.clone());
                 self.navigation.clear();
                 self.focus = Focus::Prompt;
-                let restored = self.restore_loaded_navigation();
+                let restored = self.restore_loaded_navigation(true);
                 self.message(if restored {
                     "Library loaded; previous navigation restored."
                 } else {
@@ -2323,31 +2374,45 @@ impl App {
                     ));
                 }
                 if let Some(id) = self.pending_open.take() {
-                    self.submit(Job::Open(self.request.clone(), id));
+                    self.submit(Job::Open(self.view_origin(), id));
                 }
             }
-            Ok(Response::Checked(Err(error))) => {
+            Ok(Response::Checked(origin, _)) if !self.request_is_current(&origin) => {
+                // A background check may finish after navigation changed the request.
+                // Neither its snapshot nor its failure describes the current view.
+                return false;
+            }
+            Ok(Response::Checked(_, Err(error))) => {
                 self.external_change_pending = true;
                 self.message(&format!(
                     "External library change could not be refreshed: {error}. Drafts were retained; fix the source, then press F5."
                 ));
             }
-            Ok(Response::Checked(Ok(checked))) if !checked.changed => {}
-            Ok(Response::Checked(Ok(_))) if self.dirty() => {
+            Ok(Response::Checked(_, Ok(checked))) if !checked.changed => {}
+            Ok(Response::Checked(_, Ok(_))) if self.dirty() => {
                 self.external_change_pending = true;
                 self.message(
                     "External changes detected. Drafts were retained; save may conflict. Save or discard, then press F5.",
                 );
             }
-            Ok(Response::Checked(Ok(_)))
-                if self.link_report.is_some() || self.link_return.is_some() =>
+            Ok(Response::Checked(_, Ok(_)))
+                if self.busy
+                    || self.editing
+                    || self.recovery_visible
+                    || self.recovery_blocked
+                    || self.document.is_some()
+                    || self.editor.is_some()
+                    || self.body_title != "WELCOME TO AKASHA"
+                    || matches!(self.list_context, ListContext::Search) =>
             {
                 self.external_change_pending = true;
                 self.message(
                     "External changes detected. Current view retained; save or navigation may conflict. Resolve drafts, then press F5.",
                 );
             }
-            Ok(Response::Checked(Ok(checked))) => {
+            Ok(Response::Checked(_, Ok(checked))) => {
+                let navigation = self.navigation_state();
+                let focus = self.focus;
                 self.request = checked.request;
                 self.scope = LibraryScope::Project {
                     project: checked.projection.selected_project.clone(),
@@ -2361,10 +2426,24 @@ impl App {
                 self.scroll = 0;
                 self.categories(self.scope.clone());
                 self.navigation.clear();
-                self.focus = Focus::Prompt;
+                self.restored_navigation = navigation;
+                self.restore_loaded_navigation(false);
+                self.focus = focus;
                 self.message("Library refreshed after external changes.");
             }
-            Ok(Response::Opened(document)) => {
+            Ok(Response::Opened(origin, document)) => {
+                if self.dirty()
+                    || self.editing != origin.editing
+                    || self.recovery_visible
+                    || self.recovery_blocked
+                {
+                    self.message("Open finished; unfinished work or recovery view retained. Retry after resolving it.");
+                    return true;
+                }
+                if !self.request_is_current(&origin.request) {
+                    self.message("Open reply is obsolete; current view retained. Open again.");
+                    return true;
+                }
                 self.link_report = None;
                 self.link_return = None;
                 self.body_title = document.id.clone();
@@ -2750,6 +2829,7 @@ impl App {
             "back" if self.recovery_visible && self.recovery_blocked && !self.dirty() =>
                 self.message("Library remains closed. Reconcile the source, then press F5 to retry."),
             "back" if self.recovery_visible => self.hide_recovery(),
+            "refresh" if !argument.is_empty() => self.message("Usage: /refresh"),
             "refresh" if self.can_leave() => self.load(),
             "refresh" => {},
             "confirm" => {
@@ -3818,6 +3898,10 @@ mod tests {
     const TASK_TEMPLATE: &str = "---\nschema_version: 1\nproject: {{project}}\ntype: {{type}}\nstatus: {{status}}\ncreated: {{created}}\nupdated: {{updated}}\n---\n\n# {{title}}\n\n{{body}}\n";
     const EVENT_TEMPLATE: &str = "---\nschema_version: 1\nproject: {{project}}\ntype: {{type}}\ndate: {{date}}\n---\n\n# {{title}}\n\n{{body}}\n";
 
+    mod document_refresh {
+        include!("document_refresh_tests.rs");
+    }
+
     mod read_only_readers {
         include!("read_only_reader_tests.rs");
     }
@@ -4659,7 +4743,7 @@ mod tests {
     }
 
     #[test]
-    fn automatic_check_is_silent_until_a_clean_external_change_refreshes_the_library() {
+    fn automatic_check_is_silent_then_retains_clean_reader_until_explicit_reload() {
         let mut fixture = Fixture::new();
         fixture.app.open(GLOBAL_ID);
         fixture.finish();
@@ -4682,17 +4766,15 @@ mod tests {
 
         fixture.check_external_changes();
 
-        assert!(!fixture.app.external_change_pending);
-        assert!(fixture.app.document.is_none());
+        assert!(fixture.app.external_change_pending);
+        assert_eq!(fixture.app.document.as_ref().unwrap().source, before);
         assert!(fixture.app.editor.is_none());
-        assert_eq!(
-            fs::read_to_string(fixture.root().join(GLOBAL_ID)).unwrap(),
-            external
-        );
-        assert_eq!(
-            fixture.app.messages.back().map(String::as_str),
-            Some("Library refreshed after external changes.")
-        );
+        fixture.app.command("refresh");
+        fixture.finish();
+        assert!(!fixture.app.external_change_pending);
+        fixture.app.open(GLOBAL_ID);
+        fixture.finish();
+        assert_eq!(fixture.app.document.as_ref().unwrap().source, external);
     }
 
     #[test]
@@ -6158,9 +6240,10 @@ mod tests {
             .unwrap()
             .plan_id
             .clone();
-        fixture
-            .app
-            .receive(Ok(Response::Checked(Err("external invalid note".into()))));
+        fixture.app.receive(Ok(Response::Checked(
+            fixture.app.request.clone(),
+            Err("external invalid note".into()),
+        )));
         assert_eq!(fixture.app.body, body);
         assert!(fixture.app.external_change_pending);
         let plan = prepare_agent_wiring(&fixture.app.request, AgentClient::Codex, &home).unwrap();

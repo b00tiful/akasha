@@ -8,6 +8,8 @@ Markdown with frontmatter and wikilinks remains authoritative. Users can indepen
 open the same data folder in Obsidian or another editor. That editor's settings, plugins,
 cache and UI belong to that application. Akasha treats edits to shared Markdown as external
 file changes and applies its existing validation, refresh and conflict safeguards.
+The terminal retains active readers and source buffers when changes arrive, and refreshes idle
+browser selections in place; see [document opening and refresh](terminal-refresh.md).
 
 Agents read files directly or use bounded `akasha context` and named CLI commands. Humans
 use Akasha's own terminal or desktop interface. Development notes under `akasha/` remain a
