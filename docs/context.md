@@ -24,6 +24,13 @@ Entry bodies are project data inside collision-proof fences. Context assembly ch
 does not recover transactions and does not invoke an agent or model. Existing project validation
 and its errors remain authoritative.
 
+Assembly releases bodies whose complete entry cannot fit the requested budget and measures
+selection without rendering rejected bundles. It still reads and validates every candidate,
+preserves exact omission lengths, and permits explicit expansion to include those whole bodies.
+Only the newest handoff body is retained; breadcrumbs retain task/handoff metadata without bodies.
+This is not an archive memory cap: transient whole-note reads, paths and many individually fitting
+bodies can still consume substantial memory. See [resource limits](resource-limits.md).
+
 In the terminal interface, use `/context` or `/context --max-chars 32000`. Context always belongs
 to the selected project, including while browsing global knowledge. The literal reader supports
 arrows, PageUp/PageDown, Home/End and Esc to return. Invalid or failed reads preserve the current

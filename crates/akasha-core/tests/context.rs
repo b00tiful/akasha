@@ -414,6 +414,173 @@ fn explicit_budget_handles_exact_boundaries_contraction_and_tiny_budget_errors()
     }
 }
 
+#[test]
+fn context_retention_preserves_large_sources_dated_ties_and_explicit_expansion() {
+    let temp = TempDir::copy_of(&fixtures());
+    let project = temp.path().join("valid-root/Projects/example");
+    let large = format!(
+        "# Long body\r\n{}\n``````\n",
+        "世界🧭 exact body  \r\n".repeat(20_000)
+    );
+    for name in ["a-large", "z-large"] {
+        fs::write(project.join(format!("records/tasks/{name}.md")), format!(
+            "---\nschema_version: 1\nproject: example\ntype: task\nstatus: open\ncreated: 2026-10-27\nupdated: 2026-10-27\n---\n\n{large}"
+        )).unwrap();
+    }
+    fs::write(project.join("roadmap.md"), &large).unwrap();
+    for name in ["a-tied", "z-tied"] {
+        for (folder, kind) in [
+            ("events/handoffs", "handoff"),
+            ("events/sessions", "session"),
+        ] {
+            fs::write(project.join(format!("{folder}/{name}.md")), format!(
+                "---\nschema_version: 1\nproject: example\ntype: {kind}\ndate: 2026-10-27\n---\n\n# {name} {kind}\n"
+            )).unwrap();
+        }
+    }
+    refresh_context_state(&project);
+    let root = temp.path().join("valid-root");
+    let before = context_source_snapshot(&root);
+    let request = request(root.clone(), temp.path().join("repository/nested"));
+    let bundle = assemble_context(&request).unwrap();
+    assert_eq!(bundle.omissions.len(), 3);
+    assert_eq!(
+        bundle
+            .omissions
+            .iter()
+            .map(|entry| entry.source.to_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "records/tasks/a-large.md",
+            "records/tasks/z-large.md",
+            "roadmap.md"
+        ]
+    );
+    assert!(
+        bundle
+            .omissions
+            .iter()
+            .all(|entry| entry.content_chars == large.trim().chars().count())
+    );
+    let handoffs = bundle
+        .entries
+        .iter()
+        .filter(|entry| entry.section == ContextSection::LatestHandoff)
+        .collect::<Vec<_>>();
+    assert_eq!(handoffs.len(), 1);
+    assert_eq!(
+        handoffs[0].source,
+        PathBuf::from("events/handoffs/z-tied.md")
+    );
+    let events = bundle
+        .entries
+        .iter()
+        .filter(|entry| entry.section == ContextSection::RecentEvent)
+        .map(|entry| entry.source.to_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        events,
+        [
+            "events/sessions/z-tied.md",
+            "events/sessions/a-tied.md",
+            "events/sessions/2026-07-13.md"
+        ]
+    );
+    let expanded = assemble_context_with_budget(&request, 2_000_000).unwrap();
+    assert!(!expanded.truncated);
+    assert_eq!(expanded.entries[0].content, large.trim());
+    assert_eq!(
+        expanded
+            .entries
+            .iter()
+            .filter(|entry| entry.content == large.trim())
+            .count(),
+        3
+    );
+    assert_eq!(
+        expanded.rendered_chars,
+        render_context_markdown(&expanded).chars().count()
+    );
+    let breadcrumb = assemble_session_breadcrumb(&request).unwrap();
+    assert_eq!(breadcrumb.open_tasks, 3);
+    assert_eq!(
+        breadcrumb.latest_handoff_date.as_deref(),
+        Some("2026-10-27")
+    );
+    assert_eq!(context_source_snapshot(&root), before);
+}
+
+#[test]
+fn context_retention_keeps_validation_errors_before_tiny_budget_refusal() {
+    let temp = TempDir::copy_of(&fixtures());
+    let project = temp.path().join("valid-root/Projects/example");
+    let event = project.join("events/sessions/2026-07-13.md");
+    let root = temp.path().join("valid-root");
+    let request = request(root.clone(), temp.path().join("repository/nested"));
+    for invalid in [
+        b"\xff".as_slice(),
+        b"---\nschema_version: 1\ntype: [\n---\n",
+        b"---\nschema_version: 1\nproject: example\ntype: session\n---\nmissing date",
+    ] {
+        fs::write(&event, invalid).unwrap();
+        let before = context_source_snapshot(&root);
+        let default = assemble_context(&request).unwrap_err();
+        let tiny = assemble_context_with_budget(&request, 1).unwrap_err();
+        assert_eq!(tiny.exit_code(), 4);
+        assert!(!matches!(tiny, akasha_core::ContextError::Budget { .. }));
+        assert_eq!(tiny.to_string(), default.to_string());
+        assert_eq!(context_source_snapshot(&root), before);
+    }
+}
+
+fn refresh_context_state(project: &Path) {
+    fn notes(folder: &Path, project: &Path) -> Vec<String> {
+        let mut paths = Vec::new();
+        for entry in fs::read_dir(folder).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                paths.extend(notes(&path, project));
+            } else if path.extension().is_some_and(|extension| extension == "md") {
+                paths.push(
+                    path.strip_prefix(project)
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_owned(),
+                );
+            }
+        }
+        paths
+    }
+    let events = notes(&project.join("events"), project);
+    let entities = notes(&project.join("entities"), project);
+    let records = notes(&project.join("records"), project);
+    support::write_project_state(
+        project,
+        &events.iter().map(String::as_str).collect::<Vec<_>>(),
+        &entities.iter().map(String::as_str).collect::<Vec<_>>(),
+        &records.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+}
+
+fn context_source_snapshot(root: &Path) -> Vec<(PathBuf, Vec<u8>, fs::Permissions)> {
+    let mut result = Vec::new();
+    for entry in fs::read_dir(root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            result.extend(context_source_snapshot(&path));
+        } else {
+            result.push((
+                path.clone(),
+                fs::read(&path).unwrap(),
+                fs::metadata(path).unwrap().permissions(),
+            ));
+        }
+    }
+    result.sort_by(|left, right| left.0.cmp(&right.0));
+    result
+}
+
 struct TempDir(PathBuf);
 
 impl TempDir {

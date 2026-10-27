@@ -33,7 +33,16 @@ checked writes and recovery.
 This removes aggregate canonical body storage from integrity evidence, with no extra reads or
 change in accepted source size. It does not cap one note's transient allocation, paths/counts,
 parser queues, graph output, context candidates, project-state text or editor/journal copies.
-Context can therefore still retain substantial memory even when its returned text is bounded.
+Context now releases individually non-fitting bodies, keeps only the latest handoff body and
+measures allocation without rendering rejected bundles. Breadcrumbs retain metadata without
+bodies. Many individually fitting context candidates can still retain substantial memory,
+especially with explicit expansion; transient whole-note reads and path/count metadata remain.
+See [context behavior](context.md). To verify exact frozen-former selection and rendering parity:
+
+```sh
+cargo test --offline -p akasha-core context_retention
+```
+
 Run the exact-byte/state/large-journal regressions with:
 
 ```sh
