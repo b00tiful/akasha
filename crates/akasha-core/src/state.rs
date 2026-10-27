@@ -16,7 +16,22 @@ const ROADMAP_PROJECTION: &str = "roadmap";
 pub(crate) struct CanonicalNoteEvidence {
     pub(crate) path: PathBuf,
     pub(crate) class: NoteClass,
-    pub(crate) source: Vec<u8>,
+    fingerprint: String,
+}
+
+impl CanonicalNoteEvidence {
+    // State consumes exact-content hashes, so do not retain a second archive of note bodies.
+    pub(crate) fn new(path: PathBuf, class: NoteClass, source: &[u8]) -> Self {
+        Self {
+            path,
+            class,
+            fingerprint: content_fingerprint(source),
+        }
+    }
+
+    pub(crate) fn replace_source(&mut self, source: &[u8]) {
+        self.fingerprint = content_fingerprint(source);
+    }
 }
 
 #[derive(Debug)]
@@ -41,7 +56,7 @@ struct ProjectionState {
 }
 
 pub(crate) fn render_empty_project_state() -> Vec<u8> {
-    let empty_sources = source_fingerprint(std::iter::empty::<(&str, &[u8])>());
+    let empty_sources = source_fingerprint(std::iter::empty::<(&str, &str)>());
     let empty_output = content_fingerprint(&[]);
     render_project_state(&ProjectState {
         schema_version: PROJECT_STATE_SCHEMA_VERSION,
@@ -83,7 +98,7 @@ pub(crate) fn render_updated_project_state(
             NoteClass::Event if new_events.contains(&note.path) => {
                 if state
                     .events
-                    .insert(path.clone(), content_fingerprint(&note.source))
+                    .insert(path.clone(), note.fingerprint.clone())
                     .is_some()
                 {
                     return Err(format!(
@@ -92,8 +107,8 @@ pub(crate) fn render_updated_project_state(
                 }
             }
             NoteClass::Event => {}
-            NoteClass::Record => roadmap_sources.push((path, note.source.as_slice())),
-            NoteClass::Entity => index_sources.push((path, note.source.as_slice())),
+            NoteClass::Record => roadmap_sources.push((path, note.fingerprint.as_str())),
+            NoteClass::Entity => index_sources.push((path, note.fingerprint.as_str())),
         }
     }
 
@@ -173,10 +188,10 @@ fn validate_project_state_contents(
         let path = project_relative_path(project_dir, &note.path)?;
         match note.class {
             NoteClass::Event => {
-                current_events.insert(path, content_fingerprint(&note.source));
+                current_events.insert(path, note.fingerprint.clone());
             }
-            NoteClass::Record => roadmap_sources.push((path, note.source.as_slice())),
-            NoteClass::Entity => index_sources.push((path, note.source.as_slice())),
+            NoteClass::Record => roadmap_sources.push((path, note.fingerprint.as_str())),
+            NoteClass::Entity => index_sources.push((path, note.fingerprint.as_str())),
         }
     }
 
@@ -265,7 +280,7 @@ fn validate_projection_names(
 fn validate_projection(
     name: &str,
     expected: &ProjectionState,
-    sources: &[(String, &[u8])],
+    sources: &[(String, &str)],
     output: &[u8],
 ) -> Result<(), String> {
     let current_sources = source_fingerprint(
@@ -349,10 +364,8 @@ fn validate_fingerprint(fingerprint: &str, field: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn source_fingerprint<'a>(sources: impl Iterator<Item = (&'a str, &'a [u8])>) -> String {
-    let source_hashes = sources
-        .map(|(path, source)| (path, content_fingerprint(source)))
-        .collect::<BTreeMap<_, _>>();
+fn source_fingerprint<'a>(sources: impl Iterator<Item = (&'a str, &'a str)>) -> String {
+    let source_hashes = sources.collect::<BTreeMap<_, _>>();
     let canonical = serde_json::to_vec(&source_hashes)
         .expect("string-keyed fingerprint maps always serialize as JSON");
     content_fingerprint(&canonical)
@@ -392,5 +405,225 @@ mod tests {
             .expect_err("uppercase algorithm must fail");
 
         assert!(error.contains("sha256:<lowercase-hex>"));
+    }
+
+    // Frozen byte-based source-set algorithm: do not replace this with the compact helper.
+    fn byte_source_fingerprint<'a>(sources: impl Iterator<Item = (&'a str, &'a [u8])>) -> String {
+        let hashes = sources
+            .map(|(path, source)| (path, content_fingerprint(source)))
+            .collect::<BTreeMap<_, _>>();
+        content_fingerprint(&serde_json::to_vec(&hashes).unwrap())
+    }
+
+    fn byte_state(notes: &[(&str, NoteClass, &[u8])], index: &[u8], roadmap: &[u8]) -> Vec<u8> {
+        let projection = |class, output| ProjectionState {
+            sources: byte_source_fingerprint(
+                notes
+                    .iter()
+                    .filter(|(_, candidate, _)| *candidate == class)
+                    .map(|(path, _, source)| (*path, *source)),
+            ),
+            output: content_fingerprint(output),
+        };
+        render_project_state(&ProjectState {
+            schema_version: 1,
+            events: notes
+                .iter()
+                .filter(|(_, class, _)| *class == NoteClass::Event)
+                .map(|(path, _, source)| (path.to_string(), content_fingerprint(source)))
+                .collect(),
+            projections: BTreeMap::from([
+                (
+                    INDEX_PROJECTION.to_owned(),
+                    projection(NoteClass::Entity, index),
+                ),
+                (
+                    ROADMAP_PROJECTION.to_owned(),
+                    projection(NoteClass::Record, roadmap),
+                ),
+            ]),
+        })
+    }
+
+    #[test]
+    fn compact_evidence_preserves_exact_byte_state_and_ordering() {
+        let project = Path::new("project");
+        let index = "# Index ☃\r\n".as_bytes();
+        let roadmap = b"# Roadmap\n";
+        let notes = [
+            (
+                "renamed/events/雪.md",
+                NoteClass::Event,
+                b"\x00\xff\r\n".as_slice(),
+            ),
+            (
+                "renamed/entities/z.md",
+                NoteClass::Entity,
+                "☃\r\n".as_bytes(),
+            ),
+            ("renamed/records/a.md", NoteClass::Record, b"".as_slice()),
+            (
+                "renamed/entities/quote\"\t.md",
+                NoteClass::Entity,
+                b"a\nb\n".as_slice(),
+            ),
+            ("renamed/events/empty.md", NoteClass::Event, b"".as_slice()),
+        ];
+        let expected = byte_state(&notes, index, roadmap);
+        let evidence = notes
+            .iter()
+            .rev()
+            .map(|(path, class, source)| {
+                CanonicalNoteEvidence::new(project.join(path), *class, source)
+            })
+            .collect::<Vec<_>>();
+        let events = evidence
+            .iter()
+            .filter(|note| note.class == NoteClass::Event)
+            .map(|note| note.path.clone())
+            .collect();
+        let actual = render_updated_project_state(
+            std::str::from_utf8(&render_empty_project_state()).unwrap(),
+            project,
+            index,
+            roadmap,
+            &evidence,
+            &events,
+        )
+        .unwrap();
+        assert_eq!(actual, expected);
+        let checked = validate_project_state(
+            std::str::from_utf8(&expected).unwrap(),
+            project,
+            index,
+            roadmap,
+            &evidence,
+        )
+        .unwrap();
+        assert_eq!(checked.immutable_events, 2);
+        assert_eq!(checked.projection_sources[INDEX_PROJECTION], 2);
+        assert_eq!(checked.projection_sources[ROADMAP_PROJECTION], 1);
+    }
+
+    #[test]
+    fn compact_evidence_matches_seeded_byte_source_sets() {
+        let mut seed = 0x7db3_291e_u64;
+        for count in 0..128 {
+            let sources = (0..count)
+                .map(|number| {
+                    let bytes = (0..number * 3)
+                        .map(|_| {
+                            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                            (seed >> 32) as u8
+                        })
+                        .collect::<Vec<_>>();
+                    // Repeated identities also preserve the former last-value-wins map behavior.
+                    (format!("renamed/雪-{}.md", number % 17), bytes)
+                })
+                .collect::<Vec<_>>();
+            let evidence = sources
+                .iter()
+                .map(|(path, bytes)| {
+                    CanonicalNoteEvidence::new(PathBuf::from(path), NoteClass::Entity, bytes)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                source_fingerprint(
+                    sources
+                        .iter()
+                        .zip(&evidence)
+                        .map(|((path, _), note)| { (path.as_str(), note.fingerprint.as_str()) })
+                ),
+                byte_source_fingerprint(
+                    sources
+                        .iter()
+                        .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
+                ),
+                "source set of {count} entries",
+            );
+        }
+    }
+
+    #[test]
+    fn compact_evidence_retains_original_bytes_and_replaces_candidates_explicitly() {
+        let project = Path::new("project");
+        let path = "entities/雪.md";
+        let mut source = vec![b'a'; 2 * 1024 * 1024];
+        let before = byte_state(&[(path, NoteClass::Entity, &source)], b"", b"");
+        let mut note = CanonicalNoteEvidence::new(project.join(path), NoteClass::Entity, &source);
+        assert_eq!(note.fingerprint.len(), 71);
+        assert_eq!(note.fingerprint.capacity(), 71);
+        source[1_048_576] = b'b'; // Same length, distinct exact-byte candidate.
+        let original = std::str::from_utf8(&before).unwrap();
+        validate_project_state(original, project, b"", b"", std::slice::from_ref(&note)).unwrap();
+        note.replace_source(&source);
+        assert!(
+            validate_project_state(original, project, b"", b"", std::slice::from_ref(&note))
+                .unwrap_err()
+                .contains("canonical sources changed")
+        );
+        let expected = byte_state(&[(path, NoteClass::Entity, &source)], b"", b"");
+        assert_eq!(
+            render_updated_project_state(original, project, b"", b"", &[note], &BTreeSet::new(),)
+                .unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn compact_evidence_preserves_event_and_projection_error_precedence() {
+        let project = Path::new("project");
+        let notes = [
+            ("events/a.md", NoteClass::Event, b"before".as_slice()),
+            ("entities/z.md", NoteClass::Entity, b"entity".as_slice()),
+        ];
+        let state = String::from_utf8(byte_state(&notes, b"index", b"roadmap")).unwrap();
+        let mut evidence = notes
+            .iter()
+            .map(|(path, class, source)| {
+                CanonicalNoteEvidence::new(project.join(path), *class, source)
+            })
+            .collect::<Vec<_>>();
+        evidence[0].replace_source(b"after!");
+        evidence[1].replace_source(b"ENTITY");
+        let error =
+            validate_project_state(&state, project, b"changed index", b"roadmap", &evidence)
+                .unwrap_err();
+        assert_eq!(
+            error,
+            "immutable event \"events/a.md\" changed since its trusted baseline"
+        );
+        evidence[0].replace_source(b"before");
+        let error =
+            validate_project_state(&state, project, b"changed index", b"roadmap", &evidence)
+                .unwrap_err();
+        assert_eq!(
+            error,
+            "projection \"index\" is stale because its canonical sources changed"
+        );
+        evidence[1].replace_source(b"entity");
+        let error =
+            validate_project_state(&state, project, b"changed index", b"roadmap", &evidence)
+                .unwrap_err();
+        assert_eq!(
+            error,
+            "projection \"index\" bytes differ from its trusted baseline"
+        );
+        evidence.remove(0);
+        assert!(
+            validate_project_state(&state, project, b"index", b"roadmap", &evidence)
+                .unwrap_err()
+                .contains("tracks missing immutable event")
+        );
+        evidence.push(CanonicalNoteEvidence::new(
+            project.join("events/new.md"),
+            NoteClass::Event,
+            b"new",
+        ));
+        assert!(
+            validate_project_state(&state, project, b"index", b"roadmap", &evidence)
+                .unwrap_err()
+                .contains("has no trusted baseline")
+        );
     }
 }

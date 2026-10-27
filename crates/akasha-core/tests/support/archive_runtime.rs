@@ -3,6 +3,62 @@ use akasha_core::{inspect_pending_note_edit, search_library};
 use std::time::Instant;
 
 #[test]
+fn compact_evidence_keeps_large_project_global_and_document_sources_exact() {
+    let fixture = fixture("compact-evidence-large-sources");
+    let ids = [
+        "Projects/alpha/entities/core.md",
+        "Projects/alpha/records/tasks/ship-mvp.md",
+        "Global/entities/rust-pattern.md",
+    ];
+    for id in ids {
+        let path = fixture.root.join(id);
+        let source = fs::read_to_string(&path).unwrap();
+        fs::write(
+            path,
+            format!(
+                "{source}\n{}retention-needle\r\n",
+                "Exact Unicode ☃ 世界 with spaces  \r\n".repeat(60_000)
+            ),
+        )
+        .unwrap();
+    }
+    support::write_project_state(
+        &fixture.root.join("Projects/alpha"),
+        &[],
+        &["entities/core.md"],
+        &["records/tasks/ship-mvp.md"],
+    );
+    let before = link_fixture_snapshot(&fixture.root);
+    let projection = build_library_projection(&fixture.request).unwrap();
+    assert_eq!(projection.total_books, 4);
+    let search = search_library(&fixture.request, "retention-needle", None, 30).unwrap();
+    assert_eq!(search.total_matches, 3);
+    for id in ids {
+        let source = fs::read(fixture.root.join(id)).unwrap();
+        assert!(source.len() > 2_000_000);
+        assert_eq!(
+            load_library_document(&fixture.request, id)
+                .unwrap()
+                .source
+                .as_bytes(),
+            source
+        );
+    }
+    assert_eq!(link_fixture_snapshot(&fixture.root), before);
+    // A fresh call still observes a same-length external body change as stale evidence.
+    let path = fixture.root.join(ids[0]);
+    let mut source = fs::read(&path).unwrap();
+    let last = source.len() - 3;
+    source[last] = b'!';
+    fs::write(path, source).unwrap();
+    let changed = link_fixture_snapshot(&fixture.root);
+    let error = build_library_projection(&fixture.request).unwrap_err();
+    assert_eq!(error.exit_code(), 4);
+    assert!(error.to_string().contains("canonical sources changed"));
+    assert_eq!(link_fixture_snapshot(&fixture.root), changed);
+}
+
+#[test]
 fn inline_backticks_preserve_archive_graph_source_and_classified_errors() {
     let fixture = fixture("inline-backticks");
     let project = fixture.root.join("Projects/alpha/entities/core.md");

@@ -1675,7 +1675,7 @@ fn collect_candidate_evidence(
             path: replacement_path.to_path_buf(),
             message: "the configured canonical note set changed during the update".to_owned(),
         })?;
-    candidate.source = replacement_source.to_vec();
+    candidate.replace_source(replacement_source);
     Ok(evidence)
 }
 

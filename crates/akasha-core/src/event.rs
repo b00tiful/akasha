@@ -420,11 +420,11 @@ fn create_configured_event(
     )?;
 
     let mut evidence = collect_existing_evidence(&resolved.project_dir, &config)?;
-    evidence.push(CanonicalNoteEvidence {
-        path: destination.clone(),
-        class: NoteClass::Event,
-        source: source.as_bytes().to_vec(),
-    });
+    evidence.push(CanonicalNoteEvidence::new(
+        destination.clone(),
+        NoteClass::Event,
+        source.as_bytes(),
+    ));
     evidence.sort_by(|left, right| left.path.cmp(&right.path));
 
     let index = read_regular_file(

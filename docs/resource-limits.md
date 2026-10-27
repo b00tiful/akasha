@@ -37,6 +37,10 @@ time. Search limits bound returned hits, while validation and matching still sca
 The [inline-code lookahead](archive-runtime.md) avoids repeated suffix searches but may queue
 offsets proportional to examined backtick runs; it does not add a body or archive memory cap.
 
+Integrity checking retains original-read fingerprints instead of every canonical body; the
+[archive guide](archive-runtime.md) explains that memory reduction and its verification. Whole-note
+reads and other retained images, including context candidates, remain outside these YAML limits.
+
 To measure actual projection, all-library search and the core work used by background checks on
 100, 1,000 and 10,000 generated Unicode notes:
 

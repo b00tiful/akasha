@@ -23,6 +23,23 @@ journal policies remain. No metadata observer, additional source buffer, persist
 public schema or dependency was added. Concurrent reads still do not form an atomic snapshot.
 Whole-note/archive resource limits remain separate.
 
+Project integrity evidence now retains each original note's path, configured class and exact-byte
+SHA-256 fingerprint. It releases that note's source before the next read. State validation and
+all state-writing transactions use these fingerprints directly; the version-1 manifest still
+hashes the same sorted JSON path-to-content-fingerprint map. Candidate updates recompute only
+their explicit replacement evidence. Exact transaction and journal images remain available for
+checked writes and recovery.
+
+This removes aggregate canonical body storage from integrity evidence, with no extra reads or
+change in accepted source size. It does not cap one note's transient allocation, paths/counts,
+parser queues, graph output, context candidates, project-state text or editor/journal copies.
+Context can therefore still retain substantial memory even when its returned text is bounded.
+Run the exact-byte/state/large-journal regressions with:
+
+```sh
+cargo test --offline -p akasha-core compact_evidence
+```
+
 To measure the release build with disposable 100, 1,000 and 10,000-note archives:
 
 ```sh

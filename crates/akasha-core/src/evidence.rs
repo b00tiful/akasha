@@ -16,11 +16,7 @@ where
     for note_type in config.project.note_types.values() {
         for path in canonical_note_paths(&project_dir.join(&note_type.folder))? {
             let source = read_source(&path)?;
-            evidence.push(CanonicalNoteEvidence {
-                path,
-                class: note_type.class,
-                source,
-            });
+            evidence.push(CanonicalNoteEvidence::new(path, note_type.class, &source));
         }
     }
     Ok(evidence)

@@ -76,6 +76,63 @@ fn recovers_event_and_handoff_after_real_publication_exits() {
 }
 
 #[test]
+fn compact_evidence_preserves_large_exact_images_in_all_journal_versions() {
+    for schema in [1, 2, 3] {
+        let fixture = Fixture::new();
+        let source = fs::read_to_string(fixture.project.join(ENTITY)).unwrap();
+        let large = format!(
+            "{source}\n{}",
+            "Exact ☃ bytes with spaces  \r\n".repeat(80_000)
+        );
+        replace_library_document(&fixture.request, ENTITY_ID, &source, &large).unwrap();
+        let images = fixture.images(schema);
+        assert!(images.before[Path::new(ENTITY)].len() > 2_000_000);
+        for (mut image, outcome, expected) in [
+            (
+                images.before.clone(),
+                NoteEditRecovery::Discarded,
+                &images.before,
+            ),
+            (
+                images.after.clone(),
+                NoteEditRecovery::RolledBack,
+                &images.before,
+            ),
+            (
+                images.after.clone(),
+                NoteEditRecovery::Finalized,
+                &images.after,
+            ),
+        ] {
+            if outcome == NoteEditRecovery::RolledBack {
+                image.insert(
+                    PROJECT_STATE_FILE.into(),
+                    images.before[Path::new(PROJECT_STATE_FILE)].clone(),
+                );
+            }
+            image.insert(NOTE_EDIT_JOURNAL_FILE.into(), images.journal.clone());
+            fixture.restore(&image);
+            let note = fixture.project.join(images.notes[0]);
+            let exact = image.get(Path::new(images.notes[0])).cloned();
+            fs::write(&note, b"foreign exact bytes").unwrap();
+            let conflict = snapshot(&fixture.project);
+            assert_eq!(
+                recover_pending_note_edit(&fixture.request)
+                    .unwrap_err()
+                    .exit_code(),
+                5
+            );
+            assert_eq!(snapshot(&fixture.project), conflict);
+            match exact {
+                Some(bytes) => fs::write(&note, bytes).unwrap(),
+                None => fs::remove_file(&note).unwrap(),
+            }
+            fixture.assert_recovered(outcome, expected);
+        }
+    }
+}
+
+#[test]
 fn recovers_mutable_creation_and_record_update_after_real_publication_exits() {
     check_lifecycle_publication_exits(&[
         (

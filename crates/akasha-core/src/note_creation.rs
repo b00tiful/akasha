@@ -518,11 +518,11 @@ fn create_mutable_note_checked(
     }
 
     let mut evidence = collect_existing_evidence(&resolved.project_dir, &config)?;
-    evidence.push(CanonicalNoteEvidence {
-        path: destination.clone(),
-        class: template.class,
-        source: source.as_bytes().to_vec(),
-    });
+    evidence.push(CanonicalNoteEvidence::new(
+        destination.clone(),
+        template.class,
+        source.as_bytes(),
+    ));
     evidence.sort_by(|left, right| left.path.cmp(&right.path));
 
     let projection_before_text = str::from_utf8(projection_before).map_err(|error| {

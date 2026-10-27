@@ -684,11 +684,11 @@ fn prepare_batch(
     let mut new_events = BTreeSet::new();
     for note in &notes {
         if note.create {
-            evidence.push(CanonicalNoteEvidence {
-                path: note.path.clone(),
-                class: note.class,
-                source: note.source.clone(),
-            });
+            evidence.push(CanonicalNoteEvidence::new(
+                note.path.clone(),
+                note.class,
+                &note.source,
+            ));
             if note.class == NoteClass::Event {
                 new_events.insert(note.path.clone());
             }

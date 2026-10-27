@@ -275,11 +275,7 @@ fn validate_note_tree(
             },
         )?;
         wikilinks += validate_wikilinks(root, &path, parsed.body)?;
-        notes.push(CanonicalNoteEvidence {
-            path,
-            class,
-            source,
-        });
+        notes.push(CanonicalNoteEvidence::new(path, class, &source));
     }
     Ok(ValidatedNoteTree { notes, wikilinks })
 }
