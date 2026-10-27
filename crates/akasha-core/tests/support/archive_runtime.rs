@@ -3,6 +3,84 @@ use akasha_core::{inspect_pending_note_edit, search_library};
 use std::time::Instant;
 
 #[test]
+fn inline_backticks_preserve_archive_graph_source_and_classified_errors() {
+    let fixture = fixture("inline-backticks");
+    let project = fixture.root.join("Projects/alpha/entities/core.md");
+    let global = fixture.root.join("Global/entities/rust-pattern.md");
+    let mut body = String::new();
+    for length in 1..=80 {
+        body.push_str(&format!(
+            "prefix {} [[#local|☃ 世界]]\r\n",
+            "`".repeat(length)
+        ));
+    }
+    body.push_str("archive-backticks [[Projects/alpha/entities/core|Ядро]]\r\n");
+    for path in [&project, &global] {
+        let original = fs::read_to_string(path).unwrap();
+        fs::write(path, format!("{original}\n{body}")).unwrap();
+    }
+    let refresh_state = || {
+        support::write_project_state(
+            &fixture.root.join("Projects/alpha"),
+            &[],
+            &["entities/core.md"],
+            &["records/tasks/ship-mvp.md"],
+        )
+    };
+    refresh_state();
+    let before = link_fixture_snapshot(&fixture.root);
+    assert_eq!(
+        build_library_projection(&fixture.request)
+            .unwrap()
+            .total_books,
+        4
+    );
+    let search = search_library(&fixture.request, "archive-backticks", None, 30).unwrap();
+    assert_eq!(search.total_matches, 2);
+    let incoming = inspect_note_links(
+        &fixture.request,
+        "Projects/alpha/entities/core.md",
+        NoteLinkDirection::Incoming,
+        30,
+    )
+    .unwrap();
+    assert_eq!(incoming.total_matches, 2);
+    for id in [
+        "Projects/alpha/entities/core.md",
+        "Global/entities/rust-pattern.md",
+    ] {
+        assert_eq!(
+            load_library_document(&fixture.request, id)
+                .unwrap()
+                .source
+                .as_bytes(),
+            fs::read(fixture.root.join(id)).unwrap()
+        );
+    }
+    assert_eq!(link_fixture_snapshot(&fixture.root), before);
+
+    for path in [&project, &global] {
+        let valid = fs::read(path).unwrap();
+        let mut invalid = valid.clone();
+        invalid.extend_from_slice(b"[[broken");
+        fs::write(path, invalid).unwrap();
+        refresh_state();
+        let before = link_fixture_snapshot(&fixture.root);
+        for result in [
+            build_library_projection(&fixture.request).map(|_| ()),
+            search_library(&fixture.request, "absent", None, 1).map(|_| ()),
+        ] {
+            let error = result.unwrap_err();
+            assert_eq!(error.exit_code(), 4);
+            assert!(error.to_string().contains("malformed wikilink"));
+        }
+        assert_eq!(link_fixture_snapshot(&fixture.root), before);
+        fs::write(path, valid).unwrap();
+        refresh_state();
+    }
+}
+
+#[test]
 fn long_unicode_paragraphs_preserve_archive_graph_search_and_source() {
     let fixture = fixture("long-paragraphs");
     let paragraph = "Synthetic Unicode ☃ 世界 paragraph. ".repeat(256);

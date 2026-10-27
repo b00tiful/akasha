@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, VecDeque};
 use std::error::Error;
 use std::fmt;
 
@@ -44,6 +45,7 @@ pub(crate) fn parse_wikilinks(body: &str) -> Result<Vec<Wikilink<'_>>, WikilinkP
     let mut fence = None;
     let mut line_start = true;
     let mut line_end = 0;
+    let mut backticks = BacktickSearch::default();
 
     while offset < bytes.len() {
         // The cursor only advances. Reuse this boundary until a newline or a multiline
@@ -99,9 +101,7 @@ pub(crate) fn parse_wikilinks(body: &str) -> Result<Vec<Wikilink<'_>>, WikilinkP
         }
         if bytes[offset] == b'`' {
             let ticks = byte_run(bytes, offset, b'`');
-            if let Some(closing) =
-                find_matching_run(bytes, offset + ticks, bytes.len(), b'`', ticks)
-            {
+            if let Some(closing) = backticks.find(bytes, offset + ticks, ticks) {
                 offset = closing + ticks;
                 continue;
             }
@@ -229,25 +229,41 @@ fn byte_run(bytes: &[u8], start: usize, needle: u8) -> usize {
         .count()
 }
 
-fn find_matching_run(
-    bytes: &[u8],
-    mut offset: usize,
-    end: usize,
-    needle: u8,
-    length: usize,
-) -> Option<usize> {
-    while offset < end {
-        if bytes[offset] == needle {
-            let run = byte_run(&bytes[..end], offset, needle);
-            if run == length {
-                return Some(offset);
+/// Share raw delimiter lookahead across monotonically advancing parser requests.
+#[derive(Default)]
+struct BacktickSearch {
+    scanned_to: usize,
+    pending: BTreeMap<usize, VecDeque<usize>>,
+}
+
+impl BacktickSearch {
+    fn find(&mut self, bytes: &[u8], start: usize, length: usize) -> Option<usize> {
+        if let Some(positions) = self.pending.get_mut(&length) {
+            while positions.front().is_some_and(|position| *position < start) {
+                positions.pop_front();
             }
-            offset += run;
-        } else {
-            offset += 1;
+            if let Some(position) = positions.pop_front() {
+                return Some(position);
+            }
         }
+
+        self.scanned_to = self.scanned_to.max(start);
+        while self.scanned_to < bytes.len() {
+            let position = self.scanned_to;
+            if bytes[position] == b'`' {
+                let run = byte_run(bytes, position, b'`');
+                self.scanned_to += run;
+                if run == length {
+                    return Some(position);
+                }
+                // Match raw runs even inside comments, fences and link labels, as before.
+                self.pending.entry(run).or_default().push_back(position);
+            } else {
+                self.scanned_to += 1;
+            }
+        }
+        None
     }
-    None
 }
 
 fn is_escaped(bytes: &[u8], offset: usize) -> bool {

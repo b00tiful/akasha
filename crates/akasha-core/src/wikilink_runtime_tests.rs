@@ -2,14 +2,25 @@ use super::*;
 
 // Frozen pre-optimization control flow; preserves the former line-end lookup policy.
 fn reference_parse(body: &str) -> Result<Vec<Wikilink<'_>>, WikilinkParseError> {
+    reference_parse_with_line_policy(body, false)
+}
+
+// The true policy isolates the pre-backtick-change parser, including its line cache.
+fn reference_parse_with_line_policy(
+    body: &str,
+    reuse_line_end: bool,
+) -> Result<Vec<Wikilink<'_>>, WikilinkParseError> {
     let bytes = body.as_bytes();
     let mut links = Vec::new();
     let mut offset = 0;
     let mut fence = None;
     let mut line_start = true;
+    let mut line_end = 0;
 
     while offset < bytes.len() {
-        let line_end = find_line_end(bytes, offset);
+        if !reuse_line_end || offset >= line_end {
+            line_end = find_line_end(bytes, offset);
+        }
         if line_start {
             let line = &bytes[offset..line_end];
             let marker = fence_marker(line);
@@ -96,6 +107,28 @@ fn reference_parse(body: &str) -> Result<Vec<Wikilink<'_>>, WikilinkParseError> 
     }
 
     Ok(links)
+}
+
+// Frozen former raw-run search, independent of production lookahead.
+fn find_matching_run(
+    bytes: &[u8],
+    mut offset: usize,
+    end: usize,
+    needle: u8,
+    length: usize,
+) -> Option<usize> {
+    while offset < end {
+        if bytes[offset] == needle {
+            let run = byte_run(&bytes[..end], offset, needle);
+            if run == length {
+                return Some(offset);
+            }
+            offset += run;
+        } else {
+            offset += 1;
+        }
+    }
+    None
 }
 
 #[test]
@@ -203,6 +236,189 @@ fn empty_and_newline_boundaries_keep_previous_semantics() {
         "`x`\n[[a]]",
     ] {
         assert_eq!(parse_wikilinks(body), reference_parse(body), "{body:?}");
+    }
+}
+
+#[test]
+fn distinct_unmatched_backticks_keep_exact_links_and_errors() {
+    for newline in ["\n", "\r\n", ""] {
+        let mut body = String::new();
+        for length in 1..=128 {
+            body.push_str(&format!(
+                "prefix {} [[#local|☃ 世界]]{newline}",
+                "`".repeat(length)
+            ));
+        }
+        let links = parse_wikilinks(&body).unwrap();
+        assert_eq!(
+            links,
+            reference_parse_with_line_policy(&body, true).unwrap()
+        );
+        assert_eq!(links.len(), 128);
+        for link in links {
+            assert_eq!(&body[link.from..link.to], "[[#local|☃ 世界]]");
+            assert_eq!(&body[link.label_from..link.label_to], "☃ 世界");
+        }
+        let error_offset = body.len();
+        body.push_str("[[broken");
+        let error = parse_wikilinks(&body).unwrap_err();
+        assert_eq!(
+            Err(error.clone()),
+            reference_parse_with_line_policy(&body, true)
+        );
+        assert_eq!(error.offset, error_offset);
+    }
+}
+
+#[test]
+fn queued_backticks_discard_comments_labels_fences_and_opening_positions() {
+    let body = "prefix ````````\r\n\
+                <!-- ` [[broken --> %% ` [[bad %% [[#local|label `]]\r\n\
+                ~~~\r\n` [[hidden]]\r\n~~~\r\n\
+                prefix `[[hidden]]` [[visible|末尾]]\r\n";
+    let links = parse_wikilinks(body).unwrap();
+    assert_eq!(links, reference_parse_with_line_policy(body, true).unwrap());
+    assert_eq!(
+        links.iter().map(|link| link.target).collect::<Vec<_>>(),
+        [None, Some("visible")]
+    );
+    assert_eq!(&body[links[1].label_from..links[1].label_to], "末尾");
+}
+
+#[test]
+fn inline_closers_keep_raw_comment_fence_label_and_escape_semantics() {
+    for body in [
+        "prefix `one <!-- ` [[visible]] --> [[after]]",
+        "prefix ``one %% `` [[visible]] %% [[after]]",
+        "prefix ```hidden\n```md [[visible]]\n[[after]]",
+        "prefix `one [[#local|` label]] [[visible]]",
+        "prefix \\`[[hidden]]\\` [[visible]]",
+        "prefix ``one `wrong` two`` [[visible]]",
+        "prefix `one\r\n```longer\r\n` [[visible]]\r\n",
+        "prefix ````\ntext `[[hidden]]` [[visible]] [[broken",
+        "prefix ````\ntext ``[[hidden]]`` [[visible|]]",
+    ] {
+        assert_eq!(
+            parse_wikilinks(body),
+            reference_parse_with_line_policy(body, true),
+            "{body:?}"
+        );
+    }
+    assert_eq!(
+        parse_wikilinks("prefix `one <!-- ` [[visible]] --> [[after]]")
+            .unwrap()
+            .iter()
+            .map(|link| link.target)
+            .collect::<Vec<_>>(),
+        [Some("visible"), Some("after")]
+    );
+}
+
+#[test]
+fn variable_backtick_seeded_corpus_matches_frozen_search() {
+    let tokens = [
+        "☃ 世界",
+        "\n",
+        "\r\n",
+        "[[a]]",
+        "[[#local|末尾]]",
+        "\\[[escaped]]",
+        "<!--",
+        "-->",
+        "%%",
+        "~~~",
+        "[[broken",
+        "[[a|]]",
+        "[[a#]]",
+    ];
+    let mut seed = 0x3e71_2026_u64;
+    for _ in 0..3_000 {
+        let mut body = String::from("prefix ");
+        for _ in 0..64 {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let choice = (seed >> 32) as usize;
+            if choice.is_multiple_of(3) {
+                body.push_str(&"`".repeat(1 + choice % 32));
+            } else {
+                body.push_str(tokens[choice % tokens.len()]);
+            }
+        }
+        assert_eq!(
+            parse_wikilinks(&body),
+            reference_parse_with_line_policy(&body, true),
+            "{body:?}"
+        );
+    }
+}
+
+#[test]
+fn lookahead_cursor_never_rewinds_and_returns_nearest_queued_run() {
+    for initial_length in [1, 3, 65] {
+        let mut body = format!("{} ☃ 世界 ", "`".repeat(initial_length));
+        for length in (1..=32).chain(1..=32).chain((1..=32).rev()) {
+            body.push_str(&"`".repeat(length));
+            body.push_str(" x ");
+        }
+        let bytes = body.as_bytes();
+        let mut search = BacktickSearch::default();
+        let mut offset = 0;
+        while offset < bytes.len() {
+            if bytes[offset] != b'`' {
+                offset += 1;
+                continue;
+            }
+            let ticks = byte_run(bytes, offset, b'`');
+            let previous_cursor = search.scanned_to;
+            let expected = find_matching_run(bytes, offset + ticks, bytes.len(), b'`', ticks);
+            assert_eq!(search.find(bytes, offset + ticks, ticks), expected);
+            assert!(search.scanned_to >= previous_cursor);
+            offset = expected.map_or(offset + ticks, |closing| closing + ticks);
+        }
+    }
+}
+
+#[test]
+fn ordinary_same_length_spans_leave_lookahead_queues_unallocated() {
+    let bytes = b"`a` `b` `c`";
+    let mut search = BacktickSearch::default();
+    for (start, closing) in [(1, 2), (5, 6), (9, 10)] {
+        assert_eq!(search.find(bytes, start, 1), Some(closing));
+        assert!(search.pending.is_empty());
+        assert_eq!(search.scanned_to, closing + 1);
+    }
+}
+
+#[test]
+#[ignore = "manual inline-code scan measurement; run with --ignored --nocapture"]
+fn synthetic_backtick_runtime() {
+    use std::time::Instant;
+    for count in [128, 512, 1_024, 2_048] {
+        let mut body = String::new();
+        for length in 1..=count {
+            body.push_str(&format!(
+                "prefix {} [[#local]] ☃ 世界\r\n",
+                "`".repeat(length)
+            ));
+        }
+        let started = Instant::now();
+        let expected = std::hint::black_box(reference_parse_with_line_policy(&body, true).unwrap());
+        let reference_ns = started.elapsed().as_nanos();
+        let started = Instant::now();
+        for _ in 0..20 {
+            assert_eq!(
+                std::hint::black_box(parse_wikilinks(&body).unwrap()),
+                expected
+            );
+        }
+        let current_ns = started.elapsed().as_nanos() / 20;
+        assert_eq!(expected.len(), count);
+        println!(
+            "{}",
+            serde_json::json!({
+                "runs": count, "body_bytes": body.len(), "reference_ns": reference_ns,
+                "current_ns": current_ns, "exact_parity": true
+            })
+        );
     }
 }
 
