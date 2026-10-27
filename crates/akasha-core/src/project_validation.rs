@@ -8,6 +8,7 @@ use std::str;
 
 use serde::Serialize;
 
+use crate::markdown_source::read_markdown_source;
 use crate::resolution::{
     NoteClass, ResolveError, ResolveRequest, load_project_registry, load_root_config,
     resolve_project,
@@ -142,6 +143,23 @@ impl From<ResolveError> for ProjectValidationError {
 pub fn validate_project(
     request: &ResolveRequest,
 ) -> Result<ProjectValidationReport, ProjectValidationError> {
+    validate_project_sources(request, read_markdown_source)
+}
+
+/// Preserve historical size compatibility only while reconciling an existing journal.
+/// All schema, link and state checks remain identical to ordinary validation.
+pub(crate) fn validate_project_for_recovery(
+    request: &ResolveRequest,
+) -> Result<ProjectValidationReport, ProjectValidationError> {
+    validate_project_sources(request, read_validation_file)
+}
+
+type ReadMarkdown = fn(&Path, &'static str) -> Result<Vec<u8>, ProjectValidationError>;
+
+fn validate_project_sources(
+    request: &ResolveRequest,
+    read_markdown: ReadMarkdown,
+) -> Result<ProjectValidationReport, ProjectValidationError> {
     let resolved = resolve_project(request)?;
     let config = load_root_config(&resolved.root)?;
     let (_, registry) = load_project_registry(&resolved.root, &config)?;
@@ -185,6 +203,7 @@ pub fn validate_project(
             name,
             note_type.class,
             &note_type.required_fields,
+            read_markdown,
         )?;
         let note_count = validated.notes.len();
         canonical_notes += note_count;
@@ -199,8 +218,8 @@ pub fn validate_project(
         );
     }
 
-    let index_source = read_validation_file(&index, "read index projection")?;
-    let roadmap_source = read_validation_file(&roadmap, "read roadmap projection")?;
+    let index_source = read_markdown(&index, "read index projection")?;
+    let roadmap_source = read_markdown(&roadmap, "read roadmap projection")?;
     let state_source = read_validation_file(&state, "read project state")?;
     let state_text =
         str::from_utf8(&state_source).map_err(|error| ProjectValidationError::InvalidState {
@@ -252,16 +271,13 @@ fn validate_note_tree(
     note_type: &str,
     class: NoteClass,
     required_fields: &[String],
+    read_markdown: ReadMarkdown,
 ) -> Result<ValidatedNoteTree, ProjectValidationError> {
     let paths = canonical_note_paths(directory)?;
     let mut wikilinks = 0;
     let mut notes = Vec::with_capacity(paths.len());
     for path in paths {
-        let source = fs::read(&path).map_err(|source| ProjectValidationError::FileSystem {
-            operation: "read canonical note",
-            path: path.clone(),
-            source,
-        })?;
+        let source = read_markdown(&path, "read canonical note")?;
         let parsed = parse_leading_frontmatter_bytes(&source).map_err(|source| {
             ProjectValidationError::InvalidDocument {
                 path: path.clone(),

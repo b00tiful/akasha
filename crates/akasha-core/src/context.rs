@@ -1,12 +1,12 @@
 use std::error::Error;
 use std::fmt::{self, Write};
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, SystemTimeError, UNIX_EPOCH};
 
 use serde::Serialize;
 
+use crate::markdown_source::read_markdown_source;
 use crate::project_validation::{
     ProjectValidationError, ProjectValidationReport, canonical_note_paths, validate_project,
 };
@@ -360,10 +360,14 @@ fn read_project_file(
     max_chars: usize,
 ) -> Result<ContextCandidate, ContextError> {
     let path = report.project_dir.join(relative_path);
-    let content = fs::read_to_string(&path).map_err(|source| ContextError::FileSystem {
+    let bytes = read_context_source(&path, "read context projection")?;
+    let content = String::from_utf8(bytes).map_err(|_| ContextError::FileSystem {
         operation: "read context projection",
         path: path.clone(),
-        source,
+        source: io::Error::new(
+            io::ErrorKind::InvalidData,
+            "stream did not contain valid UTF-8",
+        ),
     })?;
     Ok(ContextCandidate::new(
         section,
@@ -448,11 +452,7 @@ fn read_note(
     section: ContextSection,
     max_chars: usize,
 ) -> Result<ReadNote, ContextError> {
-    let source = fs::read(path).map_err(|source| ContextError::FileSystem {
-        operation: "read context note",
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let source = read_context_source(path, "read context note")?;
     let parsed = parse_leading_frontmatter_bytes(&source).map_err(|source| {
         ContextError::InvalidDocument {
             path: path.to_path_buf(),
@@ -467,6 +467,21 @@ fn read_note(
     Ok(ReadNote {
         metadata: parsed.metadata.clone(),
         entry,
+    })
+}
+
+fn read_context_source(path: &Path, operation: &'static str) -> Result<Vec<u8>, ContextError> {
+    read_markdown_source(path, operation).map_err(|error| match error {
+        ProjectValidationError::FileSystem {
+            operation,
+            path,
+            source,
+        } => ContextError::FileSystem {
+            operation,
+            path,
+            source,
+        },
+        error => error.into(),
     })
 }
 

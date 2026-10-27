@@ -6,6 +6,13 @@ bytes. It covers shared journal versions 1, 2 and 3 on the tested Linux local
 filesystem. Root initialization and client instruction/hook journals have separate
 contracts.
 
+Ordinary canonical notes and configured index/roadmap sources now have a
+[16 MiB byte allowance](resource-limits.md). Historical shared-journal recovery deliberately keeps
+its existing size compatibility and all schema/link/integrity checks. A completed recovery may
+therefore leave an exact oversized project that ordinary loading still refuses. Preserve the
+complete root and follow the compatibility guidance in that guide; deleting a journal or changing
+state hashes to bypass the size policy is not recovery.
+
 The desktop's load/retry and the TUI's F5/`refresh` actions can roll back or finalize
 a transaction. The TUI's `/recovery` inspects journal presence without writing or
 reading its contents and preserves unsaved buffers underneath the diagnostic view.

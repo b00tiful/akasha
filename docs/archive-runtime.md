@@ -21,7 +21,8 @@ This bounds this lookahead path; it does not establish a whole-parser or archive
 All original filesystem reads, fresh project/global validation, source integrity checks and
 journal policies remain. No metadata observer, additional source buffer, persisted cache,
 public schema or dependency was added. Concurrent reads still do not form an atomic snapshot.
-Whole-note/archive resource limits remain separate.
+Ordinary canonical/projection reads now enforce the [16 MiB source limit](resource-limits.md);
+aggregate archive resource limits remain separate. Historical recovery has its own preserved path.
 
 Project integrity evidence now retains each original note's path, configured class and exact-byte
 SHA-256 fingerprint. It releases that note's source before the next read. State validation and
@@ -31,7 +32,8 @@ their explicit replacement evidence. Exact transaction and journal images remain
 checked writes and recovery.
 
 This removes aggregate canonical body storage from integrity evidence, with no extra reads or
-change in accepted source size. It does not cap one note's transient allocation, paths/counts,
+change in accepted source size from that retention optimization. The separate ordinary source
+limit caps bytes consumed in one source read; it does not cap allocation capacity, paths/counts,
 parser queues, graph output, context candidates, project-state text or editor/journal copies.
 Context now releases individually non-fitting bodies, keeps only the latest handoff body and
 measures allocation without rendering rejected bundles. Breadcrumbs retain metadata without

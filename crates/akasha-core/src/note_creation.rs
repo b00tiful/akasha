@@ -89,6 +89,7 @@ pub fn preview_mutable_note_creation(
     projection_source: &str,
 ) -> Result<MutableNoteCreationPreview, MutableNoteCreationError> {
     let path = note_destination(&form.project_dir, &form.note_folder, relative_path)?;
+    crate::markdown_source::check_markdown_source(&form.projection, projection_source.as_bytes())?;
     reject_existing_destination(&path)?;
     let source = instantiate_template(
         &form.template_source,
@@ -312,7 +313,7 @@ pub fn prepare_mutable_note_creation(
         NoteClass::Entity => report.project_dir.join(&config.project.index),
         NoteClass::Event => unreachable!("immutable events were rejected above"),
     };
-    let projection_bytes = read_regular_file(&projection, "read the maintained projection")?;
+    let projection_bytes = read_regular_markdown(&projection, "read the maintained projection")?;
     let projection_source = str::from_utf8(&projection_bytes)
         .map_err(|error| MutableNoteCreationError::Validation {
             path: projection.clone(),
@@ -455,8 +456,9 @@ fn create_mutable_note_checked(
     let configured = &config.project.note_types[note_type];
     let index_path = resolved.project_dir.join(&config.project.index);
     let roadmap_path = resolved.project_dir.join(&config.project.roadmap);
-    let index_before = read_regular_file(&index_path, "read the current index projection")?;
-    let roadmap_before = read_regular_file(&roadmap_path, "read the current roadmap projection")?;
+    let index_before = read_regular_markdown(&index_path, "read the current index projection")?;
+    let roadmap_before =
+        read_regular_markdown(&roadmap_path, "read the current roadmap projection")?;
     let (projection_path, projection_before, index_after, roadmap_after) = match template.class {
         NoteClass::Record => (
             &roadmap_path,
@@ -472,6 +474,7 @@ fn create_mutable_note_checked(
         ),
         NoteClass::Event => unreachable!("immutable events were rejected before mutation"),
     };
+    crate::markdown_source::check_markdown_source(projection_path, projection_source.as_bytes())?;
     if let Some(form) = form {
         validate_creation_baseline(
             form,
@@ -843,6 +846,7 @@ fn validate_note_source(
     source: &[u8],
     required_fields: &[String],
 ) -> Result<(), MutableNoteCreationError> {
+    crate::markdown_source::check_markdown_source(path, source)?;
     let parsed = parse_leading_frontmatter_bytes(source).map_err(|error| {
         MutableNoteCreationError::Validation {
             path: path.to_path_buf(),
@@ -869,13 +873,28 @@ fn collect_existing_evidence(
     config: &RootConfig,
 ) -> Result<Vec<CanonicalNoteEvidence>, MutableNoteCreationError> {
     collect_canonical_evidence(project_dir, config, |path| {
-        read_regular_file(path, "read canonical note for mutable-note state")
+        read_regular_markdown(path, "read canonical note for mutable-note state")
     })
 }
 
 fn read_regular_file(
     path: &Path,
     operation: &'static str,
+) -> Result<Vec<u8>, MutableNoteCreationError> {
+    read_regular_source(path, operation, false)
+}
+
+fn read_regular_markdown(
+    path: &Path,
+    operation: &'static str,
+) -> Result<Vec<u8>, MutableNoteCreationError> {
+    read_regular_source(path, operation, true)
+}
+
+fn read_regular_source(
+    path: &Path,
+    operation: &'static str,
+    markdown: bool,
 ) -> Result<Vec<u8>, MutableNoteCreationError> {
     let metadata =
         fs::symlink_metadata(path).map_err(|source| MutableNoteCreationError::FileSystem {
@@ -888,6 +907,9 @@ fn read_regular_file(
             path: path.to_path_buf(),
             message: "checked mutable-note target is not a regular file".to_owned(),
         });
+    }
+    if markdown {
+        return crate::markdown_source::read_markdown_source(path, operation).map_err(Into::into);
     }
     fs::read(path).map_err(|source| MutableNoteCreationError::FileSystem {
         operation,

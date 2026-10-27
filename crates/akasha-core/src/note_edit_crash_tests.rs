@@ -6,6 +6,9 @@ mod io_crash_tests;
 #[path = "note_edit_error_tests.rs"]
 mod error_tests;
 
+#[path = "markdown_source_recovery_tests.rs"]
+mod markdown_source_tests;
+
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::process::Command;

@@ -29,7 +29,10 @@ selection without rendering rejected bundles. It still reads and validates every
 preserves exact omission lengths, and permits explicit expansion to include those whole bodies.
 Only the newest handoff body is retained; breadcrumbs retain task/handoff metadata without bodies.
 This is not an archive memory cap: transient whole-note reads, paths and many individually fitting
-bodies can still consume substantial memory. See [resource limits](resource-limits.md).
+bodies can still consume substantial memory. Each ordinary canonical/projection source read
+obeys the separate 16 MiB byte allowance, independently of the requested output budget.
+Oversized sources fail validation even when their body would be omitted. See
+[resource limits](resource-limits.md).
 
 In the terminal interface, use `/context` or `/context --max-chars 32000`. Context always belongs
 to the selected project, including while browsing global knowledge. The literal reader supports

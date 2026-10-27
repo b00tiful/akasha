@@ -427,11 +427,11 @@ fn create_configured_event(
     ));
     evidence.sort_by(|left, right| left.path.cmp(&right.path));
 
-    let index = read_regular_file(
+    let index = read_regular_markdown(
         &resolved.project_dir.join(&config.project.index),
         "read the current index projection",
     )?;
-    let roadmap = read_regular_file(
+    let roadmap = read_regular_markdown(
         &resolved.project_dir.join(&config.project.roadmap),
         "read the current roadmap projection",
     )?;
@@ -677,6 +677,7 @@ fn validate_event_source(
     source: &[u8],
     required_fields: &[String],
 ) -> Result<(), EventCreationError> {
+    crate::markdown_source::check_markdown_source(path, source)?;
     let parsed = parse_leading_frontmatter_bytes(source).map_err(|error| {
         EventCreationError::Validation {
             path: path.to_path_buf(),
@@ -703,11 +704,26 @@ fn collect_existing_evidence(
     config: &RootConfig,
 ) -> Result<Vec<CanonicalNoteEvidence>, EventCreationError> {
     collect_canonical_evidence(project_dir, config, |path| {
-        read_regular_file(path, "read canonical note for event state")
+        read_regular_markdown(path, "read canonical note for event state")
     })
 }
 
 fn read_regular_file(path: &Path, operation: &'static str) -> Result<Vec<u8>, EventCreationError> {
+    read_regular_source(path, operation, false)
+}
+
+fn read_regular_markdown(
+    path: &Path,
+    operation: &'static str,
+) -> Result<Vec<u8>, EventCreationError> {
+    read_regular_source(path, operation, true)
+}
+
+fn read_regular_source(
+    path: &Path,
+    operation: &'static str,
+    markdown: bool,
+) -> Result<Vec<u8>, EventCreationError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| EventCreationError::FileSystem {
         operation,
         path: path.to_path_buf(),
@@ -718,6 +734,9 @@ fn read_regular_file(path: &Path, operation: &'static str) -> Result<Vec<u8>, Ev
             path: path.to_path_buf(),
             message: "checked event target is not a regular file".to_owned(),
         });
+    }
+    if markdown {
+        return crate::markdown_source::read_markdown_source(path, operation).map_err(Into::into);
     }
     fs::read(path).map_err(|source| EventCreationError::FileSystem {
         operation,

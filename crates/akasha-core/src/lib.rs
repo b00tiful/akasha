@@ -9,6 +9,7 @@ pub mod init;
 pub mod library;
 pub mod library_report;
 pub mod link;
+mod markdown_source;
 pub mod note_creation;
 pub mod note_edit;
 pub mod note_links;
@@ -66,6 +67,7 @@ pub use link::{
     LinkError, LinkPlan, LinkRequest, LinkResult, apply_project_link, link_project,
     prepare_project_link,
 };
+pub use markdown_source::MAX_MARKDOWN_SOURCE_BYTES;
 pub use note_creation::{
     MutableNoteCreationError, MutableNoteCreationForm, MutableNoteCreationPreview,
     MutableNoteCreationResult, apply_mutable_note_creation, apply_mutable_note_creation_preview,

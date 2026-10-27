@@ -193,7 +193,7 @@ pub fn prepare_task_lifecycle(
     }
 
     let path = resolved.root.join(id);
-    let source = read_regular_file(&path, "read the selected canonical task")?;
+    let source = read_regular_markdown(&path, "read the selected canonical task")?;
     let source = str::from_utf8(&source)
         .map_err(|error| NoteEditError::Validation {
             path: path.clone(),
@@ -201,7 +201,7 @@ pub fn prepare_task_lifecycle(
         })?
         .to_owned();
     let roadmap = resolved.project_dir.join(&config.project.roadmap);
-    let roadmap_source = read_regular_file(&roadmap, "read the current roadmap projection")?;
+    let roadmap_source = read_regular_markdown(&roadmap, "read the current roadmap projection")?;
     let roadmap_source = str::from_utf8(&roadmap_source)
         .map_err(|error| NoteEditError::Validation {
             path: roadmap.clone(),
@@ -255,7 +255,7 @@ pub fn prepare_mutable_note_lifecycle(
     });
     let path = resolved.root.join(id);
     let read_source = |path: &Path| -> Result<String, NoteEditError> {
-        let bytes = read_regular_file(path, "read exact lifecycle source")?;
+        let bytes = read_regular_markdown(path, "read exact lifecycle source")?;
         String::from_utf8(bytes).map_err(|error| NoteEditError::Validation {
             path: path.to_owned(),
             message: format!("lifecycle source is not valid UTF-8: {error}"),
@@ -315,7 +315,8 @@ pub fn preview_mutable_note_lifecycle(
             });
         }
     });
-    let projection_before = read_regular_file(&projection, "read lifecycle review projection")?;
+    let projection_before = read_regular_markdown(&projection, "read lifecycle review projection")?;
+    crate::markdown_source::check_markdown_source(&projection, projection_source.as_bytes())?;
     validate_lifecycle_baseline(
         form,
         &resolved,
@@ -324,7 +325,7 @@ pub fn preview_mutable_note_lifecycle(
         &projection,
         &projection_before,
     )?;
-    let current = read_regular_file(&form.path, "read lifecycle review note")?;
+    let current = read_regular_markdown(&form.path, "read lifecycle review note")?;
     if current != form.source.as_bytes() {
         return Err(NoteEditError::Conflict {
             path: form.path.clone(),
@@ -351,11 +352,11 @@ pub fn preview_mutable_note_lifecycle(
         replacement_source.as_bytes(),
         &config,
     )?;
-    let index = read_regular_file(
+    let index = read_regular_markdown(
         &resolved.project_dir.join(&config.project.index),
         "read current lifecycle index",
     )?;
-    let roadmap = read_regular_file(
+    let roadmap = read_regular_markdown(
         &resolved.project_dir.join(&config.project.roadmap),
         "read current lifecycle roadmap",
     )?;
@@ -645,7 +646,7 @@ pub fn replace_library_document(
     }
 
     let path = resolved.root.join(id);
-    let current = read_regular_file(&path, "read the selected canonical note")?;
+    let current = read_regular_markdown(&path, "read the selected canonical note")?;
     if current != expected_source.as_bytes() {
         return Err(NoteEditError::Conflict {
             path,
@@ -679,11 +680,11 @@ pub fn replace_library_document(
         replacement_source.as_bytes(),
         &config,
     )?;
-    let index = read_regular_file(
+    let index = read_regular_markdown(
         &resolved.project_dir.join(&config.project.index),
         "read the current index projection",
     )?;
-    let roadmap = read_regular_file(
+    let roadmap = read_regular_markdown(
         &resolved.project_dir.join(&config.project.roadmap),
         "read the current roadmap projection",
     )?;
@@ -816,7 +817,7 @@ fn update_record_checked(
     let note_type = book.note_type.clone();
 
     let path = resolved.root.join(id);
-    let current = read_regular_file(&path, "read the selected canonical record")?;
+    let current = read_regular_markdown(&path, "read the selected canonical record")?;
     if current != expected_source.as_bytes() {
         return Err(NoteEditError::Conflict {
             path,
@@ -848,8 +849,10 @@ fn update_record_checked(
     )?;
     let index_path = resolved.project_dir.join(&config.project.index);
     let roadmap_path = resolved.project_dir.join(&config.project.roadmap);
-    let index = read_regular_file(&index_path, "read the current index projection")?;
-    let roadmap_before = read_regular_file(&roadmap_path, "read the current roadmap projection")?;
+    crate::markdown_source::check_markdown_source(&roadmap_path, roadmap_source.as_bytes())?;
+    let index = read_regular_markdown(&index_path, "read the current index projection")?;
+    let roadmap_before =
+        read_regular_markdown(&roadmap_path, "read the current roadmap projection")?;
     if let Some(form) = baseline {
         validate_lifecycle_baseline(
             form,
@@ -1026,7 +1029,7 @@ fn update_entity_checked(
     let note_type = book.note_type.clone();
 
     let path = resolved.root.join(id);
-    let current = read_regular_file(&path, "read the selected canonical entity")?;
+    let current = read_regular_markdown(&path, "read the selected canonical entity")?;
     if current != expected_source.as_bytes() {
         return Err(NoteEditError::Conflict {
             path,
@@ -1058,7 +1061,8 @@ fn update_entity_checked(
     )?;
     let index_path = resolved.project_dir.join(&config.project.index);
     let roadmap_path = resolved.project_dir.join(&config.project.roadmap);
-    let index_before = read_regular_file(&index_path, "read the current index projection")?;
+    let index_before = read_regular_markdown(&index_path, "read the current index projection")?;
+    crate::markdown_source::check_markdown_source(&index_path, index_source.as_bytes())?;
     if let Some(form) = baseline {
         validate_lifecycle_baseline(
             form,
@@ -1074,7 +1078,7 @@ fn update_entity_checked(
             path: index_path.clone(),
             message: format!("current index projection is not valid UTF-8: {error}"),
         })?;
-    let roadmap = read_regular_file(&roadmap_path, "read the current roadmap projection")?;
+    let roadmap = read_regular_markdown(&roadmap_path, "read the current roadmap projection")?;
     let state_path = resolved.project_dir.join(PROJECT_STATE_FILE);
     let note_changed = replacement_source != expected_source;
     let index_changed = index_before != index_source.as_bytes();
@@ -1384,7 +1388,7 @@ fn recover_note_journal(
     let outcome = if note_matches_before && projection_matches_before && state_matches_before {
         NoteEditRecovery::Discarded
     } else if note_matches_after && projection_matches_after && state_matches_after {
-        validate_project(request)?;
+        crate::project_validation::validate_project_for_recovery(request)?;
         NoteEditRecovery::Finalized
     } else {
         if !state_matches_before {
@@ -1419,7 +1423,7 @@ fn recover_note_journal(
             #[cfg(test)]
             crash_tests::interrupt_at(crash_tests::Stage::RecoveredNote(0));
         }
-        validate_project(request)?;
+        crate::project_validation::validate_project_for_recovery(request)?;
         NoteEditRecovery::RolledBack
     };
     Ok(outcome)
@@ -1506,7 +1510,7 @@ fn recover_onboarding_journal(
         return Ok(NoteEditRecovery::Discarded);
     }
     if notes_match_after && projections_match_after && state_matches_after {
-        validate_project(request)?;
+        crate::project_validation::validate_project_for_recovery(request)?;
         return Ok(NoteEditRecovery::Finalized);
     }
 
@@ -1541,7 +1545,7 @@ fn recover_onboarding_journal(
             crash_tests::interrupt_at(crash_tests::Stage::RecoveredNote(_index));
         }
     }
-    validate_project(request)?;
+    crate::project_validation::validate_project_for_recovery(request)?;
     Ok(NoteEditRecovery::RolledBack)
 }
 
@@ -1561,6 +1565,7 @@ fn validate_replacement(
     source: &[u8],
     config: &RootConfig,
 ) -> Result<(), NoteEditError> {
+    crate::markdown_source::check_markdown_source(path, source)?;
     let configured =
         config
             .project
@@ -1666,7 +1671,7 @@ fn collect_candidate_evidence(
     config: &RootConfig,
 ) -> Result<Vec<CanonicalNoteEvidence>, NoteEditError> {
     let mut evidence = collect_canonical_evidence(project_dir, config, |path| {
-        read_regular_file(path, "read canonical note for edit state")
+        read_regular_markdown(path, "read canonical note for edit state")
     })?;
     let candidate = evidence
         .iter_mut()
@@ -1827,6 +1832,7 @@ pub(crate) fn write_note_mutation_journal(
     state_before: &str,
     state_after: &str,
 ) -> Result<(PathBuf, Vec<u8>), NoteEditError> {
+    crate::markdown_source::check_markdown_source(Path::new(id), note_after.as_bytes())?;
     let journal = NoteEditJournal {
         schema_version: NOTE_EDIT_JOURNAL_SCHEMA_VERSION,
         project: project.to_owned(),
@@ -1856,6 +1862,14 @@ pub(crate) fn write_note_projection_mutation_journal(
     project_dir: &Path,
     mutation: &NoteProjectionJournal<'_>,
 ) -> Result<(PathBuf, Vec<u8>), NoteEditError> {
+    crate::markdown_source::check_markdown_source(
+        Path::new(mutation.id),
+        mutation.note_after.as_bytes(),
+    )?;
+    crate::markdown_source::check_markdown_source(
+        Path::new(mutation.projection_id),
+        mutation.projection_after.as_bytes(),
+    )?;
     let journal = NoteEditJournal {
         schema_version: NOTE_PROJECTION_JOURNAL_SCHEMA_VERSION,
         project: mutation.project.to_owned(),
@@ -1877,6 +1891,17 @@ pub(crate) fn write_onboarding_batch_mutation_journal(
     project_dir: &Path,
     mutation: OnboardingBatchJournalInput<'_>,
 ) -> Result<(PathBuf, Vec<u8>), NoteEditError> {
+    for note in &mutation.notes {
+        crate::markdown_source::check_markdown_source(Path::new(&note.id), note.after.as_bytes())?;
+    }
+    crate::markdown_source::check_markdown_source(
+        Path::new(mutation.index_id),
+        mutation.index_after.as_bytes(),
+    )?;
+    crate::markdown_source::check_markdown_source(
+        Path::new(mutation.roadmap_id),
+        mutation.roadmap_after.as_bytes(),
+    )?;
     let journal = OnboardingBatchJournal {
         schema_version: ONBOARDING_BATCH_JOURNAL_SCHEMA_VERSION,
         project: mutation.project.to_owned(),
@@ -1950,6 +1975,18 @@ fn read_optional_regular_file(
 }
 
 fn read_regular_file(path: &Path, operation: &'static str) -> Result<Vec<u8>, NoteEditError> {
+    read_regular_source(path, operation, false)
+}
+
+fn read_regular_markdown(path: &Path, operation: &'static str) -> Result<Vec<u8>, NoteEditError> {
+    read_regular_source(path, operation, true)
+}
+
+fn read_regular_source(
+    path: &Path,
+    operation: &'static str,
+    markdown: bool,
+) -> Result<Vec<u8>, NoteEditError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| NoteEditError::FileSystem {
         operation,
         path: path.to_path_buf(),
@@ -1960,6 +1997,9 @@ fn read_regular_file(path: &Path, operation: &'static str) -> Result<Vec<u8>, No
             path: path.to_path_buf(),
             message: "checked edit target is not a regular file".to_owned(),
         });
+    }
+    if markdown {
+        return crate::markdown_source::read_markdown_source(path, operation).map_err(Into::into);
     }
     fs::read(path).map_err(|source| NoteEditError::FileSystem {
         operation,

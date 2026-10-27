@@ -267,7 +267,7 @@ pub(crate) fn read_checked_source(
             "graph source must be a regular non-symlink file at its exact root-contained identity",
         ));
     }
-    let bytes = fs::read(path).map_err(|error| io_error("read graph source", error))?;
+    let bytes = crate::markdown_source::read_markdown_source(path, "read graph source")?;
     String::from_utf8(bytes).map_err(|error| ProjectValidationError::InvalidDocument {
         path: path.to_path_buf(),
         source: Box::new(ValidationError::InvalidUtf8(error.utf8_error())),

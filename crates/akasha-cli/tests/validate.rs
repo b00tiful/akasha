@@ -6,6 +6,59 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn markdown_source_limit_refusals_preserve_streams_sources_and_permissions() {
+    for relative in [
+        "Projects/example/entities/core.md",
+        "Projects/example/index.md",
+        "Projects/example/roadmap.md",
+        "Global/entities/limit.md",
+    ] {
+        let temp = TempDir::copy_of(&fixtures());
+        let root = temp.path().join("valid-root");
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut source = vec![b'x'; akasha_core::MAX_MARKDOWN_SOURCE_BYTES + 1];
+        source[0] = 0xff;
+        fs::write(&path, &source).unwrap();
+        let permissions = fs::metadata(&path).unwrap().permissions();
+        for json in [false, true] {
+            for operation in ["validate", "context", "status"] {
+                if operation == "validate" && relative.starts_with("Global/") {
+                    continue;
+                }
+                if operation == "context" && relative.starts_with("Global/") {
+                    continue;
+                }
+                let mut command = Command::new(env!("CARGO_BIN_EXE_akasha"));
+                command
+                    .arg("--root")
+                    .arg(&root)
+                    .args(["--project", "example"]);
+                if json {
+                    command.arg("--json");
+                }
+                let output = command
+                    .arg(operation)
+                    .env_remove("AKASHA_ROOT")
+                    .output()
+                    .unwrap();
+                assert_eq!(
+                    output.status.code(),
+                    Some(4),
+                    "{operation}/{relative}: {output:?}"
+                );
+                assert!(output.stdout.is_empty());
+                let message = String::from_utf8(output.stderr).unwrap();
+                assert!(message.contains("16777216-byte"), "{message}");
+                assert!(message.contains(relative), "{message}");
+                assert_eq!(fs::read(&path).unwrap(), source);
+                assert_eq!(fs::metadata(&path).unwrap().permissions(), permissions);
+            }
+        }
+    }
+}
+
+#[test]
 fn parser_resource_failures_use_class_four_empty_stdout_and_preserve_sources() {
     for registry in [false, true] {
         let temp = TempDir::copy_of(&fixtures());

@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::str;
 
 use serde::Serialize;
 
+use crate::markdown_source::read_markdown_source;
 use crate::project_validation::{
     ProjectValidationError, canonical_note_paths, validate_project,
     validate_wikilinks_with_targets, wikilink_target_path,
@@ -693,11 +693,7 @@ fn append_lifecycle_explanation(
 }
 
 fn read_note(path: &Path) -> Result<Vec<u8>, ProjectValidationError> {
-    fs::read(path).map_err(|source| ProjectValidationError::FileSystem {
-        operation: "read library note",
-        path: path.to_path_buf(),
-        source,
-    })
+    read_markdown_source(path, "read library note")
 }
 
 fn parse_note<'a>(path: &Path, source: &'a [u8]) -> Result<ParsedNote<'a>, ProjectValidationError> {

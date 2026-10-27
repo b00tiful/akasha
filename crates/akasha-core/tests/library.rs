@@ -21,6 +21,9 @@ mod library_report_tests;
 #[path = "support/archive_runtime.rs"]
 mod archive_runtime_tests;
 
+#[path = "support/markdown_source_limits.rs"]
+mod markdown_source_limit_tests;
+
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 struct TempDir(PathBuf);

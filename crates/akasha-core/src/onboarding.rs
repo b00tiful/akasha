@@ -659,8 +659,11 @@ fn prepare_batch(
     let index_path = report.project_dir.join(&config.project.index);
     let roadmap_path = report.project_dir.join(&config.project.roadmap);
     let state_path = report.project_dir.join(PROJECT_STATE_FILE);
-    let index_before = read_regular_file(&index_path, "read the current index projection")?;
-    let roadmap_before = read_regular_file(&roadmap_path, "read the current roadmap projection")?;
+    crate::markdown_source::check_markdown_source(&index_path, request.index.as_bytes())?;
+    crate::markdown_source::check_markdown_source(&roadmap_path, request.roadmap.as_bytes())?;
+    let index_before = read_regular_markdown(&index_path, "read the current index projection")?;
+    let roadmap_before =
+        read_regular_markdown(&roadmap_path, "read the current roadmap projection")?;
     let state_before = read_regular_file(&state_path, "read the current project state")?;
     let state_text =
         str::from_utf8(&state_before).map_err(|error| OnboardingBatchError::Validation {
@@ -925,6 +928,7 @@ fn prepare_notes(
     let mut prepared = Vec::with_capacity(destinations.len());
     for (path, proposal) in destinations {
         let note_type = &config.project.note_types[&proposal.note_type];
+        crate::markdown_source::check_markdown_source(&path, proposal.source.as_bytes())?;
         let source = proposal.source.as_bytes().to_vec();
         let parsed = parse_leading_frontmatter_bytes(&source).map_err(|error| {
             OnboardingBatchError::Validation {
@@ -953,12 +957,10 @@ fn prepare_notes(
                 });
             }
             Ok(_) => {
-                let current =
-                    fs::read(&path).map_err(|source| OnboardingBatchError::FileSystem {
-                        operation: "read an existing proposal target",
-                        path: path.clone(),
-                        source,
-                    })?;
+                let current = crate::markdown_source::read_markdown_source(
+                    &path,
+                    "read an existing proposal target",
+                )?;
                 if current != source {
                     return Err(OnboardingBatchError::Conflict {
                         path,
@@ -1389,17 +1391,32 @@ fn collect_existing_evidence(
     config: &RootConfig,
 ) -> Result<Vec<CanonicalNoteEvidence>, OnboardingBatchError> {
     collect_canonical_evidence(project_dir, config, |path| {
-        fs::read(path).map_err(|source| OnboardingBatchError::FileSystem {
-            operation: "read canonical note for onboarding state",
-            path: path.to_path_buf(),
-            source,
-        })
+        crate::markdown_source::read_markdown_source(
+            path,
+            "read canonical note for onboarding state",
+        )
+        .map_err(Into::into)
     })
 }
 
 fn read_regular_file(
     path: &Path,
     operation: &'static str,
+) -> Result<Vec<u8>, OnboardingBatchError> {
+    read_regular_source(path, operation, false)
+}
+
+fn read_regular_markdown(
+    path: &Path,
+    operation: &'static str,
+) -> Result<Vec<u8>, OnboardingBatchError> {
+    read_regular_source(path, operation, true)
+}
+
+fn read_regular_source(
+    path: &Path,
+    operation: &'static str,
+    markdown: bool,
 ) -> Result<Vec<u8>, OnboardingBatchError> {
     let metadata =
         fs::symlink_metadata(path).map_err(|source| OnboardingBatchError::FileSystem {
@@ -1412,6 +1429,9 @@ fn read_regular_file(
             path: path.to_path_buf(),
             message: "checked replacement target is not a regular file".to_owned(),
         });
+    }
+    if markdown {
+        return crate::markdown_source::read_markdown_source(path, operation).map_err(Into::into);
     }
     fs::read(path).map_err(|source| OnboardingBatchError::FileSystem {
         operation,

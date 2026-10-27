@@ -2,7 +2,7 @@ use std::error::Error;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -169,10 +169,12 @@ pub(crate) fn replace_file_if_unchanged(
             ),
         });
     }
-    let current = fs::read(&path).map_err(|source| CheckedReplaceError::FileSystem {
-        operation: "read a checked replacement target",
-        path: path.clone(),
-        source,
+    let current = read_replacement_target(&path, expected.len()).map_err(|source| {
+        CheckedReplaceError::FileSystem {
+            operation: "read a checked replacement target",
+            path: path.clone(),
+            source,
+        }
     })?;
     if current != expected {
         return Err(changed_replacement(&path));
@@ -214,10 +216,12 @@ pub(crate) fn replace_file_if_unchanged(
     crash_tests::interrupt_at(&path, crash_tests::Stage::AfterFileSync);
     drop(file);
 
-    let current = fs::read(&path).map_err(|source| CheckedReplaceError::FileSystem {
-        operation: "verify a checked replacement target",
-        path: path.clone(),
-        source,
+    let current = read_replacement_target(&path, expected.len()).map_err(|source| {
+        CheckedReplaceError::FileSystem {
+            operation: "verify a checked replacement target",
+            path: path.clone(),
+            source,
+        }
     })?;
     if current != expected {
         return Err(changed_replacement(&path));
@@ -322,6 +326,16 @@ impl ProjectWriteLock {
             }),
         }
     }
+}
+
+fn read_replacement_target(path: &Path, expected_len: usize) -> io::Result<Vec<u8>> {
+    let mut source = Vec::new();
+    // One extra byte proves mismatch, including growth after the earlier ordinary read.
+    // Deriving this bound from the exact expected image also supports historical recovery.
+    File::open(path)?
+        .take(expected_len as u64 + 1)
+        .read_to_end(&mut source)?;
+    Ok(source)
 }
 
 fn changed_replacement(path: &Path) -> CheckedReplaceError {
@@ -559,6 +573,32 @@ mod tests {
 
     #[cfg(unix)]
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    #[test]
+    fn replacement_comparison_bounds_excess_reads_and_retains_conflict_behavior() {
+        let root = std::env::temp_dir().join(format!(
+            "akasha-comparison-{}-{}",
+            std::process::id(),
+            NEXT_STAGING_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("note.md");
+        fs::write(&path, b"exact expected source plus external growth").unwrap();
+        assert_eq!(read_replacement_target(&path, 5).unwrap(), b"exact ");
+        assert!(matches!(
+            replace_file_if_unchanged(&path, b"exact", b"replacement"),
+            Err(CheckedReplaceError::Conflict { .. })
+        ));
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            b"exact expected source plus external growth"
+        );
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::write(&path, b"exact").unwrap();
+        assert!(replace_file_if_unchanged(&path, b"exact", "☃\r\n".as_bytes()).unwrap());
+        assert_eq!(fs::read(&path).unwrap(), "☃\r\n".as_bytes());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn staging_failure_never_publishes_partial_content() {
