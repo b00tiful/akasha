@@ -44,6 +44,9 @@ cargo test --offline -p akasha-core --test library synthetic_archive_runtime \
 ```
 
 Each JSON row reports microseconds, archive size, exact result counts and source preservation.
+Separate raw-read, frontmatter-parse and SHA-256 phase timings run after the operation timers.
+Use `--release` to measure optimized code; [archive reads](archive-runtime.md) explains exact-byte
+line-boundary reuse and the measurement boundaries.
 The fixture splits added notes equally between one project and Global and updates integrity
 state before measuring. The background measurement includes pending-journal inspection and a
 fresh projection, followed by equality comparison; it excludes terminal scheduling, watched

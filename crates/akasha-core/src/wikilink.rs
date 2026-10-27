@@ -43,9 +43,14 @@ pub(crate) fn parse_wikilinks(body: &str) -> Result<Vec<Wikilink<'_>>, WikilinkP
     let mut offset = 0;
     let mut fence = None;
     let mut line_start = true;
+    let mut line_end = 0;
 
     while offset < bytes.len() {
-        let line_end = find_line_end(bytes, offset);
+        // The cursor only advances. Reuse this boundary until a newline or a multiline
+        // skip reaches it, instead of rescanning the remaining line for every byte.
+        if offset >= line_end {
+            line_end = find_line_end(bytes, offset);
+        }
         if line_start {
             let line = &bytes[offset..line_end];
             let marker = fence_marker(line);
@@ -268,6 +273,10 @@ const fn next_line_offset(line_end: usize, body_len: usize) -> usize {
         body_len
     }
 }
+
+#[cfg(test)]
+#[path = "wikilink_runtime_tests.rs"]
+mod runtime_tests;
 
 #[cfg(test)]
 mod tests {

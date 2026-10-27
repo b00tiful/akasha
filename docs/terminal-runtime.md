@@ -19,7 +19,9 @@ The initial layout still processes the whole document. A single very long logica
 requires reflow, and checking source equality still scans its bytes. These changes do not provide
 a full-archive loading, search or background-validation latency guarantee. The shared core's
 [YAML resource limits](resource-limits.md) separately bound metadata parsing and registry reads;
-that guide also provides a reproducible full-archive measurement.
+that guide also provides a reproducible full-archive measurement. The core now
+[reuses the current wikilink line boundary](archive-runtime.md) to avoid repeatedly scanning long
+paragraph suffixes while preserving exact links, ranges, errors and fresh validation.
 
 For a reproducible synthetic debug-build comparison of 100, 1,000 and 10,000 Unicode lines:
 

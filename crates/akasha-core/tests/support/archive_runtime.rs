@@ -3,6 +3,66 @@ use akasha_core::{inspect_pending_note_edit, search_library};
 use std::time::Instant;
 
 #[test]
+fn long_unicode_paragraphs_preserve_archive_graph_search_and_source() {
+    let fixture = fixture("long-paragraphs");
+    let paragraph = "Synthetic Unicode ☃ 世界 paragraph. ".repeat(256);
+    let project = fixture.root.join("Projects/alpha/entities/core.md");
+    let global = fixture.root.join("Global/entities/rust-pattern.md");
+    for path in [&project, &global] {
+        let original = fs::read_to_string(path).unwrap();
+        fs::write(
+            path,
+            format!(
+                "{original}\n{paragraph} archive-needle [[Projects/alpha/entities/core|Ядро]]\r\n"
+            ),
+        )
+        .unwrap();
+    }
+    support::write_project_state(
+        &fixture.root.join("Projects/alpha"),
+        &[],
+        &["entities/core.md"],
+        &["records/tasks/ship-mvp.md"],
+    );
+    let before = link_fixture_snapshot(&fixture.root);
+    let projection = build_library_projection(&fixture.request).unwrap();
+    assert_eq!(projection.total_books, 4);
+    let result = search_library(&fixture.request, "archive-needle", None, 30).unwrap();
+    assert_eq!(result.total_matches, 2);
+    assert!(!result.truncated);
+    assert_eq!(
+        result
+            .hits
+            .iter()
+            .map(|hit| hit.id.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "Global/entities/rust-pattern.md",
+            "Projects/alpha/entities/core.md"
+        ]
+    );
+    let links = inspect_note_links(
+        &fixture.request,
+        "Projects/alpha/entities/core.md",
+        NoteLinkDirection::Incoming,
+        30,
+    )
+    .unwrap();
+    assert_eq!(links.total_matches, 2);
+    for id in [
+        "Projects/alpha/entities/core.md",
+        "Global/entities/rust-pattern.md",
+    ] {
+        let document = load_library_document(&fixture.request, id).unwrap();
+        assert_eq!(
+            document.source.as_bytes(),
+            fs::read(fixture.root.join(id)).unwrap()
+        );
+    }
+    assert_eq!(link_fixture_snapshot(&fixture.root), before);
+}
+
+#[test]
 fn oversized_metadata_fails_library_and_search_without_writes() {
     let fixture = fixture("yaml-resource-refusal");
     let path = fixture.root.join("Global/entities/rust-pattern.md");
@@ -96,6 +156,39 @@ fn synthetic_archive_runtime() {
         let checked = build_library_projection(&fixture.request).unwrap();
         assert_eq!(projection, checked);
         let background_core_us = started.elapsed().as_micros();
+        // Isolate raw reads, frontmatter parsing and hashing outside operation timings.
+        let paths = projection
+            .global
+            .categories
+            .iter()
+            .chain(
+                projection
+                    .projects
+                    .iter()
+                    .flat_map(|shelf| &shelf.categories),
+            )
+            .flat_map(|category| &category.books)
+            .map(|book| projection.root.join(&book.id))
+            .collect::<Vec<_>>();
+        let started = Instant::now();
+        let sources = paths
+            .iter()
+            .map(|path| fs::read(path).unwrap())
+            .collect::<Vec<_>>();
+        let raw_read_us = started.elapsed().as_micros();
+        let started = Instant::now();
+        for source in &sources {
+            std::hint::black_box(akasha_core::parse_leading_frontmatter_bytes(source).unwrap());
+        }
+        let frontmatter_parse_us = started.elapsed().as_micros();
+        let started = Instant::now();
+        for source in &sources {
+            use sha2::Digest;
+            std::hint::black_box(sha2::Sha256::digest(source));
+        }
+        let source_hash_us = started.elapsed().as_micros();
+        drop(sources);
+        drop(paths);
         assert_eq!(link_fixture_snapshot(&fixture.root), before);
         println!(
             "{}",
@@ -104,6 +197,8 @@ fn synthetic_archive_runtime() {
                 "total_books": projection.total_books,
                 "projection_us": projection_us, "all_search_us": search_us,
                 "background_core_us": background_core_us,
+                "raw_read_us": raw_read_us, "frontmatter_parse_us": frontmatter_parse_us,
+                "source_hash_us": source_hash_us,
                 "search_matches": search.total_matches, "search_hits": search.hits.len(),
                 "root_unchanged": true, "build": if cfg!(debug_assertions) { "debug" } else { "release" }
             })
