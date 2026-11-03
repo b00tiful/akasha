@@ -24,14 +24,20 @@ Entry bodies are project data inside collision-proof fences. Context assembly ch
 does not recover transactions and does not invoke an agent or model. Existing project validation
 and its errors remain authoritative.
 
-Assembly releases bodies whose complete entry cannot fit the requested budget and measures
-selection without rendering rejected bundles. It still reads and validates every candidate,
-preserves exact omission lengths, and permits explicit expansion to include those whole bodies.
-Only the newest handoff body is retained; breadcrumbs retain task/handoff metadata without bodies.
-This is not an archive memory cap: transient whole-note reads, paths and many individually fitting
-bodies can still consume substantial memory. Each ordinary canonical/projection source read
-obeys the separate 16 MiB byte allowance, independently of the requested output budget.
-Oversized sources fail validation even when their body would be omitted. See
+Assembly reads and validates every candidate, retaining exact lengths and source fingerprints
+instead of body strings. It selects entries before rereading only selected sources. Each selected
+read checks the complete original source and its regular non-symlink canonical identity. If a
+selected source changes during assembly, context fails with retry guidance instead of combining
+old selection metadata with a new body; filesystem failures still report their existing error
+class. No partial bundle is printed. Unselected sources are not reread; this is not an atomic
+archive snapshot. Stable-source outputs and omission lengths remain exact.
+
+Retained selected body bytes are at most four times the Unicode character budget, even counting
+repeated entry occurrences. A single bounded source image is loaded at a time. Path/count/evidence
+metadata, parser/allocator memory and Markdown/JSON rendering copies remain separate costs.
+Breadcrumbs retain task/handoff metadata without bodies and keep their original reads. Each
+ordinary canonical/projection source read obeys the separate 16 MiB allowance, independently of
+the output budget. Oversized sources fail validation even when their body would be omitted. See
 [resource limits](resource-limits.md).
 
 In the terminal interface, use `/context` or `/context --max-chars 32000`. Context always belongs

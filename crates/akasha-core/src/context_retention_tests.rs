@@ -19,10 +19,23 @@ fn assert_selection_parity(
     let candidates = entries
         .iter()
         .map(|entry| {
-            ContextCandidate::new(entry.section, entry.source.clone(), &entry.content, budget)
+            ContextCandidate::new(
+                entry.section,
+                entry.source.clone(),
+                &entry.content,
+                0..entry.content.len(),
+                budget,
+            )
         })
         .collect();
-    let actual = fit_candidates(report, candidates, budget);
+    let actual = fit_candidates(report, candidates, budget, |candidate| {
+        Ok(entries
+            .iter()
+            .find(|entry| entry.source == candidate.source && entry.section == candidate.section)
+            .unwrap()
+            .content
+            .clone())
+    });
     let expected = reference_fit_candidates(report, entries.to_vec(), budget);
     match (actual, expected) {
         (Ok(actual), Ok(expected)) => {
@@ -150,16 +163,21 @@ fn context_retention_drops_impossible_unicode_and_fence_bodies_with_exact_metric
             ContextSection::OpenTask,
             "世界/task.md".into(),
             &content,
+            0..content.len(),
             usize::MAX,
         );
         let exact = candidate.rendered_chars;
-        assert_eq!(candidate.content.as_deref(), Some(content.as_str()));
+        assert_eq!(candidate.image.as_ref().unwrap().body, 0..content.len());
         let bundle = ContextBundle {
             project: "世界".into(),
             repository_dir: "/repo".into(),
             project_dir: "/memory".into(),
             errors: vec!["literal error\n界".into()],
-            entries: vec![candidate.into_entry()],
+            entries: vec![ContextEntry {
+                section: candidate.section,
+                source: candidate.source,
+                content: content.clone(),
+            }],
             truncated: false,
             omitted_entries: 0,
             omissions: vec![],
@@ -183,9 +201,10 @@ fn context_retention_drops_impossible_unicode_and_fence_bodies_with_exact_metric
             ContextSection::OpenTask,
             "世界/task.md".into(),
             &content,
+            0..content.len(),
             exact - 1,
         );
-        assert!(omitted.content.is_none());
+        assert!(omitted.image.is_none());
         assert_eq!(
             (omitted.content_chars, omitted.rendered_chars),
             (content.chars().count(), exact)
@@ -206,7 +225,7 @@ fn context_retention_breadcrumb_collectors_keep_metadata_without_bodies() {
     )
     .unwrap();
     assert_eq!(tasks.len(), 1);
-    assert!(tasks.iter().all(|task| task.content.is_none()));
+    assert!(tasks.iter().all(|task| task.image.is_none()));
     let handoffs = dated_entries(
         &report,
         &config,
@@ -216,11 +235,7 @@ fn context_retention_breadcrumb_collectors_keep_metadata_without_bodies() {
     )
     .unwrap();
     assert_eq!(handoffs.len(), 2);
-    assert!(
-        handoffs
-            .iter()
-            .all(|handoff| handoff.entry.content.is_none())
-    );
+    assert!(handoffs.iter().all(|handoff| handoff.entry.image.is_none()));
     assert_eq!(
         handoffs
             .iter()

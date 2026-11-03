@@ -25,7 +25,7 @@ continue using the compatible version until an explicit migration is available. 
 or state hashes to silence validation is not a migration. The new limit has no override switch.
 
 This is a per-source input limit, not a total process-memory or cumulative-I/O bound. Allocation
-capacity, parser queues, many fitting context bodies, paths/counts, editor drafts, templates,
+capacity, parser queues, selected context output, paths/counts, editor drafts, templates,
 TOML, state/journal/other JSON and total archive size retain separate limits or open work.
 
 Run source-boundary, no-write and historical recovery regressions with:
@@ -76,11 +76,23 @@ Integrity checking retains original-read fingerprints instead of every canonical
 reads obey the separate source allowance; other retained images, including context candidates,
 remain outside these YAML limits.
 
-[Context assembly](context.md) retains exact length/path metadata without individually non-fitting
-bodies and measures budget selection without constructing rejected Markdown. It keeps only the
-latest handoff body, while breadcrumbs keep metadata without bodies. Many individually fitting
-context bodies can still accumulate, especially with expanded output budgets; per-source reads,
-parser images and path/count metadata remain separate from the output bound.
+[Context assembly](context.md) retains exact length/path metadata and full-source fingerprints
+without candidate body strings. After complete/greedy selection it rereads only selected sources,
+checking original source bytes and regular non-symlink canonical identity before returning their
+recorded trimmed body ranges. Detected drift refuses with exit 4 and retry guidance; filesystem
+failures use exit 6. Selected body payload is bounded by four times the caller's Unicode character
+budget, counting repeated occurrences; deduplicated selected-body payload is no greater. Full
+source bytes (headers and trimmed whitespace included) are transient input outside that body bound;
+a bounded source image is loaded one at a time. Original validation and candidate errors precede selection/hydration.
+Breadcrumbs keep their original metadata-only reads. Path/count/evidence metadata, parser and
+allocator capacity, output serialization copies and cumulative I/O are outside this payload bound.
+Point-in-time identity checks do not create an atomic filesystem or archive snapshot.
+
+Run selected-read, drift and payload-accounting regressions with:
+
+```sh
+cargo test --offline -p akasha-core --lib context_hydration
+```
 
 To measure actual projection, all-library search and the core work used by background checks on
 100, 1,000 and 10,000 generated Unicode notes:

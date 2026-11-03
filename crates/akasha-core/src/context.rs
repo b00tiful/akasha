@@ -1,6 +1,8 @@
 use std::error::Error;
 use std::fmt::{self, Write};
+use std::fs;
 use std::io;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, SystemTimeError, UNIX_EPOCH};
 
@@ -11,6 +13,7 @@ use crate::project_validation::{
     ProjectValidationError, ProjectValidationReport, canonical_note_paths, validate_project,
 };
 use crate::resolution::{ResolveError, ResolveRequest, RootConfig, load_root_config};
+use crate::state::content_fingerprint;
 use crate::validation::{ValidationError, parse_leading_frontmatter_bytes};
 
 pub const DEFAULT_CONTEXT_MAX_CHARS: usize = 16_000;
@@ -163,6 +166,8 @@ pub fn assemble_context(request: &ResolveRequest) -> Result<ContextBundle, Conte
 /// Validate a project and assemble whole entries within a caller-selected character budget.
 /// Counts Unicode scalar values in canonical Markdown, including identity and omission framing.
 /// Budgets too small for that framing return `ContextError::Budget` without a partial bundle.
+/// Selected sources are reread against original-read fingerprints; observed drift refuses the
+/// whole bundle. These reads do not provide an atomic archive snapshot.
 pub fn assemble_context_with_budget(
     request: &ResolveRequest,
     max_chars: usize,
@@ -172,7 +177,9 @@ pub fn assemble_context_with_budget(
         .map_err(ProjectValidationError::from)
         .map_err(ContextError::from)?;
     let candidates = collect_candidates(&report, &config, max_chars)?;
-    fit_candidates(&report, candidates, max_chars)
+    fit_candidates(&report, candidates, max_chars, |candidate| {
+        read_selected_body(&report, candidate)
+    })
 }
 
 /// Validate a project and assemble its compact session-start breadcrumb.
@@ -372,7 +379,8 @@ fn read_project_file(
     Ok(ContextCandidate::new(
         section,
         relative_path.to_path_buf(),
-        content.trim(),
+        &content,
+        trimmed_body_range(&content, 0),
         max_chars,
     ))
 }
@@ -463,7 +471,13 @@ fn read_note(
         .strip_prefix(project_dir)
         .expect("validated canonical notes remain inside the project directory")
         .to_path_buf();
-    let entry = ContextCandidate::new(section, relative, parsed.body.trim(), max_chars);
+    let entry = ContextCandidate::new(
+        section,
+        relative,
+        std::str::from_utf8(&source).expect("the frontmatter parser validates UTF-8"),
+        trimmed_body_range(parsed.body, parsed.raw_frontmatter.len()),
+        max_chars,
+    );
     Ok(ReadNote {
         metadata: parsed.metadata.clone(),
         entry,
@@ -502,17 +516,30 @@ fn metadata_string<'a>(
         })
 }
 
-/// Keep exact omission/selection metrics even when the body can never fit.
+/// Selection retains metrics and original-read evidence, never candidate bodies.
 struct ContextCandidate {
     section: ContextSection,
     source: PathBuf,
-    content: Option<String>,
+    image: Option<ContextSourceImage>,
     content_chars: usize,
     rendered_chars: usize,
 }
 
+struct ContextSourceImage {
+    source_bytes: usize,
+    fingerprint: String,
+    body: Range<usize>,
+}
+
 impl ContextCandidate {
-    fn new(section: ContextSection, source: PathBuf, content: &str, max_chars: usize) -> Self {
+    fn new(
+        section: ContextSection,
+        source: PathBuf,
+        source_text: &str,
+        body: Range<usize>,
+        max_chars: usize,
+    ) -> Self {
+        let content = &source_text[body.clone()];
         let content_chars = char_count(content);
         let mut heading = CharCounter::default();
         write_entry_heading(&mut heading, section, &source);
@@ -524,21 +551,66 @@ impl ContextCandidate {
         Self {
             section,
             source,
-            content: (rendered_chars <= max_chars).then(|| content.to_owned()),
+            image: (rendered_chars <= max_chars).then(|| ContextSourceImage {
+                source_bytes: source_text.len(),
+                fingerprint: content_fingerprint(source_text.as_bytes()),
+                body,
+            }),
             content_chars,
             rendered_chars,
         }
     }
+}
 
-    fn into_entry(self) -> ContextEntry {
-        ContextEntry {
-            section: self.section,
-            source: self.source,
-            content: self
-                .content
-                .expect("a selected whole entry fits the body retention budget"),
-        }
+fn trimmed_body_range(body: &str, offset: usize) -> Range<usize> {
+    let start = offset + body.len() - body.trim_start().len();
+    start..start + body.trim().len()
+}
+
+fn read_selected_body(
+    report: &ProjectValidationReport,
+    candidate: &ContextCandidate,
+) -> Result<String, ContextError> {
+    let path = report.project_dir.join(&candidate.source);
+    let io_error = |operation, source| ContextError::FileSystem {
+        operation,
+        path: path.clone(),
+        source,
+    };
+    let invalid_source = || ContextError::InvalidDocument {
+        path: path.clone(),
+        source: Box::new(ValidationError::InvalidSchema {
+            document: "context source",
+            message: concat!(
+                "selected source changed or lost its regular non-symlink identity ",
+                "during context assembly; retry context"
+            )
+            .to_owned(),
+        }),
+    };
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|error| io_error("inspect selected context source", error))?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || !path.starts_with(&report.root)
+        || fs::canonicalize(&path)
+            .map_err(|error| io_error("resolve selected context source", error))?
+            != path
+    {
+        return Err(invalid_source());
     }
+    let source = read_context_source(&path, "read selected context source")?;
+    let image = candidate
+        .image
+        .as_ref()
+        .expect("a selected entry fits the source evidence budget");
+    if source.len() != image.source_bytes || content_fingerprint(&source) != image.fingerprint {
+        return Err(invalid_source());
+    }
+    // The complete original UTF-8 source matches, so its exact trimmed range is still valid.
+    Ok(std::str::from_utf8(&source[image.body.clone()])
+        .expect("original source evidence binds the UTF-8 body range")
+        .to_owned())
 }
 
 #[derive(Default)]
@@ -555,6 +627,7 @@ fn fit_candidates(
     report: &ProjectValidationReport,
     candidates: Vec<ContextCandidate>,
     max_chars: usize,
+    load: impl FnMut(&ContextCandidate) -> Result<String, ContextError>,
 ) -> Result<ContextBundle, ContextError> {
     let total_entries = candidates.len();
     let mut bundle = ContextBundle {
@@ -579,16 +652,13 @@ fn fit_candidates(
         count.saturating_add(candidate.rendered_chars)
     });
     if bundle.rendered_chars <= max_chars {
-        bundle.entries = candidates
-            .into_iter()
-            .map(ContextCandidate::into_entry)
-            .collect();
-        return Ok(bundle);
+        return hydrate_candidates(bundle, candidates, load);
     }
     bundle.truncated = total_entries > 0;
     bundle.omitted_entries = total_entries;
 
     let mut selected_chars = header.0;
+    let mut selected = Vec::new();
     for (index, candidate) in candidates.into_iter().enumerate() {
         let remaining = total_entries - index - 1;
         bundle.omitted_entries = bundle.omissions.len() + remaining;
@@ -609,7 +679,7 @@ fn fit_candidates(
             bundle.truncated = bundle.omitted_entries > 0;
         } else {
             selected_chars = selected_chars.saturating_add(candidate.rendered_chars);
-            bundle.entries.push(candidate.into_entry());
+            selected.push(candidate);
         }
     }
 
@@ -623,6 +693,22 @@ fn fit_candidates(
         return Err(ContextError::Budget {
             required_chars: bundle.rendered_chars,
             max_chars,
+        });
+    }
+    hydrate_candidates(bundle, selected, load)
+}
+
+fn hydrate_candidates(
+    mut bundle: ContextBundle,
+    candidates: Vec<ContextCandidate>,
+    mut load: impl FnMut(&ContextCandidate) -> Result<String, ContextError>,
+) -> Result<ContextBundle, ContextError> {
+    for candidate in candidates {
+        let content = load(&candidate)?;
+        bundle.entries.push(ContextEntry {
+            section: candidate.section,
+            source: candidate.source,
+            content,
         });
     }
     Ok(bundle)
@@ -803,6 +889,10 @@ fn char_count(value: &str) -> usize {
 #[cfg(test)]
 #[path = "context_retention_tests.rs"]
 mod retention_tests;
+
+#[cfg(test)]
+#[path = "context_hydration_tests.rs"]
+mod hydration_tests;
 
 #[cfg(test)]
 mod tests {
