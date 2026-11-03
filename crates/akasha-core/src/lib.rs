@@ -21,6 +21,7 @@ pub mod resolution;
 pub mod session_hook_wiring;
 pub mod setup;
 mod state;
+mod toml_source;
 pub mod validation;
 mod wikilink;
 pub mod writes;

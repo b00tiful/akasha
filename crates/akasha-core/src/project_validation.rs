@@ -143,7 +143,11 @@ impl From<ResolveError> for ProjectValidationError {
 pub fn validate_project(
     request: &ResolveRequest,
 ) -> Result<ProjectValidationReport, ProjectValidationError> {
-    validate_project_sources(request, read_markdown_source)
+    validate_project_sources(
+        request,
+        read_markdown_source,
+        crate::toml_source::read_state_source,
+    )
 }
 
 /// Preserve historical size compatibility only while reconciling an existing journal.
@@ -151,7 +155,7 @@ pub fn validate_project(
 pub(crate) fn validate_project_for_recovery(
     request: &ResolveRequest,
 ) -> Result<ProjectValidationReport, ProjectValidationError> {
-    validate_project_sources(request, read_validation_file)
+    validate_project_sources(request, read_validation_file, read_validation_file)
 }
 
 type ReadMarkdown = fn(&Path, &'static str) -> Result<Vec<u8>, ProjectValidationError>;
@@ -159,6 +163,7 @@ type ReadMarkdown = fn(&Path, &'static str) -> Result<Vec<u8>, ProjectValidation
 fn validate_project_sources(
     request: &ResolveRequest,
     read_markdown: ReadMarkdown,
+    read_state: ReadMarkdown,
 ) -> Result<ProjectValidationReport, ProjectValidationError> {
     let resolved = resolve_project(request)?;
     let config = load_root_config(&resolved.root)?;
@@ -220,7 +225,7 @@ fn validate_project_sources(
 
     let index_source = read_markdown(&index, "read index projection")?;
     let roadmap_source = read_markdown(&roadmap, "read roadmap projection")?;
-    let state_source = read_validation_file(&state, "read project state")?;
+    let state_source = read_state(&state, "read project state")?;
     let state_text =
         str::from_utf8(&state_source).map_err(|error| ProjectValidationError::InvalidState {
             path: state.clone(),

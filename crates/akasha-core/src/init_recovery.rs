@@ -93,7 +93,7 @@ fn recovery_target(
 ) -> Result<(PathBuf, PathBuf, PathBuf, Vec<u8>), InitError> {
     let (root, _) = resolve_root(request)?;
     let config_path = root.join(ROOT_CONFIG_FILE);
-    let config_source = read_regular_init_file(&config_path, "read recovery configuration")?;
+    let config_source = read_regular_init_config(&config_path, "read recovery configuration")?;
     let config = load_root_config(&root)?;
     let projects_dir = canonicalize_directory(
         &root.join(&config.folders.projects),
@@ -101,7 +101,7 @@ fn recovery_target(
     )?;
     ensure_inside_root(&projects_dir, &root, "configured projects directory")?;
     let (registry, _) = load_project_registry(&root, &config)?;
-    if read_regular_init_file(&config_path, "recheck recovery configuration")? != config_source {
+    if read_regular_init_config(&config_path, "recheck recovery configuration")? != config_source {
         return Err(stale_plan(&config_path));
     }
     Ok((root, registry, projects_dir, config_source))

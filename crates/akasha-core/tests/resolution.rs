@@ -452,3 +452,75 @@ fn fixture_contract_resolves_without_process_environment() {
     assert_eq!(resolved.project, "example");
     assert_eq!(resolved.project_source, ProjectSource::Pointer);
 }
+
+#[test]
+fn toml_configuration_limits_cover_root_user_and_nearest_pointer_exactly() {
+    const LIMIT: usize = 1024 * 1024;
+    let temp = TempDir::new("toml-boundaries");
+    let root = create_root(temp.path(), "root", "example");
+    let repository = temp.path().join("root-example-repository");
+    let user = temp.path().join("config/akasha/config.toml");
+    fs::create_dir_all(user.parent().unwrap()).unwrap();
+    let user_source = format!("schema_version = 1\nroot = {root:?}\n");
+    fs::write(&user, &user_source).unwrap();
+    let pointer = repository.join(".akasha.toml");
+    fs::write(&pointer, "schema_version = 1\nproject = \"example\"\n").unwrap();
+    let mut req = request(&repository);
+    req.environment.xdg_config_home = Some(temp.path().join("config").into_os_string());
+    let expected = resolve_project(&req).unwrap();
+    for path in [root.join("akasha.toml"), pointer, user] {
+        let original = fs::read(&path).unwrap();
+        let permissions = fs::metadata(&path).unwrap().permissions();
+        let mut exact = original.clone();
+        exact.extend_from_slice("\n#雪".as_bytes());
+        exact.resize(LIMIT, b'x');
+        fs::write(&path, &exact).unwrap();
+        assert_eq!(resolve_project(&req).unwrap(), expected);
+        // Oversize wins even when those source bytes are invalid UTF-8/TOML.
+        let mut oversized = exact.clone();
+        oversized[0] = 0xff;
+        oversized.push(b'x');
+        fs::write(&path, &oversized).unwrap();
+        let error = resolve_project(&req).unwrap_err();
+        assert_eq!(error.exit_code(), 3);
+        assert!(error.to_string().contains("1048576-byte"), "{error}");
+        assert!(error.to_string().contains(&path.display().to_string()));
+        assert_eq!(fs::read(&path).unwrap(), oversized);
+        assert_eq!(fs::metadata(&path).unwrap().permissions(), permissions);
+        fs::write(&path, b"\xff").unwrap();
+        assert_eq!(resolve_project(&req).unwrap_err().exit_code(), 6);
+        fs::write(&path, original).unwrap();
+    }
+}
+
+#[test]
+fn toml_limits_preserve_configuration_precedence_and_parser_recursion_refusal() {
+    let temp = TempDir::new("toml-errors");
+    let root = create_root(temp.path(), "root", "example");
+    let repository = temp.path().join("root-example-repository");
+    let mut req = request(&repository);
+    req.root_override = Some(root.clone());
+    let pointer = repository.join(".akasha.toml");
+    fs::write(&pointer, vec![b'x'; 1024 * 1024 + 1]).unwrap();
+    let config = root.join("akasha.toml");
+    fs::write(&config, "broken").unwrap();
+    let error = resolve_project(&req).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("invalid data-root configuration")
+    );
+    assert!(!error.to_string().contains("1048576-byte"));
+    fs::write(&config, root_config("Projects")).unwrap();
+    // Explicit project selection keeps bypassing the pointer, even if it is excessive.
+    req.project_override = Some("example".into());
+    resolve_project(&req).unwrap();
+    let nested = format!("value = {}0{}\n", "[".repeat(100), "]".repeat(100));
+    fs::write(&config, nested).unwrap();
+    let error = resolve_project(&req).unwrap_err();
+    assert_eq!(error.exit_code(), 3);
+    assert!(
+        error.to_string().contains("max recursion depth met"),
+        "{error}"
+    );
+}

@@ -143,7 +143,8 @@ fn prepare_init_review(request: &InitRequest) -> Result<(InitPlan, PreparedInit)
     };
     let (root, _) = resolve_root(&resolution)?;
     let config_path = root.join(ROOT_CONFIG_FILE);
-    let config_source = read_regular_init_file(&config_path, "read initialization configuration")?;
+    let config_source =
+        read_regular_init_config(&config_path, "read initialization configuration")?;
     let target = prepare_target(request)?;
     reject_pending_init(&target.registry)?;
     let template_source = target.templates_dir.clone();
@@ -156,7 +157,7 @@ fn prepare_init_review(request: &InitRequest) -> Result<(InitPlan, PreparedInit)
     )?;
     reject_existing_target(&prepared.pointer, "repository pointer already exists")?;
     if prepared.root != root
-        || read_regular_init_file(&config_path, "recheck initialization configuration")?
+        || read_regular_init_config(&config_path, "recheck initialization configuration")?
             != config_source
     {
         return Err(InitError::Conflict {
@@ -1507,6 +1508,18 @@ fn remove_init_directory(journal_path: &Path, path: &Path) -> Result<(), InitErr
 }
 
 fn read_regular_init_file(path: &Path, operation: &'static str) -> Result<Vec<u8>, InitError> {
+    read_regular_init_source(path, operation, false)
+}
+
+fn read_regular_init_config(path: &Path, operation: &'static str) -> Result<Vec<u8>, InitError> {
+    read_regular_init_source(path, operation, true)
+}
+
+fn read_regular_init_source(
+    path: &Path,
+    operation: &'static str,
+    configuration: bool,
+) -> Result<Vec<u8>, InitError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| InitError::FileSystem {
         operation,
         path: path.to_path_buf(),
@@ -1518,11 +1531,21 @@ fn read_regular_init_file(path: &Path, operation: &'static str) -> Result<Vec<u8
             message: "journaled initialization target is not a regular file".to_owned(),
         });
     }
-    fs::read(path).map_err(|source| InitError::FileSystem {
+    let io_error = |source| InitError::FileSystem {
         operation,
         path: path.to_path_buf(),
         source,
-    })
+    };
+    if configuration {
+        let bytes = crate::toml_source::read_with_sentinel(
+            fs::File::open(path).map_err(io_error)?,
+            crate::toml_source::MAX_CONFIG_BYTES,
+        )
+        .map_err(io_error)?;
+        crate::toml_source::check_config_source(path, "data-root configuration", &bytes)?;
+        return Ok(bytes);
+    }
+    fs::read(path).map_err(io_error)
 }
 
 fn complete_init_journal(path: &Path, expected: &[u8]) -> Result<(), InitError> {

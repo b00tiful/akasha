@@ -9,6 +9,9 @@ mod error_tests;
 #[path = "markdown_source_recovery_tests.rs"]
 mod markdown_source_tests;
 
+#[path = "toml_source_recovery_tests.rs"]
+mod toml_source_tests;
+
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::process::Command;

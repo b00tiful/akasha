@@ -1,4 +1,4 @@
-# Source and YAML resource limits
+# Source and parser resource limits
 
 Ordinary canonical note reads (project and Global) and configured project index/roadmap reads
 accept at most **16,777,216 bytes (16 MiB) per file**, including frontmatter and exact line endings.
@@ -26,13 +26,48 @@ or state hashes to silence validation is not a migration. The new limit has no o
 
 This is a per-source input limit, not a total process-memory or cumulative-I/O bound. Allocation
 capacity, parser queues, selected context output, paths/counts, editor drafts, templates,
-TOML, state/journal/other JSON and total archive size retain separate limits or open work.
+state parser allocations, journals/other JSON and total archive size retain separate limits or open work.
 
 Run source-boundary, no-write and historical recovery regressions with:
 
 ```sh
 cargo test --offline --workspace --all-features source_limit
 ```
+
+## Configuration and state TOML
+
+| Input | Maximum exact bytes | Oversize exit |
+|---|---:|---:|
+| User `config.toml`, root `akasha.toml`, repository `.akasha.toml` | 1,048,576 (1 MiB) each | 3 |
+| Ordinary project `.akasha-state.toml` | 16,777,216 (16 MiB) | 4 |
+
+Readers stop at the allowance plus one sentinel byte, including growth during a read. Excess
+refuses before UTF-8 or TOML decoding, with concise stderr and empty stdout in plain and JSON
+modes. Configuration snapshots for initialization and recovery reviews use the same allowance.
+Under-limit parsing, precedence, regular-file checks and exact state serialization retain their
+existing behavior. The locked TOML parser's default recursion guard remains enabled.
+
+Every state writer checks its current and prospective state before publishing a mutation journal.
+State has a larger allowance because immutable event paths and hashes accumulate. These byte
+limits do not promise an event count, bounded parser amplification, process memory or wall time.
+
+Historical shared-journal versions 1/2/3 keep unrestricted state-image reads and recovery-only
+state validation with all integrity and foreign-byte checks. Recovery may complete an exact old
+state that ordinary operations subsequently refuse. Preserve a complete backup and use a trusted
+compatible version until an explicit migration is available; never remove event fingerprints to
+bypass this boundary. Configuration limits apply during recovery too: explicitly reduce an
+oversized configuration while preserving its intended settings, then obtain a fresh review.
+There is no automatic rewrite, schema migration or limit override. Journal/other JSON sizes and
+historical recovery memory exposure remain separate; see [recovery](recovery.md).
+
+Run TOML boundary and historical recovery regressions with:
+
+```sh
+cargo test --offline --workspace --all-features toml_
+cargo test --offline -p akasha-core --lib state_limits
+```
+
+## YAML metadata
 
 The shared Rust core applies these limits to canonical note frontmatter and the project
 registry in every interface. It rejects excessive metadata without truncating or rewriting it.

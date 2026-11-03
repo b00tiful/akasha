@@ -88,6 +88,7 @@ pub(crate) fn render_updated_project_state(
     notes: &[CanonicalNoteEvidence],
     new_events: &BTreeSet<PathBuf>,
 ) -> Result<Vec<u8>, String> {
+    crate::toml_source::check_state_source(current_source.as_bytes())?;
     let mut state = parse_project_state(current_source)?;
     let mut index_sources = Vec::new();
     let mut roadmap_sources = Vec::new();
@@ -136,6 +137,7 @@ pub(crate) fn render_updated_project_state(
     );
 
     let rendered = render_project_state(&state);
+    crate::toml_source::check_state_source(&rendered)?;
     let rendered_text = std::str::from_utf8(&rendered)
         .expect("the deterministic project-state renderer always emits UTF-8");
     validate_project_state(rendered_text, project_dir, index, roadmap, notes)?;
@@ -394,6 +396,43 @@ mod tests {
         assert_eq!(report.immutable_events, 0);
         assert_eq!(report.projection_sources[INDEX_PROJECTION], 0);
         assert_eq!(report.projection_sources[ROADMAP_PROJECTION], 0);
+    }
+
+    #[test]
+    fn state_limits_refuse_current_and_prospective_images_before_publication() {
+        use crate::toml_source::MAX_STATE_BYTES;
+        let empty = String::from_utf8(render_empty_project_state()).unwrap();
+        let mut exact = empty.clone();
+        exact.push_str("\n#");
+        exact.extend(std::iter::repeat_n('x', MAX_STATE_BYTES - exact.len()));
+        assert!(validate_project_state(&exact, Path::new("p"), b"", b"", &[]).is_ok());
+        assert_eq!(
+            render_updated_project_state(&exact, Path::new("p"), b"", b"", &[], &BTreeSet::new())
+                .unwrap(),
+            empty.as_bytes()
+        );
+        exact.push('x');
+        // Recovery still validates old state while ordinary writers refuse that input.
+        validate_project_state(&exact, Path::new("p"), b"", b"", &[]).unwrap();
+        assert!(
+            render_updated_project_state(&exact, Path::new("p"), b"", b"", &[], &BTreeSet::new())
+                .unwrap_err()
+                .contains("16777216-byte")
+        );
+        let path = PathBuf::from("p/events").join("x".repeat(MAX_STATE_BYTES));
+        let note = CanonicalNoteEvidence::new(path.clone(), NoteClass::Event, b"event");
+        assert!(
+            render_updated_project_state(
+                &empty,
+                Path::new("p"),
+                b"",
+                b"",
+                &[note],
+                &BTreeSet::from([path])
+            )
+            .unwrap_err()
+            .contains("16777216-byte")
+        );
     }
 
     #[test]

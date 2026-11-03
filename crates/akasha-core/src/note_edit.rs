@@ -361,7 +361,7 @@ pub fn preview_mutable_note_lifecycle(
         "read current lifecycle roadmap",
     )?;
     let state_path = resolved.project_dir.join(PROJECT_STATE_FILE);
-    let state = read_regular_file(&state_path, "read lifecycle review state")?;
+    let state = read_regular_state(&state_path, "read lifecycle review state")?;
     let state = str::from_utf8(&state).map_err(|error| NoteEditError::Validation {
         path: state_path.clone(),
         message: format!("project state is not valid UTF-8: {error}"),
@@ -689,7 +689,7 @@ pub fn replace_library_document(
         "read the current roadmap projection",
     )?;
     let state_path = resolved.project_dir.join(PROJECT_STATE_FILE);
-    let state_before = read_regular_file(&state_path, "read the current project state")?;
+    let state_before = read_regular_state(&state_path, "read the current project state")?;
     let state_before_text =
         str::from_utf8(&state_before).map_err(|error| NoteEditError::Validation {
             path: state_path.clone(),
@@ -887,7 +887,7 @@ fn update_record_checked(
         });
     }
 
-    let state_before = read_regular_file(&state_path, "read the current project state")?;
+    let state_before = read_regular_state(&state_path, "read the current project state")?;
     let state_before_text =
         str::from_utf8(&state_before).map_err(|error| NoteEditError::Validation {
             path: state_path.clone(),
@@ -1098,7 +1098,7 @@ fn update_entity_checked(
         });
     }
 
-    let state_before = read_regular_file(&state_path, "read the current project state")?;
+    let state_before = read_regular_state(&state_path, "read the current project state")?;
     let state_before_text =
         str::from_utf8(&state_before).map_err(|error| NoteEditError::Validation {
             path: state_path.clone(),
@@ -1974,18 +1974,29 @@ fn read_optional_regular_file(
         })
 }
 
+#[derive(Clone, Copy)]
+enum SourceKind {
+    Historical,
+    Markdown,
+    State,
+}
+
 fn read_regular_file(path: &Path, operation: &'static str) -> Result<Vec<u8>, NoteEditError> {
-    read_regular_source(path, operation, false)
+    read_regular_source(path, operation, SourceKind::Historical)
+}
+
+fn read_regular_state(path: &Path, operation: &'static str) -> Result<Vec<u8>, NoteEditError> {
+    read_regular_source(path, operation, SourceKind::State)
 }
 
 fn read_regular_markdown(path: &Path, operation: &'static str) -> Result<Vec<u8>, NoteEditError> {
-    read_regular_source(path, operation, true)
+    read_regular_source(path, operation, SourceKind::Markdown)
 }
 
 fn read_regular_source(
     path: &Path,
     operation: &'static str,
-    markdown: bool,
+    kind: SourceKind,
 ) -> Result<Vec<u8>, NoteEditError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| NoteEditError::FileSystem {
         operation,
@@ -1998,8 +2009,15 @@ fn read_regular_source(
             message: "checked edit target is not a regular file".to_owned(),
         });
     }
-    if markdown {
-        return crate::markdown_source::read_markdown_source(path, operation).map_err(Into::into);
+    match kind {
+        SourceKind::Markdown => {
+            return crate::markdown_source::read_markdown_source(path, operation)
+                .map_err(Into::into);
+        }
+        SourceKind::State => {
+            return crate::toml_source::read_state_source(path, operation).map_err(Into::into);
+        }
+        SourceKind::Historical => {}
     }
     fs::read(path).map_err(|source| NoteEditError::FileSystem {
         operation,

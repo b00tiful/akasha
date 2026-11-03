@@ -716,7 +716,9 @@ fn read_toml<T>(path: &Path, description: &str) -> Result<T, ResolveError>
 where
     T: for<'de> Deserialize<'de>,
 {
-    let content = match fs::read_to_string(path) {
+    let content = match fs::File::open(path).and_then(|file| {
+        crate::toml_source::read_with_sentinel(file, crate::toml_source::MAX_CONFIG_BYTES)
+    }) {
         Ok(content) => content,
         Err(source) if source.kind() == io::ErrorKind::NotFound => {
             return Err(ResolveError::Configuration(format!(
@@ -733,6 +735,15 @@ where
         }
     };
 
+    crate::toml_source::check_config_source(path, description, &content)?;
+    let content = String::from_utf8(content).map_err(|_| ResolveError::FileSystem {
+        operation: "read configuration",
+        path: path.to_path_buf(),
+        source: io::Error::new(
+            io::ErrorKind::InvalidData,
+            "stream did not contain valid UTF-8",
+        ),
+    })?;
     toml::from_str(&content).map_err(|source| {
         ResolveError::Configuration(format!(
             "invalid {description} at {}: {source}",

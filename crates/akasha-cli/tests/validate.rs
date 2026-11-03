@@ -263,3 +263,54 @@ fn copy_directory(source: &Path, destination: &Path) {
         }
     }
 }
+
+#[test]
+fn toml_source_refusals_preserve_plain_json_streams_and_exact_sources() {
+    for state in [false, true] {
+        let temp = TempDir::copy_of(&fixtures());
+        let root = temp.path().join("valid-root");
+        let (path, limit, exit) = if state {
+            (
+                root.join("Projects/example/.akasha-state.toml"),
+                16 * 1024 * 1024,
+                4,
+            )
+        } else {
+            (root.join("akasha.toml"), 1024 * 1024, 3)
+        };
+        let mut source = vec![b'x'; limit + 1];
+        source[0] = 0xff;
+        fs::write(&path, &source).unwrap();
+        let permissions = fs::metadata(&path).unwrap().permissions();
+        for json in [false, true] {
+            for operation in ["validate", "context", "status"] {
+                let mut command = Command::new(env!("CARGO_BIN_EXE_akasha"));
+                command
+                    .arg("--root")
+                    .arg(&root)
+                    .args(["--project", "example"]);
+                if json {
+                    command.arg("--json");
+                }
+                let output = command
+                    .arg(operation)
+                    .env_remove("AKASHA_ROOT")
+                    .output()
+                    .unwrap();
+                assert_eq!(
+                    output.status.code(),
+                    Some(exit),
+                    "{operation}/{state}: {output:?}"
+                );
+                assert!(output.stdout.is_empty());
+                let stderr = String::from_utf8(output.stderr).unwrap();
+                assert!(stderr.starts_with("akasha:"));
+                assert!(stderr.contains(&format!("{limit}-byte")), "{stderr}");
+                assert!(stderr.contains(&path.display().to_string()), "{stderr}");
+                assert!(stderr.len() < 1000, "diagnostic must stay concise");
+                assert_eq!(fs::read(&path).unwrap(), source);
+                assert_eq!(fs::metadata(&path).unwrap().permissions(), permissions);
+            }
+        }
+    }
+}

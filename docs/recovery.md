@@ -13,6 +13,12 @@ therefore leave an exact oversized project that ordinary loading still refuses. 
 complete root and follow the compatibility guidance in that guide; deleting a journal or changing
 state hashes to bypass the size policy is not recovery.
 
+Ordinary project state also has a [16 MiB TOML allowance](resource-limits.md#configuration-and-state-toml).
+Historical state-image reads and recovery validation remain unrestricted for versions 1/2/3.
+Recovery never prunes event history to make a manifest fit. User/root/pointer configurations have
+a 1 MiB allowance even during recovery; preserve a backup, explicitly reduce an excessive
+configuration without changing intended settings, then prepare a fresh recovery review.
+
 The desktop's load/retry and the TUI's F5/`refresh` actions can roll back or finalize
 a transaction. The TUI's `/recovery` inspects journal presence without writing or
 reading its contents and preserves unsaved buffers underneath the diagnostic view.

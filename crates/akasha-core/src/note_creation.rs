@@ -911,11 +911,7 @@ fn read_regular_source(
     if markdown {
         return crate::markdown_source::read_markdown_source(path, operation).map_err(Into::into);
     }
-    fs::read(path).map_err(|source| MutableNoteCreationError::FileSystem {
-        operation,
-        path: path.to_path_buf(),
-        source,
-    })
+    crate::toml_source::read_state_source(path, operation).map_err(Into::into)
 }
 
 fn vault_relative_id(root: &Path, path: &Path) -> Result<String, MutableNoteCreationError> {
