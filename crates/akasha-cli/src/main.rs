@@ -69,6 +69,21 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Prepare bounded selected-project evidence for the experimental librarian (no model).
+    LibrarianPrepare {
+        question: String,
+        #[arg(long = "term")]
+        terms: Vec<String>,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Check a librarian answer against freshly rebuilt evidence (no writes or model).
+    LibrarianCheck {
+        #[arg(long)]
+        packet: PathBuf,
+        #[arg(long)]
+        answer: PathBuf,
+    },
     /// Show validated cross-project metrics in project-name order.
     Status {
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u16).range(1..=100))]
@@ -352,6 +367,8 @@ fn run(cli: Cli) -> Result<(), u8> {
         let positional = match &command {
             Command::Init { slug } | Command::Link { slug, .. } => Some(slug),
             Command::SetupRoot { .. }
+            | Command::LibrarianPrepare { .. }
+            | Command::LibrarianCheck { .. }
             | Command::RecoverInit { .. }
             | Command::Onboard
             | Command::CreateEvent { .. }
@@ -385,6 +402,40 @@ fn run(cli: Cli) -> Result<(), u8> {
     }
 
     match command {
+        Command::LibrarianPrepare {
+            question,
+            terms,
+            note,
+        } => {
+            let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
+            let packet = akasha_core::librarian::prepare_librarian(
+                &request,
+                &question,
+                &terms,
+                note.as_deref(),
+            )
+            .map_err(|error| {
+                eprintln!("akasha: {error}");
+                error.exit_code()
+            })?;
+            finish_output(render::render_librarian_packet(&packet, output))?;
+        }
+        Command::LibrarianCheck { packet, answer } => {
+            let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
+            let packet_text = read_librarian_input(&packet)?;
+            let packet = serde_json::from_str(&packet_text).map_err(|_| {
+                eprintln!("akasha: invalid librarian packet JSON");
+                4
+            })?;
+            let answer = read_librarian_input(&answer)?;
+            let checked =
+                akasha_core::librarian::check_librarian_answer(&request, &packet, &answer)
+                    .map_err(|error| {
+                        eprintln!("akasha: {error}");
+                        error.exit_code()
+                    })?;
+            finish_output(render::render_librarian_answer(&checked, output))?;
+        }
         Command::Tui { .. } => unreachable!("interactive dispatch handled above"),
         Command::Status { limit } | Command::Digest { limit } => {
             let kind = if matches!(command, Command::Status { .. }) {
@@ -804,6 +855,32 @@ pub(crate) fn discover_agent_home(
         AgentClient::Codex => ".codex",
         AgentClient::Claude => ".claude",
     }))
+}
+
+fn read_librarian_input(path: &std::path::Path) -> Result<String, u8> {
+    use std::io::Read;
+    // Allow pretty-printed packets, while bounding allocation before JSON decoding.
+    let result = (|| -> io::Result<String> {
+        if !fs::symlink_metadata(path)?.is_file() {
+            return Err(io::Error::other(
+                "librarian input must be a regular non-symlink file",
+            ));
+        }
+        let file = fs::File::open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(io::Error::other("librarian input must be a regular file"));
+        }
+        let mut bytes = Vec::new();
+        file.take(65_537).read_to_end(&mut bytes)?;
+        if bytes.len() > 65_536 {
+            return Err(io::Error::other("librarian input exceeds 65536 bytes"));
+        }
+        String::from_utf8(bytes).map_err(io::Error::other)
+    })();
+    result.map_err(|error| {
+        eprintln!("akasha: cannot read librarian input: {error}");
+        4
+    })
 }
 
 fn read_utf8_input(path: &std::path::Path, label: &str) -> Result<String, u8> {

@@ -30,6 +30,83 @@ impl OutputMode {
     }
 }
 
+pub(crate) fn render_librarian_packet(
+    packet: &akasha_core::librarian::LibrarianPacket,
+    output: OutputMode,
+) -> io::Result<()> {
+    if output.json {
+        return write_stdout(&json_line(serde_json::to_string_pretty(packet))?);
+    }
+    let mut text = format!(
+        "Librarian evidence — {}\n{} matched / {} scanned; {} omitted\n",
+        librarian_display(&packet.project),
+        packet.matched_notes,
+        packet.scanned_notes,
+        packet.omitted_notes
+    );
+    if packet.evidence.is_empty() {
+        text.push_str("Insufficient evidence: no matching canonical notes.\n");
+    }
+    for item in &packet.evidence {
+        let _ = writeln!(
+            text,
+            "[{}] {} (lines {}–{}, status: {}, partial: {})\nSHA-256: {}",
+            item.citation,
+            librarian_display(&item.id),
+            item.line_start,
+            item.line_end,
+            librarian_display(item.status.as_deref().unwrap_or("unknown")),
+            item.excerpt_truncated,
+            item.fingerprint
+        );
+        for line in item.excerpt.lines() {
+            let _ = writeln!(text, "  | {}", librarian_display(line));
+        }
+    }
+    write_stdout(&text)
+}
+
+pub(crate) fn render_librarian_answer(
+    checked: &akasha_core::librarian::CheckedLibrarianAnswer,
+    output: OutputMode,
+) -> io::Result<()> {
+    if output.json {
+        return write_stdout(&json_line(serde_json::to_string_pretty(checked))?);
+    }
+    let mut text = String::from(
+        "Local librarian draft — citation identities checked; factual support still needs review.\n",
+    );
+    if checked.answer.insufficient_evidence {
+        text.push_str("Insufficient evidence for a complete answer.\n");
+    }
+    for claim in &checked.answer.claims {
+        let _ = writeln!(
+            text,
+            "- {} {:?}",
+            librarian_display(&claim.text),
+            claim.citations
+        );
+    }
+    for source in &checked.evidence {
+        let _ = writeln!(
+            text,
+            "[{}] {}:{}–{}",
+            source.citation,
+            librarian_display(&source.id),
+            source.line_start,
+            source.line_end
+        );
+    }
+    write_stdout(&text)
+}
+
+fn librarian_display(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect()
+}
+
 pub(crate) fn render_library_report(
     report: &akasha_core::LibraryReport,
     output: OutputMode,
