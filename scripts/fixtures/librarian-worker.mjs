@@ -18,8 +18,19 @@ const server = http.createServer(async (request, response) => {
   let result;
   if (request.url === "/health") result = { status: "ok" };
   if (request.url === "/props") result = { total_slots: 1, default_generation_settings: { n_ctx: Number(value("--ctx-size")) } };
-  if (request.url === "/apply-template") result = { prompt: JSON.stringify(body.messages) };
-  if (request.url === "/tokenize") result = { tokens: Array(scenario === "larger" ? 3500 : scenario === "too-large" ? 8000 : 200).fill(1) };
+  if (request.url === "/apply-template") result = { prompt: body.messages.map(message =>
+    `<|im_start|>${message.role}\n${scenario === "template-transform" ? message.content.replaceAll("<", "&lt;") : message.content}<|im_end|>\n`).join("") + "<|im_start|>assistant\n" };
+  if (request.url === "/tokenize") {
+    const tokens = body.add_special ? Array(scenario === "larger" ? 3500 : scenario === "too-large" ? 8000 : 0).fill(1) : [];
+    let content = body.content;
+    while (content.length) {
+      const special = body.parse_special && content.match(/^<\|im_(start|end)\|>/);
+      if (special) { tokens.push(special[1] === "start" ? 151644 : 151645); content = content.slice(special[0].length); }
+      else { const point = content.codePointAt(0); tokens.push(point); content = content.slice(point > 65535 ? 2 : 1); }
+    }
+    if (scenario === "boundary-merge" && body.add_special) tokens.push(999999);
+    result = { tokens: scenario === "invalid-tokens" ? ["invalid"] : tokens };
+  }
   if (request.url === "/completion") {
     if (scenario === "hang") return;
     if (scenario === "drift") writeFileSync(model, "GGUFchanged");

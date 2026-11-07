@@ -77,7 +77,13 @@ JSON preserves quote bytes; terminal output sanitizes controls and prefixes sour
 
 CPU is default, using up to four threads. `--gpu-layers 99` requests offload with a compatible
 GPU package; `--threads N` is explicit. The runner applies the model's chat template, disables
-thinking, tokenizes the full prompt, reserves 1,024 output tokens plus a margin and starts with
+thinking and tokenizes the user packet as literal data with special-token parsing disabled.
+Trusted template controls retain special-token parsing. A random placeholder identifies the
+payload boundary; exact template substitution and harmless-template token equality must hold,
+or the runner refuses before generation. Templates that transform payload text or merge tokens
+across this boundary are unsupported. Source quotes remain unchanged. This prevents note text
+from supplying role-control tokens; ordinary-language instruction following and relevance still
+need evaluation. The runner reserves 1,024 output tokens plus a margin and starts with
 4K context. It restarts at a larger context only if needed, up to an 8K default maximum.
 `--max-context` accepts 4096, 8192, 16384 or 32768. Overflow refuses without silent truncation.
 
