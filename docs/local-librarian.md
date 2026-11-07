@@ -1,80 +1,87 @@
 # Local librarian pilot
 
-This experimental command-line slice retrieves saved project notes and asks an installed local
-model for a cited answer. The desktop chat panel, final name, model installer, local onboarding
-and project-wide privacy mode are later work. It never edits canonical notes. Core/CLI usage
-does not require Node or Ollama; those are requirements of the development runner only.
+The development runner uses **llama.cpp**, selected on 2026-11-07. Rust retrieves saved project
+notes and validates the generated answer; a short-lived, owned `llama-server` process performs
+inference. The desktop panel, name, model installer, local onboarding and privacy mode remain
+later work. The development runner requires Node; ordinary core/CLI use does not.
 
-Verified with Node v22.22.2, Ollama 0.20.5 and the `qwen3:1.7b` Q4_K_M artifact. This is a
-compatibility candidate, not the final model choice. In two synthetic GPU runs it answered a
-recorded status correctly and abstained on an unrecorded assignee. The server reported about
-4.9 GiB allocation with the pilot's context setting; performance on typical or CPU-only devices
-is not established. Current Qwen3.5:2b requires a newer runtime than the one used for this pilot.
+Use Node 22 and the official llama.cpp **b12110 / commit cd959bae9** build (the v0.9.0 release
+points to this nightly). Download a build appropriate for your machine from the
+[official release](https://github.com/ggml-org/llama.cpp/releases/tag/b12110), verify the archive's
+SHA-256 against its GitHub release metadata, and keep its executable and libraries together.
+The runner checks the build identifier and records binary/model hashes. It does not download or
+install anything. Model weights have their own license; use a trusted local GGUF and its expected
+SHA-256. The existing Qwen3 1.7B Q4_K_M artifact is an evaluation model, not a final quality choice.
 
-Build with `cargo build --offline -p akasha-cli`. Inspect retrieval without any model:
+Build the CLI:
+
+```sh
+cargo build --offline -p akasha-cli
+```
+
+Inspect retrieval without inference:
 
 ```sh
 target/debug/akasha --root /path/to/memory --project example \
-  librarian-prepare "What caused the cache failure?" --term "cache"
+  librarian-prepare "What caused the cache failure?" --term cache
 ```
 
-Add `--json` for the version-1 packet. Repeat `--term` up to eight times to guide literal matching,
-or omit it for simple alphanumeric query-word overlap. This is not semantic search. Optional
-`--note Projects/example/entities/cache.md` includes that exact canonical note and prioritizes
-its outgoing neighbors only when they belong to the same project. Paths follow root configuration;
-the example spelling is not a hardcoded requirement.
-
-The packet carries at most six excerpts of 1,000 Unicode characters each and must fit 16,000
-serialized bytes. It reports scanned/matched/omitted notes, exact source fingerprints, line ranges,
-status and partial-excerpt flags. Line ranges can end part-way through a line. It is not an atomic
-filesystem snapshot or a complete repository analysis. Projections, Global notes and other
-projects are excluded from model evidence. Shared validation may inspect linked target metadata
-outside the project; this is not yet a strict no-cross-project-filesystem-access privacy mode.
-
-For a local run, use a trusted local Ollama worker with cloud features disabled. For example,
-in a separate terminal, with an explicit cache directory and unused loopback port:
-
-```sh
-OLLAMA_NO_CLOUD=1 OLLAMA_HOST=127.0.0.1:11435 \
-  OLLAMA_MODELS=/path/to/local-model-cache ollama serve
-```
-
-Install a compatible model explicitly in that worker (`OLLAMA_HOST=127.0.0.1:11435 ollama pull
-qwen3:1.7b` for the initial compatibility candidate), then:
+Run the local librarian:
 
 ```sh
 node scripts/local-librarian.mjs --root /path/to/memory --project example \
-  --model qwen3:1.7b --port 11435 \
+  --server /path/to/llama-server --model /path/to/model.gguf \
+  --model-sha256 EXPECTED_64_CHARACTER_LOWERCASE_SHA256 \
   --question "What caused the cache failure?" --term cache
 ```
 
-The runner calls only numeric loopback, rejects redirects and remote-model metadata, requires
-already-installed weights and never pulls a model automatically. It sends one bounded request
-with no model tools, thinking disabled, 32,768 context and 1,024 output-token limits. No-match
-retrieval abstains without contacting Ollama. Ctrl-C aborts the request; completion/cancellation
-attempts a model unload. Stop the owned worker if unloading is not confirmed. The independently
-started server and cached weights remain until the operator stops/removes them. Requests time out;
-errors never produce a successful answer. A trusted local server is a prerequisite: these checks
-are not OS egress isolation, and a compromised or concurrently reconfigured worker is outside the
-pilot's privacy guarantee.
+CPU is the default, with up to four threads. A compatible GPU build can use `--gpu-layers 99`;
+`--threads N` is explicit. The runner starts at 4K context, applies the model's chat template with
+thinking disabled, tokenizes the complete prompt and reserves 1,024 output tokens plus a safety
+margin. It restarts at a larger power-of-two context only when needed. Default maximum is 8K;
+`--max-context` accepts 4096, 8192, 16384 or 32768. Oversized prompts refuse before generation;
+narrow the terms or explicitly increase the maximum. Evidence bytes are not token counts.
 
-The model returns `insufficient_evidence` and an array of `{text, citations}` claims. Rust rebuilds
-the evidence packet and refuses observed drift, unknown fields, uncited/duplicate/out-of-range
-references, controls, oversized text and invalid JSON before displaying anything. These checks
-prove shape and citation membership, **not that the cited passage entails the claim**. Answers
-remain drafts for review. No automatic retry hides a refusal.
+The worker has one request slot, F16 cache, bounded batch sizes, no prompt cache/checkpoints or
+context shifting, offline mode, disabled Web UI/agent integration and no model tools. Its
+numeric-loopback channel uses a random authentication key kept in an owner-only temporary file.
+The runner supplies a restricted environment and verifies authenticated worker properties before
+sending evidence. It checks GGUF magic, expected model hash, pinned worker version and observed
+binary/model drift. A trusted binary/model is still required; these measures are not OS egress
+isolation or the deferred project-wide privacy mode.
 
-`librarian-check --packet FILE --answer FILE` exposes the same check independently. Plain text is
-default; `--json` returns typed checked evidence and claims. The runner uses owner-only temporary
-files and removes them on normal completion/error; abrupt process death can leave sensitive scratch
-files. It does not keep chat history or publish answers. Local logs, scratch, swap and backups
-remain sensitive. The future privacy mode will need an explicit lifecycle/egress/export contract.
+Completion, refusal, timeout and Ctrl-C stop the owned worker, escalating from termination to
+kill if needed, and remove its scratch directory. No-match retrieval skips all model access.
+A hard kill of the parent can leave a worker or scratch files; production host supervision is
+still future work. There is no persistent inference service, saved chat history or canonical
+note mutation in this slice. The earlier Ollama `--port` and model-tag interface has been replaced
+by explicit `--server`, GGUF `--model` and `--model-sha256` arguments. Model files stay in place.
 
-Onboarding direction: users will be able to choose external/cloud-assisted or local onboarding and
-change their preference for later runs. This does not overwrite existing notes, silently restart
-jobs or undo prior cloud disclosure. The current `onboard` command still emits the existing
-external-agent handoff; the local onboarding selector is not implemented by this pilot.
+Repeat `--term` up to eight times for literal matching; omit it for simple query-word overlap.
+Optional `--note Projects/example/entities/cache.md` prioritizes that exact canonical note and
+its outgoing neighbors in the selected project. Paths follow root configuration. The packet
+contains at most six excerpts of 1,000 Unicode characters within 16,000 serialized bytes, with
+status, source hashes, line ranges and omission/truncation counts. It is not a complete codebase
+analysis. Projections, Global notes and foreign project bodies are excluded; shared validation
+can inspect foreign link-target metadata. The filesystem reads do not form an atomic snapshot.
 
-Run core/CLI verification with `cargo test --workspace`; the local transport tests use
-`node --test scripts/local-librarian.test.mjs` and bind temporary loopback servers. A real-model
-smoke test is separate from both and does not establish general answer quality or device support.
+Rust rebuilds the packet and checks answer shape, source drift and citation membership. It
+rejects invalid JSON, unknown fields, invalid/duplicate citations, controls and excess text.
+**A valid citation does not prove that its passage supports the claim.** The small evaluation
+model can hallucinate; answers remain drafts, and representative quality is an open gate. An
+official Qwen3 4B Q4_K_M trial also failed: the final expanded profile passed 8/16 synthetic
+cases and 0/8 missing-information cases. It is not a recommended production answer model.
+Use `librarian-prepare` to inspect original evidence independently of generated claims.
+
+`librarian-check --packet FILE --answer FILE` exposes the check independently. Plain output is
+default; `--json` returns checked claims/evidence. Runner metrics go to stderr. Errors are nonzero
+and never produce a successful answer. Temporary answer files are owner-only and normally removed;
+local logs, swap and backups still need the later privacy policy.
+
+Onboarding retains the external/cloud-assisted route. Local onboarding and a changeable route
+preference are accepted later work; this runner does not implement that selector. Privacy mode
+is also explicitly deferred and will permit local model options only.
+
+Run `node --test scripts/local-librarian.test.mjs` for transport/lifecycle/context tests (temporary
+loopback sockets are needed), and `cargo test --workspace` for the Rust core/CLI. Real-model
+acceptance is separate and does not establish general quality or hardware support.
