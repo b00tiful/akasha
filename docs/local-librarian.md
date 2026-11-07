@@ -37,7 +37,9 @@ flag and recorded links. Empty matches mean no passage was selected, not that th
 an answer. Metrics go to stderr; errors are nonzero and do not display a successful result.
 
 Repeat `--term` up to eight times for literal substring matching. Without explicit terms,
-automatic queries discard common English function words and match full alphanumeric tokens;
+automatic queries discard common English lookup/function words and match full alphanumeric tokens
+in bodies, canonical identities and recorded status. Filename/status matches receive additional
+weight; selected notes and their neighbors retain priority. Status values have no hardcoded order;
 this is not semantic or multilingual word segmentation. Optional
 `--note Projects/example/entities/cache.md` prioritizes that exact canonical note and its outgoing
 neighbors in the selected project. Folder paths follow configuration. Keep the original question
@@ -48,6 +50,12 @@ status, source hashes, lines and omission/partial flags. Projections, Global and
 bodies are excluded. Shared validation can inspect foreign link-target metadata. Reads are not
 an atomic filesystem snapshot. Regenerate disposable packets after retrieval changes; old
 packets that no longer match current evidence refuse as stale.
+
+Bodies fitting 640 characters stay whole. Longer bodies use the line with greatest query-term
+overlap, then nearby complete lines within a 640-character context target. A long winning line
+and no-body-match fallback can still use the 1,000-character hard cap. Excerpts preserve source
+bytes and physical lines; partial coverage is explicit. Filename weighting and lexical windows
+can still select an irrelevant passage or miss synonyms.
 
 The worker returns only `{"selections":[{"citation":1}]}` using a grammar restricted to supplied
 citation IDs. Rust rebuilds the packet, rejects drift/duplicate/unknown IDs and supplies each

@@ -17,6 +17,7 @@ use crate::wikilink::parse_wikilinks;
 
 const MAX_SOURCES: usize = 6;
 const EXCERPT_CHARS: usize = 1_000;
+const EXCERPT_CONTEXT_CHARS: usize = 640;
 pub const MAX_LIBRARIAN_PACKET_BYTES: usize = 16_000;
 pub const MAX_LIBRARIAN_ANSWER_BYTES: usize = 16_000;
 
@@ -119,14 +120,18 @@ fn automatic_term(word: &str) -> bool {
         && !matches!(
             word,
             "and"
+                | "about"
                 | "are"
                 | "can"
                 | "did"
                 | "does"
                 | "for"
+                | "find"
                 | "from"
                 | "how"
                 | "its"
+                | "note"
+                | "notes"
                 | "please"
                 | "show"
                 | "tell"
@@ -134,6 +139,8 @@ fn automatic_term(word: &str) -> bool {
                 | "the"
                 | "their"
                 | "this"
+                | "use"
+                | "uses"
                 | "was"
                 | "were"
                 | "what"
@@ -153,6 +160,46 @@ fn matches_term(text: &str, term: &str, automatic: bool) -> bool {
     } else {
         text.contains(term)
     }
+}
+
+// Keep a line-aligned exact quote: choose coverage before proximity, then add bounded context.
+fn ranked_excerpt(body: &str, needles: &BTreeSet<String>, automatic: bool) -> (usize, String) {
+    if body.chars().take(EXCERPT_CONTEXT_CHARS + 1).count() <= EXCERPT_CONTEXT_CHARS {
+        return (0, body.to_owned());
+    }
+    let mut best_hits = 0;
+    let mut best_offset = 0;
+    let mut offset = 0;
+    for line in body.split_inclusive('\n') {
+        let folded = line.to_lowercase();
+        let hits = needles
+            .iter()
+            .filter(|term| matches_term(&folded, term, automatic))
+            .count();
+        if hits > best_hits {
+            best_hits = hits;
+            best_offset = offset;
+        }
+        offset += line.len();
+    }
+    if best_hits == 0 {
+        return (0, body.chars().take(EXCERPT_CHARS).collect());
+    }
+    let mut excerpt = String::new();
+    let mut chars = 0;
+    for line in body[best_offset..].split_inclusive('\n') {
+        let line_chars = line.chars().take(EXCERPT_CHARS + 1).count();
+        if excerpt.is_empty() {
+            excerpt.extend(line.chars().take(EXCERPT_CHARS));
+            chars = line_chars.min(EXCERPT_CHARS);
+        } else if chars + line_chars <= EXCERPT_CONTEXT_CHARS {
+            excerpt.push_str(line);
+            chars += line_chars;
+        } else {
+            break;
+        }
+    }
+    (best_offset, excerpt)
 }
 
 fn invalid(path: &Path, message: &str) -> NoteLinksError {
@@ -239,7 +286,7 @@ pub fn prepare_librarian(
         }
     }
     // Retain bounded excerpts only, not a second archive of canonical bodies.
-    let mut best: Vec<(usize, LibrarianEvidence)> = Vec::new();
+    let mut best: Vec<((u8, usize), LibrarianEvidence)> = Vec::new();
     let mut matched_notes = 0;
     for (id, path) in &paths {
         let source = read_checked_source(&report.root, path)?;
@@ -251,34 +298,36 @@ pub fn prepare_librarian(
             .map_err(|error| invalid(path, &error.to_string()))?;
         let folded = parsed.body.to_lowercase();
         let folded_id = id.to_lowercase();
-        let score = needles
-            .iter()
-            .filter(|term| {
-                matches_term(&folded, term, terms.is_empty())
-                    || matches_term(&folded_id, term, terms.is_empty())
-            })
-            .count()
-            + usize::from(neighbors.contains(id)) * 64
-            + usize::from(note == Some(id.as_str())) * 128;
-        if score == 0 {
+        let filename = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_lowercase();
+        let status = parsed
+            .metadata
+            .get("status")
+            .and_then(|value| value.as_str());
+        let folded_status = status.unwrap_or_default().to_lowercase();
+        let hits = |text: &str| {
+            needles
+                .iter()
+                .filter(|term| matches_term(text, term, terms.is_empty()))
+                .count()
+        };
+        let lexical =
+            hits(&folded) + hits(&folded_id) + 3 * hits(&filename) + 4 * hits(&folded_status);
+        let priority = if note == Some(id.as_str()) {
+            2
+        } else {
+            u8::from(neighbors.contains(id))
+        };
+        if priority == 0 && lexical == 0 {
             continue;
         }
         matched_notes += 1;
         let body_start = source.len() - parsed.body.len();
-        let mut offset = body_start;
-        for line in parsed.body.split_inclusive('\n') {
-            if needles
-                .iter()
-                .any(|term| matches_term(&line.to_lowercase(), term, terms.is_empty()))
-            {
-                break;
-            }
-            offset += line.len();
-        }
-        if offset == source.len() {
-            offset = body_start;
-        }
-        let excerpt: String = source[offset..].chars().take(EXCERPT_CHARS).collect();
+        let (body_offset, excerpt) = ranked_excerpt(parsed.body, &needles, terms.is_empty());
+        let offset = body_start + body_offset;
         let line_start = source[..offset]
             .bytes()
             .filter(|byte| *byte == b'\n')
@@ -294,17 +343,13 @@ pub fn prepare_librarian(
             citation: 0,
             id: id.clone(),
             fingerprint,
-            status: parsed
-                .metadata
-                .get("status")
-                .and_then(|value| value.as_str())
-                .map(str::to_owned),
+            status: status.map(str::to_owned),
             line_start,
             line_end,
             excerpt_truncated: offset > body_start || offset + excerpt.len() < source.len(),
             excerpt,
         };
-        best.push((score, evidence));
+        best.push(((priority, lexical), evidence));
         best.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
         best.truncate(MAX_SOURCES);
     }

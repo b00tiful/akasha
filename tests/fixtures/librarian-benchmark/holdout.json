@@ -1,0 +1,278 @@
+{
+  "version": 1,
+  "description": "New fictional release-system validation corpus, authored and frozen before the ranked-passage implementation. Same author; not an external blind benchmark.",
+  "notes": [
+    {
+      "path": "entities/archive-rotation.md",
+      "body": "# Archive rotation diary\n\nArchive rotation keeps the write path independent of cleaning.\nSample 000 records an unchanged manifest and a successful scrub pass.\nSample 001 records an unchanged manifest and a successful scrub pass.\nSample 002 records an unchanged manifest and a successful scrub pass.\nSample 003 records an unchanged manifest and a successful scrub pass.\nSample 004 records an unchanged manifest and a successful scrub pass.\nSample 005 records an unchanged manifest and a successful scrub pass.\nSample 006 records an unchanged manifest and a successful scrub pass.\nSample 007 records an unchanged manifest and a successful scrub pass.\nSample 008 records an unchanged manifest and a successful scrub pass.\nSample 009 records an unchanged manifest and a successful scrub pass.\nSample 010 records an unchanged manifest and a successful scrub pass.\nSample 011 records an unchanged manifest and a successful scrub pass.\nSample 012 records an unchanged manifest and a successful scrub pass.\nSample 013 records an unchanged manifest and a successful scrub pass.\nSample 014 records an unchanged manifest and a successful scrub pass.\nSample 015 records an unchanged manifest and a successful scrub pass.\nSample 016 records an unchanged manifest and a successful scrub pass.\nSample 017 records an unchanged manifest and a successful scrub pass.\nSample 018 records an unchanged manifest and a successful scrub pass.\nSample 019 records an unchanged manifest and a successful scrub pass.\nSample 020 records an unchanged manifest and a successful scrub pass.\nSample 021 records an unchanged manifest and a successful scrub pass.\nSample 022 records an unchanged manifest and a successful scrub pass.\nSample 023 records an unchanged manifest and a successful scrub pass.\nSample 024 records an unchanged manifest and a successful scrub pass.\nSample 025 records an unchanged manifest and a successful scrub pass.\nSample 026 records an unchanged manifest and a successful scrub pass.\nSample 027 records an unchanged manifest and a successful scrub pass.\nSample 028 records an unchanged manifest and a successful scrub pass.\nSample 029 records an unchanged manifest and a successful scrub pass.\nSample 030 records an unchanged manifest and a successful scrub pass.\nSample 031 records an unchanged manifest and a successful scrub pass.\nSample 032 records an unchanged manifest and a successful scrub pass.\nSample 033 records an unchanged manifest and a successful scrub pass.\nSample 034 records an unchanged manifest and a successful scrub pass.\nSample 035 records an unchanged manifest and a successful scrub pass.\nSample 036 records an unchanged manifest and a successful scrub pass.\nSample 037 records an unchanged manifest and a successful scrub pass.\nSample 038 records an unchanged manifest and a successful scrub pass.\nSample 039 records an unchanged manifest and a successful scrub pass.\nSample 040 records an unchanged manifest and a successful scrub pass.\nSample 041 records an unchanged manifest and a successful scrub pass.\nSample 042 records an unchanged manifest and a successful scrub pass.\nSample 043 records an unchanged manifest and a successful scrub pass.\nSample 044 records an unchanged manifest and a successful scrub pass.\nSample 045 records an unchanged manifest and a successful scrub pass.\nSample 046 records an unchanged manifest and a successful scrub pass.\nSample 047 records an unchanged manifest and a successful scrub pass.\nSample 048 records an unchanged manifest and a successful scrub pass.\nSample 049 records an unchanged manifest and a successful scrub pass.\nSample 050 records an unchanged manifest and a successful scrub pass.\nSample 051 records an unchanged manifest and a successful scrub pass.\nSample 052 records an unchanged manifest and a successful scrub pass.\nSample 053 records an unchanged manifest and a successful scrub pass.\nSample 054 records an unchanged manifest and a successful scrub pass.\nSample 055 records an unchanged manifest and a successful scrub pass.\nSample 056 records an unchanged manifest and a successful scrub pass.\nSample 057 records an unchanged manifest and a successful scrub pass.\nSample 058 records an unchanged manifest and a successful scrub pass.\nSample 059 records an unchanged manifest and a successful scrub pass.\nSample 060 records an unchanged manifest and a successful scrub pass.\nSample 061 records an unchanged manifest and a successful scrub pass.\nSample 062 records an unchanged manifest and a successful scrub pass.\nSample 063 records an unchanged manifest and a successful scrub pass.\nSample 064 records an unchanged manifest and a successful scrub pass.\n\nFinal archive retention limit: 14 snapshots. Keep the newest completed snapshots only.\n",
+      "status": "active"
+    },
+    {
+      "path": "entities/package-receipts.md",
+      "body": "# Package receipts\n\nPackage receipts bind an artifact digest to its signer. The recipient checks the original digest before accepting the artifact.\n",
+      "status": "active"
+    },
+    {
+      "path": "entities/artifact-signer.md",
+      "body": "# Artifact signer\n\nThe artifact signer consumes [[Projects/example/entities/package-receipts|package receipts]] and returns detached signatures.\nA rotation failure is described in [[Projects/example/records/problems/signing-failure|the signing incident]].\n",
+      "status": "active"
+    },
+    {
+      "path": "records/problems/signing-failure.md",
+      "body": "# Signing incident\n\nSigning incident recovery waits for a second approval before rotating the key reference.\nThe affected [[Projects/example/entities/artifact-signer|artifact signer]] refuses new releases while approval is pending.\n",
+      "status": "blocked"
+    },
+    {
+      "path": "records/problems/runner-drain.md",
+      "body": "# Runner drain\n\nRunner drain preserves the last completed build and pauses new scheduling.\n",
+      "status": "blocked"
+    },
+    {
+      "path": "entities/receipt-archive.md",
+      "body": "# Receipt archive\n\nReceipt archive imports detached receipts without rewriting the original bytes.\n",
+      "status": "retired"
+    },
+    {
+      "path": "entities/receipts-archive.md",
+      "body": "# Similar plural identity\n\nThis compatibility listing is a spelling distractor; it does not define the receipt archive.\n",
+      "status": "draft"
+    },
+    {
+      "path": "entities/release-manifest.md",
+      "body": "# Accepted manifest\n\nRelease manifest records the accepted compiler flags and artifact digest.\n",
+      "status": "active"
+    },
+    {
+      "path": "entities/release-chat-00.md",
+      "body": "# Release manifest discussion 00\n\nWhere is the release manifest discussion? This copied meeting prompt contains no accepted compiler flags or artifact digest.\n",
+      "status": "draft"
+    },
+    {
+      "path": "entities/release-chat-01.md",
+      "body": "# Release manifest discussion 01\n\nWhere is the release manifest discussion? This copied meeting prompt contains no accepted compiler flags or artifact digest.\n",
+      "status": "draft"
+    },
+    {
+      "path": "entities/release-chat-02.md",
+      "body": "# Release manifest discussion 02\n\nWhere is the release manifest discussion? This copied meeting prompt contains no accepted compiler flags or artifact digest.\n",
+      "status": "draft"
+    },
+    {
+      "path": "entities/release-chat-03.md",
+      "body": "# Release manifest discussion 03\n\nWhere is the release manifest discussion? This copied meeting prompt contains no accepted compiler flags or artifact digest.\n",
+      "status": "draft"
+    },
+    {
+      "path": "entities/release-chat-04.md",
+      "body": "# Release manifest discussion 04\n\nWhere is the release manifest discussion? This copied meeting prompt contains no accepted compiler flags or artifact digest.\n",
+      "status": "draft"
+    },
+    {
+      "path": "entities/release-chat-05.md",
+      "body": "# Release manifest discussion 05\n\nWhere is the release manifest discussion? This copied meeting prompt contains no accepted compiler flags or artifact digest.\n",
+      "status": "draft"
+    },
+    {
+      "path": "entities/release-chat-06.md",
+      "body": "# Release manifest discussion 06\n\nWhere is the release manifest discussion? This copied meeting prompt contains no accepted compiler flags or artifact digest.\n",
+      "status": "draft"
+    },
+    {
+      "path": "entities/release-chat-07.md",
+      "body": "# Release manifest discussion 07\n\nWhere is the release manifest discussion? This copied meeting prompt contains no accepted compiler flags or artifact digest.\n",
+      "status": "draft"
+    },
+    {
+      "path": "entities/semaphore.md",
+      "body": "# Reader semaphore\n\nReader semaphore hands a permit back after the last bounded read.\n",
+      "status": "active"
+    },
+    {
+      "path": "entities/restart-stream.md",
+      "body": "# Restart stream\n\nReconnect resumes transmission from the persisted acknowledged offset.\n",
+      "status": "active"
+    },
+    {
+      "path": "entities/locked-notes.md",
+      "body": "# Notes reader\n\nNotes reader is a literal identifier; the word notes should remain searchable with an explicit term.\n",
+      "status": "active"
+    }
+  ],
+  "cases": [
+    {
+      "id": "late-retention",
+      "question": "What is the final archive retention limit?",
+      "required": [
+        {
+          "id": "Projects/example/entities/archive-rotation.md",
+          "text": "Final archive retention limit: 14 snapshots."
+        }
+      ],
+      "allowed": [
+        "Projects/example/entities/archive-rotation.md"
+      ],
+      "category": "holdout"
+    },
+    {
+      "id": "blocked-status",
+      "question": "Find notes marked blocked.",
+      "required": [
+        {
+          "id": "Projects/example/records/problems/signing-failure.md",
+          "text": "Signing incident recovery waits for a second approval"
+        },
+        {
+          "id": "Projects/example/records/problems/runner-drain.md",
+          "text": "Runner drain preserves the last completed build"
+        }
+      ],
+      "allowed": [
+        "Projects/example/records/problems/signing-failure.md",
+        "Projects/example/records/problems/runner-drain.md"
+      ],
+      "category": "metadata"
+    },
+    {
+      "id": "retired-status",
+      "question": "Find retired notes.",
+      "required": [
+        {
+          "id": "Projects/example/entities/receipt-archive.md",
+          "text": "Receipt archive imports detached receipts"
+        }
+      ],
+      "allowed": [
+        "Projects/example/entities/receipt-archive.md"
+      ],
+      "category": "metadata"
+    },
+    {
+      "id": "identity-ranking",
+      "question": "Find the release manifest.",
+      "required": [
+        {
+          "id": "Projects/example/entities/release-manifest.md",
+          "text": "Release manifest records the accepted compiler flags"
+        }
+      ],
+      "allowed": [
+        "Projects/example/entities/release-manifest.md"
+      ],
+      "category": "distractors"
+    },
+    {
+      "id": "exact-symbol",
+      "question": "Find reader semaphore.",
+      "required": [
+        {
+          "id": "Projects/example/entities/semaphore.md",
+          "text": "hands a permit back after the last bounded read"
+        }
+      ],
+      "allowed": [
+        "Projects/example/entities/semaphore.md"
+      ],
+      "category": "holdout"
+    },
+    {
+      "id": "literal-stopword",
+      "question": "Find a literal name.",
+      "required": [
+        {
+          "id": "Projects/example/entities/locked-notes.md",
+          "text": "Notes reader is a literal identifier"
+        }
+      ],
+      "allowed": [
+        "Projects/example/entities/locked-notes.md"
+      ],
+      "category": "literal-control",
+      "terms": [
+        "notes"
+      ]
+    },
+    {
+      "id": "anchor-relations",
+      "question": "Show the signer and its receipts.",
+      "required": [
+        {
+          "id": "Projects/example/entities/artifact-signer.md",
+          "text": "returns detached signatures"
+        },
+        {
+          "id": "Projects/example/entities/package-receipts.md",
+          "text": "Package receipts bind an artifact digest"
+        }
+      ],
+      "allowed": [
+        "Projects/example/entities/artifact-signer.md",
+        "Projects/example/entities/package-receipts.md",
+        "Projects/example/records/problems/signing-failure.md"
+      ],
+      "category": "anchor-control",
+      "note": "Projects/example/entities/artifact-signer.md",
+      "expected_link": [
+        "Projects/example/entities/artifact-signer.md",
+        "Projects/example/entities/package-receipts.md"
+      ]
+    },
+    {
+      "id": "incident-navigation",
+      "question": "Find the signing incident.",
+      "required": [
+        {
+          "id": "Projects/example/records/problems/signing-failure.md",
+          "text": "Signing incident recovery waits for a second approval"
+        }
+      ],
+      "allowed": [
+        "Projects/example/records/problems/signing-failure.md",
+        "Projects/example/entities/artifact-signer.md"
+      ],
+      "category": "holdout"
+    },
+    {
+      "id": "semantic-limit",
+      "question": "Where is the note about continuing an interrupted upload?",
+      "required": [
+        {
+          "id": "Projects/example/entities/restart-stream.md",
+          "text": "Reconnect resumes transmission from the persisted acknowledged offset."
+        }
+      ],
+      "allowed": [
+        "Projects/example/entities/restart-stream.md"
+      ],
+      "category": "paraphrase"
+    },
+    {
+      "id": "whole-token-negative",
+      "question": "Find semaph.",
+      "required": [],
+      "allowed": [],
+      "category": "negative"
+    },
+    {
+      "id": "scope-negative",
+      "question": "Find ORBITAL_PRIVATE_SENTINEL.",
+      "required": [],
+      "allowed": [],
+      "category": "scope"
+    },
+    {
+      "id": "unknown-owner",
+      "question": "Who maintains the reader semaphore?",
+      "required": [
+        {
+          "id": "Projects/example/entities/semaphore.md",
+          "text": "hands a permit back after the last bounded read"
+        }
+      ],
+      "allowed": [
+        "Projects/example/entities/semaphore.md"
+      ],
+      "category": "missing-information",
+      "answer_support": "not recorded; navigation only"
+    }
+  ]
+}

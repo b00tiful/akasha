@@ -134,7 +134,8 @@ export async function benchmark(values) {
   const repeats = Number(values.repeats ?? "1");
   if (!Number.isInteger(repeats) || repeats < 1 || repeats > 5) throw new Error("Use 1..5 repeats");
   const out = resolve(values.out); await mkdir(dirname(out), { recursive: true }); await mkdir(out);
-  const corpusBytes = await readFile(corpusPath); const corpus = JSON.parse(corpusBytes);
+  const selectedCorpus = resolve(values.corpus ?? corpusPath);
+  const corpusBytes = await readFile(selectedCorpus); const corpus = JSON.parse(corpusBytes);
   const root = await createFixture(out, corpus); const before = await snapshot(root);
   const cli = resolve(values.cli ?? join(workspace, "target/debug/akasha"));
   const cliHash = digest(await readFile(cli)); const runnerHash = digest(await readFile(new URL("./local-librarian.mjs", import.meta.url)));
@@ -182,7 +183,7 @@ export async function benchmark(values) {
         irrelevant: result.selected.irrelevant, wall_ms: Math.round(result.wall_ms) }) + "\n");
     }
     const after = await snapshot(root); assert.deepEqual(after, before, "Benchmark sources changed");
-    assert.equal(digest(await readFile(corpusPath)), digest(corpusBytes), "Corpus labels changed");
+    assert.equal(digest(await readFile(selectedCorpus)), digest(corpusBytes), "Corpus labels changed");
     assert.equal(digest(await readFile(new URL("./local-librarian.mjs", import.meta.url))), runnerHash, "Runner changed");
     const summary = { live: !!values.live, corpus_sha256: digest(corpusBytes), cli_sha256: cliHash,
       runner_sha256: runnerHash, packet: aggregate(results, "packet"), selected: aggregate(results, "selected"),
@@ -201,7 +202,7 @@ export async function benchmark(values) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { values } = parseArgs({ options: {
-    out: { type: "string" }, cli: { type: "string" }, live: { type: "boolean", default: false },
+    out: { type: "string" }, cli: { type: "string" }, corpus: { type: "string" }, live: { type: "boolean", default: false },
     server: { type: "string" }, model: { type: "string" }, "model-sha256": { type: "string" },
     "gpu-layers": { type: "string" }, threads: { type: "string" }, repeats: { type: "string" },
   } });

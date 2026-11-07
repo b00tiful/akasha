@@ -421,3 +421,165 @@ fn source_link_limit_reports_omissions() {
     assert_eq!(checked.matches[0].links.len(), 20);
     assert_eq!(checked.matches[0].omitted_links, 5);
 }
+
+#[test]
+fn librarian_selects_later_query_coverage_with_exact_physical_lines() {
+    let f = fixture("librarian-ranked-lines");
+    let id = "Projects/alpha/entities/core.md";
+    let target = "Final renderer deadline is 45 seconds. 🌍\n";
+    append_link_source(
+        &f.root,
+        id,
+        &format!(
+            "\nRenderer diary\n{}\n{target}",
+            "Unrelated observation.\n".repeat(120)
+        ),
+    );
+    refresh(&f);
+    let before = link_fixture_snapshot(&f.root);
+    let packet = prepare_librarian(&f.request, "Final renderer deadline", &[], None).unwrap();
+    let item = &packet.evidence[0];
+    assert_eq!(item.excerpt, target);
+    assert!(item.excerpt_truncated);
+    let source = fs::read_to_string(f.root.join(id)).unwrap();
+    let expected_line = source[..source.find(target).unwrap()]
+        .bytes()
+        .filter(|b| *b == b'\n')
+        .count()
+        + 1;
+    assert_eq!(
+        (item.line_start, item.line_end),
+        (expected_line, expected_line)
+    );
+    let checked = akasha_core::librarian::check_librarian_sources(
+        &f.request,
+        &packet,
+        &source_selection(1, None),
+    )
+    .unwrap();
+    assert_eq!(checked.matches[0].quote, target);
+    assert_eq!(before, link_fixture_snapshot(&f.root));
+}
+
+#[test]
+fn librarian_does_not_fill_a_quote_with_an_unrelated_long_following_line() {
+    let f = fixture("librarian-context-target");
+    let target = "Packet limit: 9 items.\n";
+    append_link_source(
+        &f.root,
+        "Projects/alpha/entities/core.md",
+        &format!("\n{target}{}\n", "z".repeat(4000)),
+    );
+    refresh(&f);
+    let packet = prepare_librarian(&f.request, "packet limit", &[], None).unwrap();
+    assert_eq!(packet.evidence[0].excerpt, target);
+    assert!(packet.evidence[0].excerpt_truncated);
+}
+
+#[test]
+fn librarian_short_notes_preserve_facts_before_a_query_heavy_reference() {
+    let f = fixture("librarian-short-context");
+    append_link_source(
+        &f.root,
+        "Projects/alpha/entities/core.md",
+        "\nThe chosen retry limit is 9.\nSee RETRY_POLICY_TAG for details.\n",
+    );
+    refresh(&f);
+    let packet = prepare_librarian(&f.request, "retry policy tag", &[], None).unwrap();
+    assert!(
+        packet.evidence[0]
+            .excerpt
+            .contains("The chosen retry limit is 9.")
+    );
+    assert!(packet.evidence[0].excerpt.contains("RETRY_POLICY_TAG"));
+    assert!(!packet.evidence[0].excerpt_truncated);
+}
+
+#[test]
+fn librarian_anchor_without_body_terms_keeps_the_bounded_leading_context() {
+    let f = fixture("librarian-anchor-fallback");
+    let id = "Projects/alpha/entities/core.md";
+    append_link_source(
+        &f.root,
+        id,
+        &format!("\nOpening detail {}\n", "x".repeat(2000)),
+    );
+    refresh(&f);
+    let packet = prepare_librarian(&f.request, "Explain", &[], Some(id)).unwrap();
+    assert_eq!(packet.evidence[0].id, id);
+    assert!(packet.evidence[0].excerpt.contains("Opening detail"));
+    assert_eq!(packet.evidence[0].excerpt.chars().count(), 1000);
+    assert!(packet.evidence[0].excerpt_truncated);
+}
+
+#[test]
+fn librarian_searches_recorded_status_without_a_status_taxonomy() {
+    let f = fixture("librarian-status-terms");
+    fs::write(f.root.join("Projects/alpha/entities/core.md"), "---\nschema_version: 1\nentity: core\nkind: subsystem\nstatus: awaiting-review\nreviewed: 2026-11-07\n---\n\nA compatibility transport.\n").unwrap();
+    refresh(&f);
+    let before = link_fixture_snapshot(&f.root);
+    let packet = prepare_librarian(&f.request, "Find awaiting notes", &[], None).unwrap();
+    assert_eq!(packet.evidence.len(), 1);
+    assert_eq!(
+        packet.evidence[0].status.as_deref(),
+        Some("awaiting-review")
+    );
+    assert!(
+        prepare_librarian(&f.request, "await", &[], None)
+            .unwrap()
+            .evidence
+            .is_empty()
+    );
+    assert_eq!(
+        prepare_librarian(&f.request, "literal", &["waiting-rev".into()], None)
+            .unwrap()
+            .evidence
+            .len(),
+        1
+    );
+    assert_eq!(before, link_fixture_snapshot(&f.root));
+}
+
+#[test]
+fn librarian_filename_rank_resists_body_noise_and_retains_anchor_priority() {
+    let f = fixture("librarian-identity-rank");
+    let target = "Projects/alpha/entities/archive-retention.md";
+    let base = "---\nschema_version: 1\nentity: sample\nkind: subsystem\nstatus: active\nreviewed: 2026-11-07\n---\n\n";
+    fs::write(
+        f.root.join(target),
+        format!("{base}The accepted value is 14.\n"),
+    )
+    .unwrap();
+    let mut entities = vec![
+        "entities/core.md".to_owned(),
+        "entities/archive-retention.md".into(),
+    ];
+    for i in 0..8 {
+        let relative = format!("entities/chat-{i}.md");
+        fs::write(
+            f.root.join("Projects/alpha").join(&relative),
+            format!("{base}Archive retention limit is a copied question, not an accepted value.\n"),
+        )
+        .unwrap();
+        entities.push(relative);
+    }
+    let anchor = "Projects/alpha/entities/core.md";
+    let neighbor = "Projects/alpha/records/tasks/ship-mvp.md";
+    append_link_source(&f.root, anchor, &format!("\n[[{neighbor}|Next task]]\n"));
+    support::write_project_state(
+        &f.root.join("Projects/alpha"),
+        &[],
+        &entities.iter().map(String::as_str).collect::<Vec<_>>(),
+        &["records/tasks/ship-mvp.md"],
+    );
+    let before = link_fixture_snapshot(&f.root);
+    let packet = prepare_librarian(&f.request, "archive retention limit", &[], None).unwrap();
+    assert_eq!(packet.evidence[0].id, target);
+    assert_eq!(packet.evidence.len(), 6);
+    assert!(packet.omitted_notes > 0);
+    let anchored =
+        prepare_librarian(&f.request, "archive retention limit", &[], Some(anchor)).unwrap();
+    assert_eq!(anchored.evidence[0].id, anchor);
+    assert_eq!(anchored.evidence[1].id, neighbor);
+    assert_eq!(before, link_fixture_snapshot(&f.root));
+}

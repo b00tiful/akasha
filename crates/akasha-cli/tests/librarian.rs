@@ -143,7 +143,13 @@ fn librarian_source_cli_outputs_only_checked_passages_and_rejects_claims() {
         "Projects/example/records/problems/open.md"
     );
     assert!(value.get("answer").is_none());
-    assert_eq!(value["matches"][0]["partial_body"], true);
+    let source = fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "../../tests/fixtures/resolution/valid-root/Projects/example/records/problems/open.md",
+    ))
+    .unwrap();
+    let body = source.split_once("\n---\n").unwrap().1;
+    assert_eq!(value["matches"][0]["quote"], body);
+    assert_eq!(value["matches"][0]["partial_body"], false);
     for bad in [
         r#"{"selections":[{"citation":1,"quote":"invented cause"}]}"#,
         r#"{"selections":[],"claims":[]}"#,

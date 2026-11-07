@@ -13,6 +13,11 @@ does not assert that those sources answer the question. Literal/anchor controls 
 stress case are reported separately from unassisted questions. The missing-owner question scores
 navigation only: its answer is absent. No result is scored as correct free-form answering.
 
+Use `--corpus tests/fixtures/librarian-benchmark/holdout.json` for the 19-note/12-question release
+project, authored and frozen before the ranked-passage correction. Its author knows the original
+failure classes; this is new-domain validation, not an external blind benchmark. The default
+corpus remains unchanged. `--cli /path/to/frozen-akasha` supports before/after executable comparison.
+
 Build the normal CLI, then run without a model:
 
 ```sh

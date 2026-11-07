@@ -6,8 +6,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { scoreSources, verifySources } from "./benchmark-local-librarian.mjs";
 
-test("predeclared benchmark labels refer to real source text and scoped identities", async () => {
-  const corpus = JSON.parse(await readFile(new URL("../tests/fixtures/librarian-benchmark/corpus.json", import.meta.url)));
+for (const file of ["corpus.json", "holdout.json"]) test(`${file}: labels refer to real source text and scoped identities`, async () => {
+  const corpus = JSON.parse(await readFile(new URL(`../tests/fixtures/librarian-benchmark/${file}`, import.meta.url)));
   const notes = new Map(corpus.notes.map(note => ["Projects/example/" + note.path, note.body]));
   assert.equal(notes.size, corpus.notes.length); assert.equal(new Set(corpus.cases.map(item => item.id)).size, corpus.cases.length);
   for (const item of corpus.cases) {
