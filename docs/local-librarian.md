@@ -1,5 +1,8 @@
 # Local librarian source passages
 
+The separate [bounded investigator experiment](local-investigator.md) can request scoped follow-up
+reads. This source-selector command retains its existing one-packet behavior and policy.
+
 The development runner uses llama.cpp to select useful **source IDs**. Rust supplies the exact
 quoted passages, recorded status, physical line ranges and scoped wikilinks. The model cannot
 supply an explanation, rewrite a quote or invent a displayed relationship through this interface.

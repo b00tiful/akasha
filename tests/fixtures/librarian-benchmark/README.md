@@ -1,5 +1,9 @@
 # Librarian retrieval benchmark
 
+`investigator.json` freezes six references to the existing memory cases plus two real-index code
+smoke tasks for the separate [bounded investigator comparison](../../../docs/local-investigator.md).
+It introduces no new claims of blind validation and does not change the original corpus/labels.
+
 This fictional systems project has 33 canonical notes and 25 predeclared questions. It tests
 exact lookup, paraphrases, long-note passage loss, historical/current decisions, recorded links,
 hostile instructions in a note, Russian/Chinese text, missing information, metadata-only queries,

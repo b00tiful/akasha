@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "description": "Frozen reuse of six existing synthetic memory tasks plus two existing-index code smoke tasks; no independently blind claims.",
+  "cases": [
+    { "id": "exact-ledger", "memory_case": "exact-ledger" },
+    { "id": "paraphrase-upload", "memory_case": "paraphrase-upload" },
+    { "id": "repair-chain", "memory_case": "repair-chain" },
+    { "id": "injection-routing", "memory_case": "injection-routing" },
+    { "id": "unknown-owner", "memory_case": "unknown-owner" },
+    { "id": "scope-canary", "memory_case": "scope-canary" },
+    { "id": "code-tokenizer", "question": "Find the implementation of tokenizeLibrarianPrompt in local-librarian.mjs.", "code_query": "tokenizeLibrarianPrompt", "required_code": ["parse_special", "payload"] },
+    { "id": "code-budget", "question": "Find how chooseContext in local-librarian.mjs reserves output token space.", "code_query": "chooseContext", "required_code": ["OUTPUT_TOKENS", "promptTokens"] }
+  ]
+}

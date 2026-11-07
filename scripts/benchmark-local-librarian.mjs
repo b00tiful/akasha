@@ -57,7 +57,7 @@ async function snapshot(directory, prefix = "") {
   return files;
 }
 
-async function createFixture(out, corpus) {
+export async function createFixture(out, corpus) {
   const root = join(out, "root");
   await cp(join(workspace, "tests/fixtures/resolution/valid-root"), root, { recursive: true });
   await mkdir(join(out, "repository"));
