@@ -126,6 +126,12 @@ async function startWorker(options) {
 
 export async function localChat(packet, { server, model, modelSha256, maxContext = 8192,
   gpuLayers = 0, threads = Math.min(4, availableParallelism()), signal, timeoutMs = 120_000 }) {
+  const began = performance.now();
+  const phaseMs = {}; let checkpoint = began; let metrics;
+  const mark = name => {
+    const now = performance.now();
+    phaseMs[name] = (phaseMs[name] ?? 0) + now - checkpoint; checkpoint = now;
+  };
   const payload = JSON.stringify(packet);
   if (Buffer.byteLength(payload) > 16_000) throw new Error("Evidence exceeds 16000 bytes");
   if (!packet.evidence.length) return { answer: '{"selections":[]}', metrics: { skipped: true } };
@@ -141,6 +147,7 @@ export async function localChat(packet, { server, model, modelSha256, maxContext
   try { const magic = Buffer.alloc(4); await header.read(magic, 0, 4, 0);
     if (magic.toString() !== "GGUF") throw new Error("Local model must be GGUF");
   } finally { await header.close(); }
+  mark("model_verify");
   const serverDigest = await fingerprint(server, combined);
   const directory = await mkdtemp(join(tmpdir(), "akasha-llama-"));
   await chmod(directory, 0o700);
@@ -154,10 +161,12 @@ export async function localChat(packet, { server, model, modelSha256, maxContext
     }
     const key = randomBytes(32).toString("hex"); const keyFile = join(directory, "api-key");
     await writeFile(keyFile, key + "\n", { mode: 0o600, flag: "wx" });
+    mark("runtime_verify");
     const options = { server, model, directory, env, key, keyFile, gpuLayers, threads, signal: combined, timeoutMs };
     let context = 4096;
     const started = performance.now();
     worker = await startWorker({ ...options, context });
+    let workerStarts = 1; mark("worker_start");
     const messages = [{ role: "system", content: instructions }, { role: "user", content: payload }];
     const render = async () => {
       const rendered = await worker.call("/apply-template", { messages, chat_template_kwargs: { enable_thinking: false } });
@@ -168,11 +177,15 @@ export async function localChat(packet, { server, model, modelSha256, maxContext
       return result.tokens;
     };
     const tokens = await render();
+    mark("template_tokenize");
     const selected = chooseContext(tokens.length, maxContext);
     if (selected !== context) {
       await worker.stop(); worker = undefined; context = selected;
+      mark("context_restart_stop");
       worker = await startWorker({ ...options, context });
+      workerStarts += 1; mark("worker_start");
       if (JSON.stringify(await render()) !== JSON.stringify(tokens)) throw new Error("Local prompt changed on worker restart");
+      mark("template_tokenize");
     }
     const result = await worker.call("/completion", { prompt: tokens, n_predict: OUTPUT_TOKENS,
       temperature: 0, seed: 7, stream: false, cache_prompt: false, json_schema: sourceSchema(packet) });
@@ -180,19 +193,26 @@ export async function localChat(packet, { server, model, modelSha256, maxContext
       || typeof result.content !== "string" || Buffer.byteLength(result.content) > 16_000) {
       throw new Error("Local answer is incomplete, oversized or truncated");
     }
+    mark("completion");
     if (await fingerprint(model, combined) !== modelDigest || await fingerprint(server, combined) !== serverDigest) {
       throw new Error("Local model or binary changed during generation");
     }
-    const metrics = { runtime: "llama.cpp", build: BUILD, model_sha256: modelDigest, server_sha256: serverDigest,
+    mark("drift_verify");
+    metrics = { runtime: "llama.cpp", build: BUILD, model_sha256: modelDigest, server_sha256: serverDigest,
       context, prompt_tokens: tokens.length, output_limit: OUTPUT_TOKENS, gpu_layers: gpuLayers, threads,
-      elapsed_ms: performance.now() - started, timings: result.timings };
+      elapsed_ms: performance.now() - started, timings: result.timings, worker_starts: workerStarts, phase_ms: phaseMs };
     return { answer: result.content, metrics };
   } finally {
-    try { if (worker) await worker.stop(); } finally { await rm(directory, { recursive: true, force: true }); }
+    try { if (worker) await worker.stop(); } finally {
+      await rm(directory, { recursive: true, force: true });
+      mark("cleanup");
+      if (metrics) metrics.total_ms = checkpoint - began;
+    }
   }
 }
 
 async function main() {
+  const commandStarted = performance.now();
   const { values } = parseArgs({ options: {
     root: { type: "string" }, project: { type: "string" }, question: { type: "string" },
     server: { type: "string" }, model: { type: "string" }, "model-sha256": { type: "string" },
@@ -209,11 +229,13 @@ async function main() {
   const base = ["--root", resolve(values.root), "--project", values.project];
   const run = args => execFileSync(join(workspace, "target/debug/akasha"), [...base, ...args], {
     encoding: "utf8", timeout: 30_000, maxBuffer: 2 ** 20, stdio: ["ignore", "pipe", "pipe"] });
-  let temporary;
+  let temporary; let metrics;
   try {
     const args = ["--json", "librarian-prepare", values.question, ...values.term.flatMap(term => ["--term", term])];
     if (values.note) args.push("--note", values.note);
+    const prepareStarted = performance.now();
     const packet = JSON.parse(run(args));
+    const prepareMs = performance.now() - prepareStarted;
     const result = await localChat(packet, { server: values.server, model: values.model, modelSha256: values["model-sha256"],
       maxContext: Number(values["max-context"]), gpuLayers: Number(values["gpu-layers"]), threads: Number(values.threads), signal: controller.signal });
     controller.signal.throwIfAborted();
@@ -221,11 +243,13 @@ async function main() {
     const packetPath = join(temporary, "packet.json"); const answerPath = join(temporary, "answer.json");
     await writeFile(packetPath, JSON.stringify(packet), { mode: 0o600, flag: "wx" });
     await writeFile(answerPath, result.answer, { mode: 0o600, flag: "wx" });
+    const checkStarted = performance.now();
     process.stdout.write(run([...(values.json ? ["--json"] : []), "librarian-check-sources", "--packet", packetPath, "--selection", answerPath]));
-    process.stderr.write(`${JSON.stringify(result.metrics)}\n`);
+    metrics = { ...result.metrics, core_prepare_ms: prepareMs, core_check_ms: performance.now() - checkStarted };
   } finally {
     if (temporary) await rm(temporary, { recursive: true, force: true });
     process.removeListener("SIGINT", cancel); process.removeListener("SIGTERM", cancel);
+    if (metrics) process.stderr.write(`${JSON.stringify({ ...metrics, command_ms: performance.now() - commandStarted })}\n`);
   }
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

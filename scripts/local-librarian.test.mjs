@@ -29,6 +29,11 @@ function stopped(events) {
 test("owned authenticated worker uses local-only arguments, tokenized schema request and exits", async t => {
   const f = await fixture(t); const result = await localChat(packet, f); const events = await f.events();
   assert.equal(result.metrics.context, 4096); assert.equal(result.metrics.prompt_tokens, 200);
+  assert.equal(result.metrics.worker_starts, 1);
+  for (const phase of ["model_verify", "runtime_verify", "worker_start", "template_tokenize", "completion", "drift_verify", "cleanup"]) {
+    assert(Number.isFinite(result.metrics.phase_ms[phase]) && result.metrics.phase_ms[phase] >= 0);
+  }
+  assert(Math.abs(Object.values(result.metrics.phase_ms).reduce((sum, ms) => sum + ms, 0) - result.metrics.total_ms) < 0.01);
   const args = events.find(event => event.start).args;
   for (const flag of ["--offline", "--no-webui", "--no-agent", "--no-context-shift"]) assert(args.includes(flag));
   assert(!args.includes("--tools")); assert.equal(args[args.indexOf("--cache-ram") + 1], "0");
@@ -44,6 +49,7 @@ test("owned authenticated worker uses local-only arguments, tokenized schema req
 test("larger prompts restart at exact budget and release both workers", async t => {
   const f = await fixture(t, "larger"); const result = await localChat(packet, f); const events = await f.events();
   assert.equal(result.metrics.context, 8192); assert.equal(events.filter(event => event.start).length, 2); stopped(events);
+  assert.equal(result.metrics.worker_starts, 2); assert(result.metrics.phase_ms.context_restart_stop >= 0);
 });
 test("oversized token budget refuses before generation and stops worker", async t => {
   const f = await fixture(t, "too-large"); await assert.rejects(localChat(packet, f), /context budget/);

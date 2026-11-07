@@ -91,3 +91,16 @@ External/cloud onboarding remains available. Local onboarding, changeable route 
 local-only privacy mode are accepted later work. Run `node --test scripts/local-librarian.test.mjs`
 for local transport/lifecycle tests and `cargo test --workspace` for Rust verification. Live model
 checks must distinguish quote integrity, topical relevance and actual answer support.
+
+The repeatable [retrieval benchmark](../tests/fixtures/librarian-benchmark/README.md) contains
+fictional long notes, distractors, conflicting policies, multilingual questions and hostile note
+instructions. It records retrieval coverage separately from model selection. No private project
+is sent to a model by that harness, and it never downloads a runtime or weights.
+
+Successful requests now report `phase_ms`, `worker_starts` and `total_ms` alongside the existing
+metrics on stderr. Phases separate initial model verification, runtime verification, worker startup,
+template/tokenization, any context-restart shutdown, completion, drift verification and cleanup.
+`total_ms` includes local setup/cleanup; historical `elapsed_ms` excludes initial verification and
+final cleanup. The command also reports `core_prepare_ms`, `core_check_ms` and `command_ms`.
+No-match requests still skip all model access. Timing instrumentation does not relax hash,
+authentication, token-budget or cleanup checks.
