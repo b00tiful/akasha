@@ -36,6 +36,9 @@ test("owned authenticated worker uses local-only arguments, tokenized schema req
   assert.equal(rendered.messages[1].content, JSON.stringify(packet));
   const sent = events.find(event => event.path === "/completion").body;
   assert.equal(sent.prompt.length, 200); assert.equal(sent.n_predict, 1024); assert(sent.json_schema);
+  const item = sent.json_schema.properties.selections.items;
+  assert.deepEqual(Object.keys(item.properties), ["citation"]);
+  assert.deepEqual(item.properties.citation.enum, [1]);
   assert.equal(sent.cache_prompt, false); stopped(events);
 });
 test("larger prompts restart at exact budget and release both workers", async t => {

@@ -10,7 +10,7 @@ use crate::note_links::{NoteLinksError, read_checked_source, refuse_pending_jour
 use crate::project_validation::{
     ProjectValidationError, canonical_note_paths, validate_project, wikilink_target_path,
 };
-use crate::resolution::{ResolveRequest, load_root_config};
+use crate::resolution::{ResolveRequest, load_root_config, resolve_project};
 use crate::state::content_fingerprint;
 use crate::validation::{ValidationError, parse_leading_frontmatter};
 use crate::wikilink::parse_wikilinks;
@@ -69,6 +69,92 @@ pub struct CheckedLibrarianAnswer {
     pub evidence: Vec<LibrarianEvidence>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LibrarianSourceSelection {
+    pub selections: Vec<LibrarianSelectedQuote>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LibrarianSelectedQuote {
+    pub citation: usize,
+    #[serde(default)]
+    pub quote: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LibrarianRecordedLink {
+    pub target: String,
+    pub wikilink: String,
+    pub line: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LibrarianSourcePassage {
+    pub citation: usize,
+    pub id: String,
+    pub fingerprint: String,
+    pub status: Option<String>,
+    pub line_start: usize,
+    pub line_end: usize,
+    pub partial_body: bool,
+    pub quote: String,
+    pub links: Vec<LibrarianRecordedLink>,
+    pub omitted_links: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CheckedLibrarianSources {
+    pub schema_version: u32,
+    pub kind: &'static str,
+    pub project: String,
+    pub question: String,
+    pub link_scope: &'static str,
+    pub matches: Vec<LibrarianSourcePassage>,
+}
+
+fn automatic_term(word: &str) -> bool {
+    word.chars().count() >= 3
+        && !matches!(
+            word,
+            "and"
+                | "are"
+                | "can"
+                | "did"
+                | "does"
+                | "for"
+                | "from"
+                | "how"
+                | "its"
+                | "please"
+                | "show"
+                | "tell"
+                | "that"
+                | "the"
+                | "their"
+                | "this"
+                | "was"
+                | "were"
+                | "what"
+                | "when"
+                | "where"
+                | "which"
+                | "who"
+                | "why"
+                | "with"
+        )
+}
+
+fn matches_term(text: &str, term: &str, automatic: bool) -> bool {
+    if automatic {
+        text.split(|ch: char| !ch.is_alphanumeric())
+            .any(|word| word == term)
+    } else {
+        text.contains(term)
+    }
+}
+
 fn invalid(path: &Path, message: &str) -> NoteLinksError {
     ProjectValidationError::InvalidDocument {
         path: path.to_path_buf(),
@@ -107,9 +193,9 @@ pub fn prepare_librarian(
     let needles: BTreeSet<String> = if terms.is_empty() {
         question
             .split(|ch: char| !ch.is_alphanumeric())
-            .filter(|word| word.chars().count() >= 3)
-            .take(32)
             .map(str::to_lowercase)
+            .filter(|word| automatic_term(word))
+            .take(32)
             .collect()
     } else {
         terms
@@ -167,7 +253,10 @@ pub fn prepare_librarian(
         let folded_id = id.to_lowercase();
         let score = needles
             .iter()
-            .filter(|term| folded.contains(term.as_str()) || folded_id.contains(term.as_str()))
+            .filter(|term| {
+                matches_term(&folded, term, terms.is_empty())
+                    || matches_term(&folded_id, term, terms.is_empty())
+            })
             .count()
             + usize::from(neighbors.contains(id)) * 64
             + usize::from(note == Some(id.as_str())) * 128;
@@ -180,7 +269,7 @@ pub fn prepare_librarian(
         for line in parsed.body.split_inclusive('\n') {
             if needles
                 .iter()
-                .any(|term| line.to_lowercase().contains(term.as_str()))
+                .any(|term| matches_term(&line.to_lowercase(), term, terms.is_empty()))
             {
                 break;
             }
@@ -305,4 +394,178 @@ pub fn check_librarian_answer(
         answer,
         evidence: packet.evidence.clone(),
     })
+}
+
+/// Verify selected source bytes and derive links, without accepting generated factual claims.
+pub fn check_librarian_sources(
+    request: &ResolveRequest,
+    packet: &LibrarianPacket,
+    selection: &str,
+) -> Result<CheckedLibrarianSources, NoteLinksError> {
+    if selection.len() > MAX_LIBRARIAN_ANSWER_BYTES {
+        return Err(invalid(
+            &request.cwd,
+            "source selection exceeds 16000 bytes",
+        ));
+    }
+    let fresh = prepare_librarian(
+        request,
+        &packet.question,
+        &packet.terms,
+        packet.note.as_deref(),
+    )?;
+    if fresh != *packet {
+        return Err(NoteLinksError::StaleSource(
+            "librarian evidence packet".into(),
+        ));
+    }
+    let selected: LibrarianSourceSelection = serde_json::from_str(selection)
+        .map_err(|_| invalid(&request.cwd, "invalid librarian source-selection JSON"))?;
+    if selected.selections.len() > MAX_SOURCES {
+        return Err(invalid(&request.cwd, "select at most six source passages"));
+    }
+    let resolved = resolve_project(request).map_err(ProjectValidationError::from)?;
+    if resolved.project != packet.project {
+        return Err(NoteLinksError::StaleSource("librarian project".into()));
+    }
+    let available: BTreeSet<_> = packet
+        .evidence
+        .iter()
+        .map(|item| item.id.as_str())
+        .collect();
+    let mut seen = BTreeSet::new();
+    let mut matches = Vec::new();
+    for item in selected.selections {
+        let evidence = packet
+            .evidence
+            .iter()
+            .find(|entry| entry.citation == item.citation)
+            .ok_or_else(|| invalid(&resolved.root, "unknown source citation"))?;
+        let quote = item.quote.unwrap_or_else(|| evidence.excerpt.clone());
+        if !seen.insert(item.citation)
+            || quote.trim().is_empty()
+            || quote.chars().count() > EXCERPT_CHARS
+            || quote
+                .chars()
+                .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
+        {
+            return Err(invalid(
+                &resolved.root,
+                "use unique citations and 1..1000 source characters without terminal controls",
+            ));
+        }
+        let offset = evidence.excerpt.find(&quote).ok_or_else(|| {
+            invalid(
+                &resolved.root,
+                "quote is not an exact source excerpt substring",
+            )
+        })?;
+        let after_first = offset + quote.chars().next().expect("nonempty quote").len_utf8();
+        if evidence.excerpt[after_first..].contains(&quote) {
+            return Err(invalid(
+                &resolved.root,
+                "quote occurs more than once; select an unambiguous passage",
+            ));
+        }
+        let path = resolved.root.join(&evidence.id);
+        if !path.starts_with(&resolved.project_dir) {
+            return Err(invalid(&path, "source is outside the selected project"));
+        }
+        let source = read_checked_source(&resolved.root, &path)?;
+        if content_fingerprint(source.as_bytes()) != evidence.fingerprint {
+            return Err(NoteLinksError::StaleSource(evidence.id.clone()));
+        }
+        let excerpt_start = if evidence.line_start == 1 {
+            Some(0)
+        } else {
+            source
+                .match_indices('\n')
+                .nth(evidence.line_start - 2)
+                .map(|(index, _)| index + 1)
+        }
+        .ok_or_else(|| NoteLinksError::StaleSource(evidence.id.clone()))?;
+        if source.get(excerpt_start..excerpt_start + evidence.excerpt.len())
+            != Some(evidence.excerpt.as_str())
+        {
+            return Err(NoteLinksError::StaleSource(evidence.id.clone()));
+        }
+        let quote_start = excerpt_start + offset;
+        let quote_end = quote_start + quote.len();
+        let line_start = 1 + source[..quote_start]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count();
+        let line_end = line_start
+            + quote
+                .strip_suffix('\n')
+                .unwrap_or(&quote)
+                .bytes()
+                .filter(|byte| *byte == b'\n')
+                .count();
+        let parsed = parse_leading_frontmatter(&source)
+            .map_err(|error| invalid(&path, &error.to_string()))?;
+        let body_start = source.len() - parsed.body.len();
+        let mut links = Vec::new();
+        let mut omitted_links = 0;
+        let mut seen_links = BTreeSet::new();
+        for link in
+            parse_wikilinks(parsed.body).map_err(|error| invalid(&path, &error.to_string()))?
+        {
+            let from = body_start + link.from;
+            let to = body_start + link.to;
+            if from < quote_start || to > quote_end {
+                continue;
+            }
+            let target = match link.target {
+                Some(target) => {
+                    let relative =
+                        wikilink_target_path(target).map_err(|error| invalid(&path, &error))?;
+                    vault_id(&resolved.root, &resolved.root.join(relative))?
+                }
+                None => evidence.id.clone(),
+            };
+            let raw = &source[from..to];
+            if !available.contains(target.as_str()) || links.len() == 20 {
+                omitted_links += 1;
+            } else if seen_links.insert((target.clone(), raw.to_owned())) {
+                links.push(LibrarianRecordedLink {
+                    target,
+                    wikilink: raw.to_owned(),
+                    line: 1 + source[..from].bytes().filter(|byte| *byte == b'\n').count(),
+                });
+            }
+        }
+        matches.push(LibrarianSourcePassage {
+            citation: evidence.citation,
+            id: evidence.id.clone(),
+            fingerprint: evidence.fingerprint.clone(),
+            status: evidence.status.clone(),
+            line_start,
+            line_end,
+            partial_body: evidence.excerpt_truncated || quote != evidence.excerpt,
+            quote,
+            links,
+            omitted_links,
+        });
+    }
+    refuse_pending_journals(std::slice::from_ref(request))?;
+    let checked = CheckedLibrarianSources {
+        schema_version: 1,
+        kind: "source_passages",
+        project: packet.project.clone(),
+        question: packet.question.clone(),
+        link_scope: "complete_wikilinks_in_quotes_targeting_this_evidence_packet",
+        matches,
+    };
+    if serde_json::to_vec(&checked)
+        .expect("serializable source passages")
+        .len()
+        > 65_536
+    {
+        return Err(invalid(
+            &resolved.root,
+            "checked source passages exceed 65536 bytes",
+        ));
+    }
+    Ok(checked)
 }

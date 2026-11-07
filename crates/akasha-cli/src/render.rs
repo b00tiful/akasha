@@ -100,6 +100,54 @@ pub(crate) fn render_librarian_answer(
     write_stdout(&text)
 }
 
+pub(crate) fn render_librarian_sources(
+    checked: &akasha_core::librarian::CheckedLibrarianSources,
+    output: OutputMode,
+) -> io::Result<()> {
+    if output.json {
+        return write_stdout(&json_line(serde_json::to_string_pretty(checked))?);
+    }
+    let mut text = String::from("Source passages — exact text verified; relevance needs review.\n");
+    if checked.matches.is_empty() {
+        text.push_str("No source passages selected. Retrieval may be incomplete.\n");
+    }
+    for item in &checked.matches {
+        let _ = writeln!(
+            text,
+            "[{}] {}:{}–{}\nRecorded status: {}\nPartial body: {}",
+            item.citation,
+            librarian_display(&item.id),
+            item.line_start,
+            item.line_end,
+            librarian_display(item.status.as_deref().unwrap_or("not recorded")),
+            item.partial_body
+        );
+        for line in item.quote.lines() {
+            let _ = writeln!(text, "  | {}", librarian_display(line));
+        }
+        for link in &item.links {
+            let _ = writeln!(
+                text,
+                "Recorded wikilink at line {}: {} -> {}",
+                link.line,
+                librarian_display(&link.wikilink),
+                librarian_display(&link.target)
+            );
+        }
+        if item.omitted_links > 0 {
+            let _ = writeln!(
+                text,
+                "{} quoted links omitted by scope/limit.",
+                item.omitted_links
+            );
+        }
+    }
+    text.push_str(
+        "Link scope: complete wikilinks in these quotes targeting this evidence packet.\n",
+    );
+    write_stdout(&text)
+}
+
 fn librarian_display(value: &str) -> String {
     value
         .chars()

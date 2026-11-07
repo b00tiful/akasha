@@ -84,6 +84,13 @@ enum Command {
         #[arg(long)]
         answer: PathBuf,
     },
+    /// Verify exact source quotes and derive recorded links (no model or writes).
+    LibrarianCheckSources {
+        #[arg(long)]
+        packet: PathBuf,
+        #[arg(long)]
+        selection: PathBuf,
+    },
     /// Show validated cross-project metrics in project-name order.
     Status {
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u16).range(1..=100))]
@@ -369,6 +376,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             Command::SetupRoot { .. }
             | Command::LibrarianPrepare { .. }
             | Command::LibrarianCheck { .. }
+            | Command::LibrarianCheckSources { .. }
             | Command::RecoverInit { .. }
             | Command::Onboard
             | Command::CreateEvent { .. }
@@ -435,6 +443,22 @@ fn run(cli: Cli) -> Result<(), u8> {
                         error.exit_code()
                     })?;
             finish_output(render::render_librarian_answer(&checked, output))?;
+        }
+        Command::LibrarianCheckSources { packet, selection } => {
+            let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
+            let packet_text = read_librarian_input(&packet)?;
+            let packet = serde_json::from_str(&packet_text).map_err(|_| {
+                eprintln!("akasha: invalid librarian packet JSON");
+                4
+            })?;
+            let selection = read_librarian_input(&selection)?;
+            let checked =
+                akasha_core::librarian::check_librarian_sources(&request, &packet, &selection)
+                    .map_err(|error| {
+                        eprintln!("akasha: {error}");
+                        error.exit_code()
+                    })?;
+            finish_output(render::render_librarian_sources(&checked, output))?;
         }
         Command::Tui { .. } => unreachable!("interactive dispatch handled above"),
         Command::Status { limit } | Command::Digest { limit } => {

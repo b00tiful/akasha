@@ -24,7 +24,7 @@ const server = http.createServer(async (request, response) => {
     if (scenario === "hang") return;
     if (scenario === "drift") writeFileSync(model, "GGUFchanged");
     result = { stop: true, truncated: scenario === "truncated", stop_type: scenario === "limit" ? "limit" : "eos",
-      content: '{"insufficient_evidence":true,"claims":[]}', timings: { predicted_n: 8 } };
+      content: '{"selections":[]}', timings: { predicted_n: 8 } };
   }
   response.end(JSON.stringify(result));
 });

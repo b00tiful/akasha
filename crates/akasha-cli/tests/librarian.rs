@@ -98,3 +98,68 @@ fn librarian_actual_binary_checks_citations_and_bounds_input() {
     }
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn librarian_source_cli_outputs_only_checked_passages_and_rejects_claims() {
+    let dir = std::env::temp_dir().join(format!("akasha-cli-passages-{}", std::process::id()));
+    fs::create_dir(&dir).unwrap();
+    let packet = dir.join("packet.json");
+    let selection = dir.join("selection.json");
+    let prepared = run(&[
+        "--json",
+        "librarian-prepare",
+        "problem",
+        "--term",
+        "Synthetic open problem",
+    ]);
+    assert!(prepared.status.success());
+    fs::write(&packet, prepared.stdout).unwrap();
+    fs::write(&selection, r#"{"selections":[{"citation":1}]}"#).unwrap();
+    let args = [
+        "librarian-check-sources",
+        "--packet",
+        packet.to_str().unwrap(),
+        "--selection",
+        selection.to_str().unwrap(),
+    ];
+    let plain = run(&args);
+    assert!(
+        plain.status.success(),
+        "{}",
+        String::from_utf8_lossy(&plain.stderr)
+    );
+    let text = String::from_utf8(plain.stdout).unwrap();
+    assert!(text.contains("exact text verified; relevance needs review"));
+    assert!(
+        text.contains("Recorded status: open") && text.contains("  | # Synthetic open problem")
+    );
+    assert!(!text.contains('\u{1b}'));
+    let json = run(&[&["--json"][..], &args].concat());
+    assert!(json.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(value["kind"], "source_passages");
+    assert_eq!(
+        value["matches"][0]["id"],
+        "Projects/example/records/problems/open.md"
+    );
+    assert!(value.get("answer").is_none());
+    assert_eq!(value["matches"][0]["partial_body"], true);
+    for bad in [
+        r#"{"selections":[{"citation":1,"quote":"invented cause"}]}"#,
+        r#"{"selections":[],"claims":[]}"#,
+    ] {
+        fs::write(&selection, bad).unwrap();
+        let rejected = run(&args);
+        assert_eq!(rejected.status.code(), Some(4));
+        assert!(rejected.stdout.is_empty());
+    }
+    fs::write(&selection, r#"{"selections":[]}"#).unwrap();
+    let empty = run(&args);
+    assert!(empty.status.success());
+    assert!(
+        String::from_utf8(empty.stdout)
+            .unwrap()
+            .contains("No source passages selected")
+    );
+    fs::remove_dir_all(dir).unwrap();
+}

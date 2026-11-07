@@ -1,87 +1,93 @@
-# Local librarian pilot
+# Local librarian source passages
 
-The development runner uses **llama.cpp**, selected on 2026-11-07. Rust retrieves saved project
-notes and validates the generated answer; a short-lived, owned `llama-server` process performs
-inference. The desktop panel, name, model installer, local onboarding and privacy mode remain
-later work. The development runner requires Node; ordinary core/CLI use does not.
+The development runner uses llama.cpp to select useful **source IDs**. Rust supplies the exact
+quoted passages, recorded status, physical line ranges and scoped wikilinks. The model cannot
+supply an explanation, rewrite a quote or invent a displayed relationship through this interface.
+Relevance still needs review: a passage can be real without answering the question. This is a
+source-navigation prototype; the desktop panel, final name, model installer, local onboarding
+and privacy mode remain later work. Ordinary core/CLI use does not require Node or a model.
 
-Use Node 22 and the official llama.cpp **b12110 / commit cd959bae9** build (the v0.9.0 release
-points to this nightly). Download a build appropriate for your machine from the
-[official release](https://github.com/ggml-org/llama.cpp/releases/tag/b12110), verify the archive's
-SHA-256 against its GitHub release metadata, and keep its executable and libraries together.
-The runner checks the build identifier and records binary/model hashes. It does not download or
-install anything. Model weights have their own license; use a trusted local GGUF and its expected
-SHA-256. The existing Qwen3 1.7B Q4_K_M artifact is an evaluation model, not a final quality choice.
+Use Node 22 and the official llama.cpp **b12110 / commit cd959bae9** build from the
+[official release](https://github.com/ggml-org/llama.cpp/releases/tag/b12110). Verify the archive's
+SHA-256 against the GitHub release metadata and keep the executable with its libraries. The
+runner checks the build and records executable/model hashes; it does not install or download.
+Use a trusted local GGUF and its expected SHA-256. Model and runtime packages have separate
+licenses. The existing Qwen3 4B Q4_K_M artifact is an evaluation candidate.
 
-Build the CLI:
+Build and inspect retrieval without inference:
 
 ```sh
 cargo build --offline -p akasha-cli
-```
-
-Inspect retrieval without inference:
-
-```sh
 target/debug/akasha --root /path/to/memory --project example \
-  librarian-prepare "What caused the cache failure?" --term cache
+  librarian-prepare "Find notes about the cache failure" --term cache
 ```
 
-Run the local librarian:
+Run local source selection:
 
 ```sh
 node scripts/local-librarian.mjs --root /path/to/memory --project example \
   --server /path/to/llama-server --model /path/to/model.gguf \
   --model-sha256 EXPECTED_64_CHARACTER_LOWERCASE_SHA256 \
-  --question "What caused the cache failure?" --term cache
+  --question "Find notes about the cache failure" --term cache
 ```
 
-CPU is the default, with up to four threads. A compatible GPU build can use `--gpu-layers 99`;
-`--threads N` is explicit. The runner starts at 4K context, applies the model's chat template with
-thinking disabled, tokenizes the complete prompt and reserves 1,024 output tokens plus a safety
-margin. It restarts at a larger power-of-two context only when needed. Default maximum is 8K;
-`--max-context` accepts 4096, 8192, 16384 or 32768. Oversized prompts refuse before generation;
-narrow the terms or explicitly increase the maximum. Evidence bytes are not token counts.
+Plain text is default; `--json` returns `kind: "source_passages"` and `matches`. Each match contains
+its canonical ID, source fingerprint, recorded status, exact `quote`, line range, partial-body
+flag and recorded links. Empty matches mean no passage was selected, not that the project lacks
+an answer. Metrics go to stderr; errors are nonzero and do not display a successful result.
 
-The worker has one request slot, F16 cache, bounded batch sizes, no prompt cache/checkpoints or
-context shifting, offline mode, disabled Web UI/agent integration and no model tools. Its
-numeric-loopback channel uses a random authentication key kept in an owner-only temporary file.
-The runner supplies a restricted environment and verifies authenticated worker properties before
-sending evidence. It checks GGUF magic, expected model hash, pinned worker version and observed
-binary/model drift. A trusted binary/model is still required; these measures are not OS egress
-isolation or the deferred project-wide privacy mode.
+Repeat `--term` up to eight times for literal substring matching. Without explicit terms,
+automatic queries discard common English function words and match full alphanumeric tokens;
+this is not semantic or multilingual word segmentation. Optional
+`--note Projects/example/entities/cache.md` prioritizes that exact canonical note and its outgoing
+neighbors in the selected project. Folder paths follow configuration. Keep the original question
+or useful terms even when selecting a note; unrelated notes are not evidence of a relationship.
 
-Completion, refusal, timeout and Ctrl-C stop the owned worker, escalating from termination to
-kill if needed, and remove its scratch directory. No-match retrieval skips all model access.
-A hard kill of the parent can leave a worker or scratch files; production host supervision is
-still future work. There is no persistent inference service, saved chat history or canonical
-note mutation in this slice. The earlier Ollama `--port` and model-tag interface has been replaced
-by explicit `--server`, GGUF `--model` and `--model-sha256` arguments. Model files stay in place.
+Packets contain at most six 1,000-character excerpts within 16,000 serialized bytes. They carry
+status, source hashes, lines and omission/partial flags. Projections, Global and other projects'
+bodies are excluded. Shared validation can inspect foreign link-target metadata. Reads are not
+an atomic filesystem snapshot. Regenerate disposable packets after retrieval changes; old
+packets that no longer match current evidence refuse as stale.
 
-Repeat `--term` up to eight times for literal matching; omit it for simple query-word overlap.
-Optional `--note Projects/example/entities/cache.md` prioritizes that exact canonical note and
-its outgoing neighbors in the selected project. Paths follow root configuration. The packet
-contains at most six excerpts of 1,000 Unicode characters within 16,000 serialized bytes, with
-status, source hashes, line ranges and omission/truncation counts. It is not a complete codebase
-analysis. Projections, Global notes and foreign project bodies are excluded; shared validation
-can inspect foreign link-target metadata. The filesystem reads do not form an atomic snapshot.
+The worker returns only `{"selections":[{"citation":1}]}` using a grammar restricted to supplied
+citation IDs. Rust rebuilds the packet, rejects drift/duplicate/unknown IDs and supplies each
+selected excerpt. The independent checker also accepts an optional narrower `quote`, which must
+be nonempty, occur exactly once in that excerpt (including overlapping occurrences), and match
+its bytes exactly. Invented text, extra claims, controls and oversized inputs refuse.
 
-Rust rebuilds the packet and checks answer shape, source drift and citation membership. It
-rejects invalid JSON, unknown fields, invalid/duplicate citations, controls and excess text.
-**A valid citation does not prove that its passage supports the claim.** The small evaluation
-model can hallucinate; answers remain drafts, and representative quality is an open gate. An
-official Qwen3 4B Q4_K_M trial also failed: the final expanded profile passed 8/16 synthetic
-cases and 0/8 missing-information cases. It is not a recommended production answer model.
-Use `librarian-prepare` to inspect original evidence independently of generated claims.
+```sh
+target/debug/akasha --root /path/to/memory --project example \
+  librarian-check-sources --packet packet.json --selection selection.json
+```
 
-`librarian-check --packet FILE --answer FILE` exposes the check independently. Plain output is
-default; `--json` returns checked claims/evidence. Runner metrics go to stderr. Errors are nonzero
-and never produce a successful answer. Temporary answer files are owner-only and normally removed;
-local logs, swap and backups still need the later privacy policy.
+Links come from the full original Markdown parser context. Only complete wikilinks inside the
+quote targeting another identity in the current evidence packet, or a local fragment of the same
+note, are displayed. Inline/fenced code, comments and partial links cannot create graph edges.
+At most 20 distinct links per passage are shown; scoped/capped omissions are counted. A recorded
+link is not proof of ownership or causality. The compact checked object is capped at 65,536 bytes.
+JSON preserves quote bytes; terminal output sanitizes controls and prefixes source lines.
 
-Onboarding retains the external/cloud-assisted route. Local onboarding and a changeable route
-preference are accepted later work; this runner does not implement that selector. Privacy mode
-is also explicitly deferred and will permit local model options only.
+CPU is default, using up to four threads. `--gpu-layers 99` requests offload with a compatible
+GPU package; `--threads N` is explicit. The runner applies the model's chat template, disables
+thinking, tokenizes the full prompt, reserves 1,024 output tokens plus a margin and starts with
+4K context. It restarts at a larger context only if needed, up to an 8K default maximum.
+`--max-context` accepts 4096, 8192, 16384 or 32768. Overflow refuses without silent truncation.
 
-Run `node --test scripts/local-librarian.test.mjs` for transport/lifecycle/context tests (temporary
-loopback sockets are needed), and `cargo test --workspace` for the Rust core/CLI. Real-model
-acceptance is separate and does not establish general quality or hardware support.
+Each call owns an authenticated numeric-loopback worker with a restricted environment, offline
+mode, one slot, F16 cache, bounded batches, disabled Web UI/agent tools, no prompt cache or
+context shifting. Expected GGUF hash, pinned worker build and observed executable/model drift
+are checked. Completion/refusal/timeout/Ctrl-C stop the worker and remove owner-only scratch;
+no-match retrieval skips model access. Abrupt parent death can leave a worker or scratch files.
+Trusted packages remain necessary; this is not OS egress isolation or the deferred privacy mode.
+No chat history or canonical writes are performed. Weights remain installed between calls.
+
+The older `librarian-check --packet FILE --answer FILE` remains an explicitly invoked draft
+checker for compatibility/research. Its valid citations do not prove factual support. The prior
+Qwen3 4B free-form trial failed (8/16 expanded cases, 0/8 missing-information cases); source
+selection does not overturn that result or establish answerability. The runner now uses the
+source-passage checker by default.
+
+External/cloud onboarding remains available. Local onboarding, changeable route preference and
+local-only privacy mode are accepted later work. Run `node --test scripts/local-librarian.test.mjs`
+for local transport/lifecycle tests and `cargo test --workspace` for Rust verification. Live model
+checks must distinguish quote integrity, topical relevance and actual answer support.
