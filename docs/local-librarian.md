@@ -121,3 +121,14 @@ template/tokenization, any context-restart shutdown, completion, drift verificat
 final cleanup. The command also reports `core_prepare_ms`, `core_check_ms` and `command_ms`.
 No-match requests still skip all model access. Timing instrumentation does not relax hash,
 authentication, token-budget or cleanup checks.
+
+
+Trusted development adapters can use `createInferenceSession(options)` to own several sequential
+completions in one bounded request, always closing it in `finally`. The original `localCompletion`
+function remains the one-completion owner. The investigator exposes optional request reuse as
+[`--worker-session`](local-investigator.md); this one-packet source-selector command keeps its
+original lifetime. Every completion independently renders/tokenizes its full policy/input,
+disables prompt caching and checks complete model/binary fingerprints before and after inference.
+Session lifetime is absolute (at most 120 seconds), including idle tool reads. Failed/closed
+sessions refuse further calls; idle cancellation also reaps the worker. Context can grow but
+never shrinks during the request. Runtime identity verification remains deliberately repeated.

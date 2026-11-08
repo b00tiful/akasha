@@ -146,8 +146,8 @@ handles. When the step/tool budget cannot support another read, the advertised m
 only source selection. Repeated actions, exhausted budgets and overflow remain explicit unfinished
 states. Selected source
 packets, CodeGraph reports and project/repository binding are checked before display. Source
-drift refuses; there is no silent fallback. Per-decision workers preserve the existing cleanup
-contract and add repeated model-loading/verification cost. CPU/four threads are the experiment
+drift refuses; there is no silent fallback. Default per-decision workers preserve the existing cleanup
+contract and add repeated model-loading/verification cost; optional request ownership is described below. CPU/four threads are the experiment
 baseline; model/device packaging and persistent workers remain separate work.
 
 Run the frozen comparison with a new output directory:
@@ -179,3 +179,31 @@ an independent real-project benchmark.
 node --test scripts/local-investigator.test.mjs scripts/local-librarian.test.mjs \
   scripts/benchmark-local-librarian.test.mjs
 ```
+
+
+Use `--worker-session` to reuse one authenticated worker across expansion and selection within
+this request. It is opt-in; the default still owns a worker per completion. Each completion
+supplies its entire policy, schema and literal input, uses `cache_prompt: false`, and checks full
+model/binary hashes before and after generation. Context starts at 4K and can grow within
+`--max-context`; smaller later prompts keep the current allocation. Only one completion may run
+at a time. Cancellation (including while idle), deadline, errors and completion stop/reap the
+worker and remove private scratch before the request returns. Another investigation starts a
+separate worker/key; no worker or conversation persists across requests. Abrupt parent death
+remains outside normal cleanup guarantees.
+
+```sh
+node scripts/local-investigator.mjs --root /path/to/memory --project example \
+  --server /path/to/llama-server --model /path/to/model.gguf \
+  --model-sha256 EXPECTED_64_CHARACTER_LOWERCASE_SHA256 \
+  --question "Find the multipart transfer resumption decision" \
+  --expand-query --worker-session --json
+```
+
+With this flag, JSON results and retained failure traces include `inference_session` with total
+worker starts, context restarts, completed calls, cleanup time and closed state. `total_ms` is elapsed time at the metrics snapshot. Starts count workers that reached verified-ready state; process-backed tests separately verify reap after failed startup. Per-call metrics
+report new starts, `session_completion` and `reused_worker`. No runtime settings come from the
+model. Source/binding revalidation and all existing decision/read/size/deadline limits remain.
+The query-expansion benchmark also accepts `--worker-session` and repeated `--case ID` for
+create-only paired subsets; omit `--case` to retain the full frozen corpus. Replays retain recorded completion metrics and start no inference workers.
+
+Run `node --test scripts/inference-session.test.mjs` for the process-backed session controls.

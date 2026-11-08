@@ -163,81 +163,126 @@ export async function localChat(packet, options) {
   return localCompletion(packet, sourceSchema(packet), instructions, options);
 }
 
-// Trusted adapters supply policy/schema; model output never selects runtime settings.
-export async function localCompletion(input, schema, policy, { server, model, modelSha256, maxContext = 8192,
+// Trusted adapters own the lifetime and supply complete, independent policy/schema inputs.
+export function createInferenceSession({ server, model, modelSha256, maxContext = 8192,
   gpuLayers = 0, threads = Math.min(4, availableParallelism()), signal, timeoutMs = 120_000 }) {
-  const began = performance.now();
-  const phaseMs = {}; let checkpoint = began; let metrics;
-  const mark = name => {
-    const now = performance.now();
-    phaseMs[name] = (phaseMs[name] ?? 0) + now - checkpoint; checkpoint = now;
-  };
-  const payload = JSON.stringify(input);
-  if (Buffer.byteLength(payload) > 16_000) throw new Error("Evidence exceeds 16000 bytes");
   if (![4096, 8192, 16384, 32768].includes(maxContext) || !Number.isInteger(gpuLayers)
     || gpuLayers < 0 || gpuLayers > 999 || !Number.isInteger(threads) || threads < 1 || threads > 256
-    || !/^[a-f0-9]{64}$/.test(modelSha256 ?? "")) throw new Error("Explicit local model SHA-256 and valid resource settings are required");
+    || !/^[a-f0-9]{64}$/.test(modelSha256 ?? "") || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) {
+    throw new Error("Explicit local model SHA-256 and valid resource settings are required");
+  }
   if (!server || !model || /^https?:|^hf:/i.test(model)) throw new Error("Explicit local binary and GGUF paths are required");
   server = resolve(server); model = resolve(model);
-  const combined = AbortSignal.any([signal ?? new AbortController().signal, AbortSignal.timeout(timeoutMs)]);
-  const modelDigest = await fingerprint(model, combined);
-  if (modelDigest !== modelSha256) throw new Error("Local model SHA-256 mismatch");
-  const header = await open(model, "r");
-  try { const magic = Buffer.alloc(4); await header.read(magic, 0, 4, 0);
-    if (magic.toString() !== "GGUF") throw new Error("Local model must be GGUF");
-  } finally { await header.close(); }
-  mark("model_verify");
-  const serverDigest = await fingerprint(server, combined);
-  const directory = await mkdtemp(join(tmpdir(), "akasha-llama-"));
-  await chmod(directory, 0o700);
-  let worker;
-  try {
-    const env = { PATH: process.env.PATH, HOME: directory, XDG_CACHE_HOME: directory, TMPDIR: directory };
-    for (const name of ["SYSTEMROOT", "WINDIR", "TEMP", "TMP"]) if (process.env[name]) env[name] = process.env[name];
-    const version = spawnSync(server, ["--version"], { env, encoding: "utf8", timeout: 10_000, maxBuffer: 65_536 });
-    if (version.error || version.status !== 0 || !(version.stdout + version.stderr).includes(BUILD)) {
-      throw new Error(`Use the pinned llama.cpp ${BUILD}`);
-    }
-    const key = randomBytes(32).toString("hex"); const keyFile = join(directory, "api-key");
-    await writeFile(keyFile, key + "\n", { mode: 0o600, flag: "wx" });
-    mark("runtime_verify");
-    const options = { server, model, directory, env, key, keyFile, gpuLayers, threads, signal: combined, timeoutMs };
-    let context = 4096;
+  const began = performance.now();
+  const shutdown = new AbortController();
+  const combined = AbortSignal.any([signal ?? new AbortController().signal, shutdown.signal, AbortSignal.timeout(timeoutMs)]);
+  let worker, directory, workerOptions, modelDigest, serverDigest, active, closePromise, disposePromise;
+  let closing = false, context = 4096;
+  const totals = { worker_starts: 0, context_restarts: 0, completions: 0, cleanup_ms: 0, closed: false };
+  const onAbort = () => { void close().catch(() => {}); }; // Owner awaits the same close result.
+  combined.addEventListener("abort", onAbort, { once: true });
+
+  const dispose = () => disposePromise ??= (async () => {
     const started = performance.now();
-    worker = await startWorker({ ...options, context });
-    let workerStarts = 1; mark("worker_start");
-    const render = () => tokenizeLibrarianPrompt(worker.call, payload, policy);
-    const tokens = await render();
-    mark("template_tokenize");
-    const selected = chooseContext(tokens.length, maxContext);
-    if (selected !== context) {
-      await worker.stop(); worker = undefined; context = selected;
-      mark("context_restart_stop");
-      worker = await startWorker({ ...options, context });
-      workerStarts += 1; mark("worker_start");
-      if (JSON.stringify(await render()) !== JSON.stringify(tokens)) throw new Error("Local prompt changed on worker restart");
-      mark("template_tokenize");
-    }
-    const result = await worker.call("/completion", { prompt: tokens, n_predict: OUTPUT_TOKENS,
-      temperature: 0, seed: 7, stream: false, cache_prompt: false, json_schema: schema });
-    if (result.stop !== true || result.truncated !== false || result.stop_type !== "eos"
-      || typeof result.content !== "string" || Buffer.byteLength(result.content) > 16_000) {
-      throw new Error("Local answer is incomplete, oversized or truncated");
-    }
-    mark("completion");
-    if (await fingerprint(model, combined) !== modelDigest || await fingerprint(server, combined) !== serverDigest) {
-      throw new Error("Local model or binary changed during generation");
-    }
-    mark("drift_verify");
-    metrics = { runtime: "llama.cpp", build: BUILD, model_sha256: modelDigest, server_sha256: serverDigest,
-      context, prompt_tokens: tokens.length, output_limit: OUTPUT_TOKENS, gpu_layers: gpuLayers, threads,
-      elapsed_ms: performance.now() - started, timings: result.timings, worker_starts: workerStarts, phase_ms: phaseMs };
-    return { answer: result.content, metrics };
-  } finally {
     try { if (worker) await worker.stop(); } finally {
-      await rm(directory, { recursive: true, force: true });
-      mark("cleanup");
-      if (metrics) metrics.total_ms = checkpoint - began;
+      if (directory) await rm(directory, { recursive: true, force: true });
+      totals.cleanup_ms = performance.now() - started;
+      totals.closed = true;
+      combined.removeEventListener("abort", onAbort);
+    }
+  })();
+  function close() {
+    if (!closePromise) {
+      closing = true;
+      closePromise = Promise.resolve().then(async () => {
+        shutdown.abort(new Error("Inference session closed"));
+        await active?.catch(() => {});
+        await dispose();
+      });
+    }
+    return closePromise;
+  }
+  async function verify() {
+    const digest = await fingerprint(model, combined);
+    if (digest !== (modelDigest ?? modelSha256)) throw new Error(modelDigest ? "Local model or binary changed during generation" : "Local model SHA-256 mismatch");
+    const binaryDigest = await fingerprint(server, combined);
+    if (serverDigest && binaryDigest !== serverDigest) throw new Error("Local model or binary changed during generation");
+    modelDigest = digest; serverDigest = binaryDigest;
+  }
+  async function perform(input, schema, policy) {
+    const started = performance.now(); let checkpoint = started;
+    const phaseMs = {};
+    const mark = name => { const now = performance.now(); phaseMs[name] = (phaseMs[name] ?? 0) + now - checkpoint; checkpoint = now; };
+    const startsBefore = totals.worker_starts;
+    try {
+      combined.throwIfAborted();
+      const payload = JSON.stringify(input);
+      if (Buffer.byteLength(payload) > 16_000) throw new Error("Evidence exceeds 16000 bytes");
+      await verify(); mark("model_verify");
+      if (!workerOptions) {
+        const header = await open(model, "r");
+        try { const magic = Buffer.alloc(4); await header.read(magic, 0, 4, 0);
+          if (magic.toString() !== "GGUF") throw new Error("Local model must be GGUF");
+        } finally { await header.close(); }
+        directory = await mkdtemp(join(tmpdir(), "akasha-llama-")); await chmod(directory, 0o700);
+        const env = { PATH: process.env.PATH, HOME: directory, XDG_CACHE_HOME: directory, TMPDIR: directory };
+        for (const name of ["SYSTEMROOT", "WINDIR", "TEMP", "TMP"]) if (process.env[name]) env[name] = process.env[name];
+        const version = spawnSync(server, ["--version"], { env, encoding: "utf8", timeout: 10_000, maxBuffer: 65_536 });
+        if (version.error || version.status !== 0 || !(version.stdout + version.stderr).includes(BUILD)) throw new Error(`Use the pinned llama.cpp ${BUILD}`);
+        const key = randomBytes(32).toString("hex"), keyFile = join(directory, "api-key");
+        await writeFile(keyFile, key + "\n", { mode: 0o600, flag: "wx" });
+        workerOptions = { server, model, directory, env, key, keyFile, gpuLayers, threads, signal: combined, timeoutMs };
+        mark("runtime_verify");
+      }
+      const inferenceStarted = performance.now();
+      if (!worker) { worker = await startWorker({ ...workerOptions, context }); totals.worker_starts++; mark("worker_start"); }
+      const render = () => tokenizeLibrarianPrompt(worker.call, payload, policy);
+      const tokens = await render(); mark("template_tokenize");
+      const selected = chooseContext(tokens.length, maxContext);
+      if (selected > context) {
+        await worker.stop(); worker = undefined; mark("context_restart_stop");
+        combined.throwIfAborted(); context = selected;
+        worker = await startWorker({ ...workerOptions, context }); totals.worker_starts++; totals.context_restarts++; mark("worker_start");
+        if (JSON.stringify(await render()) !== JSON.stringify(tokens)) throw new Error("Local prompt changed on worker restart");
+        mark("template_tokenize");
+      }
+      const result = await worker.call("/completion", { prompt: tokens, n_predict: OUTPUT_TOKENS,
+        temperature: 0, seed: 7, stream: false, cache_prompt: false, json_schema: schema });
+      if (result.stop !== true || result.truncated !== false || result.stop_type !== "eos"
+        || typeof result.content !== "string" || Buffer.byteLength(result.content) > 16_000) throw new Error("Local answer is incomplete, oversized or truncated");
+      mark("completion");
+      await verify(); combined.throwIfAborted(); mark("drift_verify"); totals.completions++;
+      return { answer: result.content, metrics: { runtime: "llama.cpp", build: BUILD, model_sha256: modelDigest, server_sha256: serverDigest,
+        context, prompt_tokens: tokens.length, output_limit: OUTPUT_TOKENS, gpu_layers: gpuLayers, threads,
+        elapsed_ms: performance.now() - inferenceStarted, timings: result.timings, worker_starts: totals.worker_starts - startsBefore,
+        session_completion: totals.completions, reused_worker: startsBefore > 0 && totals.worker_starts === startsBefore,
+        phase_ms: phaseMs, total_ms: checkpoint - started } };
+    } catch (error) {
+      closing = true; shutdown.abort(error);
+      await dispose(); throw error;
+    }
+  }
+  return {
+    complete(input, schema, policy) {
+      if (closing || combined.aborted) return Promise.reject(new Error("Inference session is closed"));
+      if (active) return Promise.reject(new Error("Inference session already has an active completion"));
+      active = Promise.resolve().then(() => perform(input, schema, policy)).finally(() => { active = undefined; });
+      return active;
+    },
+    close,
+    get metrics() { return { ...totals, total_ms: performance.now() - began }; },
+  };
+}
+
+// Compatible one-completion owner; no worker survives this call.
+export async function localCompletion(input, schema, policy, options) {
+  const session = createInferenceSession(options); let result;
+  try { result = await session.complete(input, schema, policy); return result; }
+  finally {
+    const started = performance.now(); await session.close();
+    if (result) {
+      result.metrics.phase_ms.cleanup = performance.now() - started;
+      result.metrics.total_ms += result.metrics.phase_ms.cleanup;
     }
   }
 }

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, promisify } from "node:util";
-import { localCompletion } from "./local-librarian.mjs";
+import { localCompletion, createInferenceSession } from "./local-librarian.mjs";
 import { expandQuery, validateExpansion } from "./librarian-query-expansion.mjs";
 
 const execute = promisify(execFile);
@@ -341,24 +341,34 @@ export async function runInvestigation(options) {
   if (!Number.isInteger(gpuLayers) || gpuLayers < 0 || gpuLayers > 999 || !Number.isInteger(threads) || threads < 1 || threads > 256
     || ![4096, 8192, 16384, 32768].includes(maxContext)) throw new Error("Invalid investigator inference resource settings");
   if (options.expandQuery !== undefined && typeof options.expandQuery !== "boolean") throw new Error("Invalid query-expansion control");
+  if (options.workerSession !== undefined && typeof options.workerSession !== "boolean") throw new Error("Invalid worker-session control");
   const signal = AbortSignal.any([options.signal ?? new AbortController().signal, AbortSignal.timeout(120_000)]);
   const broker = await createBroker({ ...options, signal });
+  let session, result, failure;
   try {
-    return await investigate({ question: options.question, broker, signal, toolCatalog: options.toolCatalog ?? false, symbol: options.symbol,
-      ...(options.expandQuery ? { expand: question => expandQuery(question,
-        (payload, schema, policy) => localCompletion(payload, schema, policy, { ...options, signal })) } : {}),
-      decide: (payload, schema) => localCompletion(payload, schema, POLICY, { ...options, signal }) });
-  } finally { await broker.close(); }
+    if (options.workerSession) session = createInferenceSession({ ...options, signal });
+    const complete = (payload, schema, policy) => session ? session.complete(payload, schema, policy)
+      : localCompletion(payload, schema, policy, { ...options, signal });
+    result = await investigate({ question: options.question, broker, signal, toolCatalog: options.toolCatalog ?? false, symbol: options.symbol,
+      ...(options.expandQuery ? { expand: question => expandQuery(question, complete) } : {}),
+      decide: (payload, schema) => complete(payload, schema, POLICY) });
+    return result;
+  } catch (error) { failure = error; throw error; }
+  finally {
+    try { if (session) await session.close(); } finally { await broker.close(); }
+    if (session && result) result.inference_session = session.metrics;
+    if (session && failure?.investigationTrace) failure.investigationTrace.inference_session = session.metrics;
+  }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const { values } = parseArgs({ options: Object.fromEntries(["root", "project", "question", "server", "model", "model-sha256", "codegraph", "symbol", "trace", "cli", "gpu-layers", "threads", "max-context"].map(name => [name, { type: "string" }]).concat(["json", "tool-catalog", "expand-query"].map(name => [name, { type: "boolean", default: false }]))) });
+  const { values } = parseArgs({ options: Object.fromEntries(["root", "project", "question", "server", "model", "model-sha256", "codegraph", "symbol", "trace", "cli", "gpu-layers", "threads", "max-context"].map(name => [name, { type: "string" }]).concat(["json", "tool-catalog", "expand-query", "worker-session"].map(name => [name, { type: "boolean", default: false }]))) });
   const controller = new AbortController(); const cancel = () => controller.abort();
   process.once("SIGINT", cancel); process.once("SIGTERM", cancel);
   let trace;
   try {
     for (const key of ["root", "project", "question", "server", "model", "model-sha256"]) if (!values[key]) throw new Error(`Required --${key}`);
-    const result = await runInvestigation({ ...values, modelSha256: values["model-sha256"], toolCatalog: values["tool-catalog"], expandQuery: values["expand-query"], signal: controller.signal,
+    const result = await runInvestigation({ ...values, modelSha256: values["model-sha256"], toolCatalog: values["tool-catalog"], expandQuery: values["expand-query"], workerSession: values["worker-session"], signal: controller.signal,
       gpuLayers: Number(values["gpu-layers"] ?? 0), threads: Number(values.threads ?? 4), maxContext: Number(values["max-context"] ?? 8192) });
     trace = result;
     const clean = value => String(value).replace(/[\x00-\x1f\x7f-\x9f]/g, char => char === "\n" ? "\n  " : " ");
