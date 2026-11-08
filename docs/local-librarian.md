@@ -25,12 +25,17 @@ target/debug/akasha --root /path/to/memory --project example \
   librarian-prepare "Find notes about the cache failure" --term cache
 ```
 
-Run local source selection:
+Run local source selection. On this development machine, persistent weights and complete
+runtimes live outside the checkout in `~/.local/share/akasha/local-inference/`. Use durable
+storage on other machines too; `/tmp` is suitable only for request scratch. The selected main
+model example below requires these already provisioned files and never downloads them.
 
 ```sh
+inference_dir="$HOME/.local/share/akasha/local-inference"
 node scripts/local-librarian.mjs --root /path/to/memory --project example \
-  --server /path/to/llama-server --model /path/to/model.gguf \
-  --model-sha256 EXPECTED_64_CHARACTER_LOWERCASE_SHA256 \
+  --server "$inference_dir/runtimes/llama-b12110-vulkan/llama-server" \
+  --model "$inference_dir/models/Qwen3.5-9B-UD-Q4_K_XL.gguf" \
+  --model-sha256 6f5d30666c2d8ae16a306e616d95341dcf3cc46810df84d7e6f5a7d1e4c1b293 \
   --question "Find notes about the cache failure" --term cache
 ```
 

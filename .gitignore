@@ -22,6 +22,10 @@ build/
 node_modules/
 *.egg-info/
 
+# Local inference weights belong outside the checkout.
+*.gguf
+*.gguf.part
+
 # Rust build output.
 /target/
 

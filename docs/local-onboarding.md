@@ -11,12 +11,13 @@ The adapter does not scan directories or choose additional files.
 ```sh
 cargo build -p akasha-cli -p akasha-mcp
 umask 077
+inference_dir="$HOME/.local/share/akasha/local-inference"
 node scripts/local-onboarding.mjs \
   --root /path/to/akasha-root --project example \
   --source README.md --source Cargo.toml --source src/lib.rs \
-  --server /path/to/llama-b12110/llama-server \
-  --model /path/to/Qwen3.5-9B-UD-Q4_K_XL.gguf \
-  --model-sha256 YOUR_VERIFIED_64_CHARACTER_SHA256 \
+  --server "$inference_dir/runtimes/llama-b12110-vulkan/llama-server" \
+  --model "$inference_dir/models/Qwen3.5-9B-UD-Q4_K_XL.gguf" \
+  --model-sha256 6f5d30666c2d8ae16a306e616d95341dcf3cc46810df84d7e6f5a7d1e4c1b293 \
   --gpu-layers 99 --threads 4 --json > draft.json
 ```
 
@@ -45,6 +46,12 @@ default. Metrics on stderr list each group's selected, cited and uncited sources
 coverage measures attribution, not factual support. Names and groups are explicit operator
 choices, not a recursive scanner or a completeness guarantee. The sample fixture lives in
 `tests/fixtures/local-components/`.
+
+The development machine keeps manually provisioned model weights and complete runtimes in
+`~/.local/share/akasha/local-inference/`, outside the Git checkout and temporary storage. The
+example uses the selected main model and its pinned hash. `migration-manifest.json` and
+`SHA256SUMS` there record local artifact identities. Other machines must supply their own
+verified files and paths; the adapter still requires explicit arguments and downloads nothing.
 
 Without `--json`, the command displays the note bodies, projections, proposal ID and preview ID
 as bounded plain text. Metrics go to stderr. Failure returns nonzero with no normal stdout.
