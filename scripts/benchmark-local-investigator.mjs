@@ -25,6 +25,8 @@ function score(task, sources) {
   return scoreSources(task, sources);
 }
 export async function compare(values) {
+  const gpuLayers = Number(values["gpu-layers"] ?? 0);
+  if (!Number.isInteger(gpuLayers) || gpuLayers < 0 || gpuLayers > 999) throw new Error("Use --gpu-layers 0..999");
   const out = resolve(values.out); await mkdir(dirname(out), { recursive: true }); await mkdir(out);
   const write = (name, value) => writeFile(join(out, name), JSON.stringify(value, null, 2) + "\n", { mode: 0o600, flag: "wx" });
   const corpusFile = join(workspace, "tests/fixtures/librarian-benchmark/corpus.json");
@@ -33,12 +35,12 @@ export async function compare(values) {
   const sourceFiles = [corpusFile, tasksFile, ...["local-librarian.mjs", "local-investigator.mjs", "benchmark-local-investigator.mjs"].map(name => join(workspace, "scripts", name)), join(workspace, "target/debug/akasha")];
   const pins = Object.fromEntries(await Promise.all(sourceFiles.map(async path => [path, hash(await readFile(path))])));
   await write("freeze.json", pins);
-  await write("profile.json", { tool_catalog: values["tool-catalog"] ?? false, threads: 4,
+  await write("profile.json", { tool_catalog: values["tool-catalog"] ?? false, threads: 4, gpu_layers: gpuLayers,
     model_sha256: values["model-sha256"], server: values.server, model: values.model });
   const root = await createFixture(out, corpus);
   if (values.codegraph) await writeFile(join(root, "Meta/projects.yaml"), `example:\n  path: ${JSON.stringify(workspace)}\n  status: active\nforeign:\n  path: ../../foreign-repository\n  status: active\n`);
   const before = await snapshot(root); const results = [];
-  const options = { root, project: "example", server: values.server, model: values.model, modelSha256: values["model-sha256"], threads: 4 };
+  const options = { root, project: "example", server: values.server, model: values.model, modelSha256: values["model-sha256"], threads: 4, gpuLayers };
   for (const entry of tasks.cases) {
     const task = entry.memory_case ? { ...corpus.cases.find(item => item.id === entry.memory_case), ...entry } : entry;
     if (task.required_code && !values.codegraph) { results.push({ id: task.id, skipped: "existing CodeGraph not supplied" }); continue; }
@@ -84,7 +86,7 @@ export async function compare(values) {
   await write("results.json", results); await write("sources.json", before); return results;
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const { values } = parseArgs({ options: Object.fromEntries(["out", "server", "model", "model-sha256", "codegraph"].map(name => [name, { type: "string" }]).concat([["tool-catalog", { type: "boolean", default: false }]])) });
+  const { values } = parseArgs({ options: Object.fromEntries(["out", "server", "model", "model-sha256", "codegraph", "gpu-layers"].map(name => [name, { type: "string" }]).concat([["tool-catalog", { type: "boolean", default: false }]])) });
   try {
     for (const key of ["out", "server", "model", "model-sha256"]) if (!values[key]) throw new Error(`Required --${key}`);
     await compare(values);

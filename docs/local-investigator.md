@@ -84,6 +84,10 @@ node scripts/benchmark-local-investigator.mjs --out /tmp/investigator-NEW \
 
 Add `--tool-catalog` for the explicit-catalog profile. Each new comparison directory includes
 `profile.json` recording the flag, model identity and CPU-thread setting, alongside source pins.
+For an explicitly supplied GPU-capable runtime, the comparison also accepts `--gpu-layers N`
+(`0..999`, default `0`) and records the requested offload count. Use the same setting/backend
+across model candidates and measure actual device allocation; a requested count is not proof
+of complete GPU placement.
 
 The six memory tasks reuse fictional notes and predeclared labels. Two separate code smoke tasks
 query this workspace's existing CodeGraph index; when CodeGraph is omitted they are explicitly
