@@ -5,6 +5,16 @@ tool menu. It returns original source passages and an explicit finished/incomple
 Relevance, answer support and production device budgets remain evaluation concerns. It does not
 generate an authoritative answer or publish memory.
 
+The investigator now supports a direct `symbol` action for complete source of one exact,
+unqualified ASCII identifier. With CodeGraph enabled, the host performs bounded JSON lookup,
+requires one exact match, validates its repository file and fetches file-pinned symbol source.
+It checks complete source-line coverage and returns the whole report only when it fits 4,000
+Unicode code points. Missing, ambiguous, stale, incompatible and oversized results fail loudly;
+the symbol is never silently clipped. Generic `explore` remains useful for discovering names
+and call paths, with explicitly partial excerpts. Whole-symbol reports carry
+`kind: "codegraph_symbol"`, `symbol` name/file/source lines, exact fingerprint/range and zero
+omissions. These are CodeGraph-provided structural sources, not independently core-verified code.
+
 The first same-model Qwen3 4B comparison fails utility acceptance: affirmative memory coverage is
 1/4 versus deterministic 3/4, and the model never chooses CodeGraph for the code tasks. The host
 passes 28 tests/eight exact decision replays. Keep this as an explicit experiment; further planner
@@ -36,6 +46,20 @@ node scripts/local-investigator.mjs --root /path/to/memory --project example \
   --trace /path/to/new-private-trace.json
 ```
 
+For the selected Qwen3.5-9B UD-Q4_K_XL on an explicitly configured GPU-capable runtime, add
+`--gpu-layers 99 --threads 4 --max-context 8192 --tool-catalog` and ask, for example,
+`--question "How does tokenizeLibrarianPrompt reject transformed user payloads?"`.
+Supply the actual local GGUF and its verified hash; no binary/model download is automatic.
+The investigator exposes the same resource bounds as the selector: GPU layers `0..999`
+(default `0`), threads `1..256` (default `4`), maximum context `4096|8192|16384|32768`
+(default `8192`). Context is still selected from real prompt tokens and reserves output space.
+
+For a reliable named-source request, add `--symbol tokenizeLibrarianPrompt`. The host loads that
+exact validated complete source before inference, counts it as one of the existing four logical
+actions, and records `initial_symbol` in the trace. This is explicit user-selected context; the
+agent can still make bounded follow-up requests. Without the option, the model chooses whether
+to use `symbol`; autonomous routing quality remains an evaluation concern.
+
 Plain text is default. Explicit `--json` returns `kind: "investigation_sources"`, `status`,
 `reason`, selected `matches`, inspected handles and the bounded action/observation trace. A
 finished run means the model stopped searching; it does not establish that the question is
@@ -47,7 +71,7 @@ is written. Traces preserve unfinished work for inspection; automatic resumption
 Questions and tool queries are limited to 160 control-free characters in this experiment.
 
 The model can search project notes, inspect a previously discovered note and its recorded
-neighbors, or finish by selecting known numeric source handles. All canonical retrieval and
+neighbors, discover code, read one exact symbol, or finish by selecting known numeric source handles. All canonical retrieval and
 source revalidation go through the existing Rust core CLI. There are no write, shell, Git,
 network-fetch or user-selected filesystem tools. Each whole user payload retains literal
 tokenization; source text cannot introduce conversation-control tokens.
@@ -60,6 +84,21 @@ hashed, labeled `codegraph_report`, and re-requested before display. Their hash 
 identity, not independent verification of code facts or call-edge accuracy. Truncated reports
 are explicit. Existing CodeGraph trust, index freshness and its own telemetry policy still apply;
 this is not a project-wide privacy mode. Omit the option for memory-only work.
+
+Exploration selects exact query-focused windows within the existing 4,000-code-point total,
+with a prefix fallback when no query word/identifier matches. It treats the report as opaque text.
+Each passage adds `report_range` (half-open Unicode-code-point `start`, `end`, full `total`,
+and `unit`), `selection`, and aggregate `omitted_code_points`. Separated passages have distinct
+handles, even if their quoted text is identical. Plain output discloses ranges, omissions and
+structural provenance. Selected full reports are re-requested once each, and the host also checks
+passage text/metadata against retained originals. All metadata counts toward the existing byte
+budgets; these checks establish report identity, not relevance or whole-function coverage.
+The failed window experiments are retained as historical evidence. Complete function context
+uses `symbol`: the JSON lookup and source request share one 30-second logical-action deadline,
+with fixed executable, repository and file pinning. Neither filenames nor command options come
+from the model. Metadata/file/report identity and complete line coverage are checked again
+before display. A Unicode or qualified symbol name is outside this first action contract and
+refuses; an ambiguous name is not resolved by guessing.
 
 Every run has a 120-second deadline, at most three model decisions and four retrieval calls
 including the initial search. Each tool has a 30-second limit. Decision payloads are capped at
