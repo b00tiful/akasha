@@ -1256,7 +1256,7 @@ fn validate_evidence_source(
     Ok(())
 }
 
-fn validate_normalized_relative_path(
+pub(crate) fn validate_normalized_relative_path(
     text: &str,
     label: &str,
     error_path: &Path,

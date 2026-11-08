@@ -69,6 +69,25 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Collect explicit repository files for an experimental local onboarding draft.
+    LocalOnboardingPrepare {
+        #[arg(long = "source", required = true)]
+        sources: Vec<String>,
+    },
+    /// Validate a local onboarding draft and return its exact proposal/preview (no writes).
+    LocalOnboardingPreview {
+        #[arg(long)]
+        packet: PathBuf,
+        #[arg(long)]
+        proposal: PathBuf,
+    },
+    /// Compile a typed local plan to a checked onboarding proposal/preview (no writes).
+    LocalOnboardingCompile {
+        #[arg(long)]
+        packet: PathBuf,
+        #[arg(long)]
+        plan: PathBuf,
+    },
     /// Prepare bounded selected-project evidence for the experimental librarian (no model).
     LibrarianPrepare {
         question: String,
@@ -375,6 +394,9 @@ fn run(cli: Cli) -> Result<(), u8> {
             Command::Init { slug } | Command::Link { slug, .. } => Some(slug),
             Command::SetupRoot { .. }
             | Command::LibrarianPrepare { .. }
+            | Command::LocalOnboardingPrepare { .. }
+            | Command::LocalOnboardingPreview { .. }
+            | Command::LocalOnboardingCompile { .. }
             | Command::LibrarianCheck { .. }
             | Command::LibrarianCheckSources { .. }
             | Command::RecoverInit { .. }
@@ -410,6 +432,38 @@ fn run(cli: Cli) -> Result<(), u8> {
     }
 
     match command {
+        Command::LocalOnboardingCompile { packet, plan } => {
+            let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
+            let packet = serde_json::from_str(&read_librarian_input(&packet)?).map_err(|_| {
+                eprintln!("akasha: invalid local onboarding packet JSON");
+                4
+            })?;
+            let plan = read_librarian_input(&plan)?;
+            let draft =
+                akasha_core::onboarding_local::compile_local_onboarding(&request, &packet, &plan)
+                    .map_err(report_onboarding)?;
+            finish_output(render::render_local_onboarding_draft(&draft, output))?;
+        }
+        Command::LocalOnboardingPrepare { sources } => {
+            let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
+            let packet =
+                akasha_core::onboarding_local::prepare_local_onboarding(&request, &sources)
+                    .map_err(report_onboarding)?;
+            finish_output(render::render_local_onboarding_packet(&packet, output))?;
+        }
+        Command::LocalOnboardingPreview { packet, proposal } => {
+            let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
+            let packet = serde_json::from_str(&read_librarian_input(&packet)?).map_err(|_| {
+                eprintln!("akasha: invalid local onboarding packet JSON");
+                4
+            })?;
+            let proposal = read_librarian_input(&proposal)?;
+            let draft = akasha_core::onboarding_local::preview_local_onboarding(
+                &request, &packet, &proposal,
+            )
+            .map_err(report_onboarding)?;
+            finish_output(render::render_local_onboarding_draft(&draft, output))?;
+        }
         Command::LibrarianPrepare {
             question,
             terms,
@@ -905,6 +959,11 @@ fn read_librarian_input(path: &std::path::Path) -> Result<String, u8> {
         eprintln!("akasha: cannot read librarian input: {error}");
         4
     })
+}
+
+fn report_onboarding(error: akasha_core::OnboardingBatchError) -> u8 {
+    eprintln!("akasha: {error}");
+    error.exit_code()
 }
 
 fn read_utf8_input(path: &std::path::Path, label: &str) -> Result<String, u8> {

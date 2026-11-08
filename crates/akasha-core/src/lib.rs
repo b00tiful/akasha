@@ -17,6 +17,7 @@ pub mod note_links;
 pub mod note_template;
 pub mod onboarding;
 pub mod onboarding_handoff;
+pub mod onboarding_local;
 pub mod project_validation;
 pub mod resolution;
 pub mod session_hook_wiring;

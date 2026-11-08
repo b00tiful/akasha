@@ -30,6 +30,76 @@ impl OutputMode {
     }
 }
 
+pub(crate) fn render_local_onboarding_packet(
+    packet: &akasha_core::onboarding_local::LocalOnboardingPacket,
+    output: OutputMode,
+) -> io::Result<()> {
+    if output.json {
+        return write_stdout(&json_line(serde_json::to_string_pretty(packet))?);
+    }
+    let mut text = format!(
+        "Local onboarding input — {}\nExplicit sources: {} (complete files; no writes)\n",
+        librarian_display(packet.preparation["project"].as_str().unwrap_or("")),
+        packet.sources.len()
+    );
+    for source in &packet.sources {
+        let _ = writeln!(
+            text,
+            "{} — {} lines — {}",
+            librarian_display(&source.path),
+            source.lines,
+            source.fingerprint
+        );
+        for line in source.text.lines() {
+            let _ = writeln!(text, "  | {}", librarian_display(line));
+        }
+    }
+    write_stdout(&text)
+}
+
+pub(crate) fn render_local_onboarding_draft(
+    draft: &akasha_core::onboarding_local::LocalOnboardingDraft,
+    output: OutputMode,
+) -> io::Result<()> {
+    if output.json {
+        return write_stdout(&json_line(serde_json::to_string_pretty(draft))?);
+    }
+    let mut text = format!(
+        "Local onboarding draft — {}\nNo writes. Factual support needs review.\nProposal: {}\nPreview: {}\n",
+        librarian_display(&draft.preview.project),
+        draft.preview.proposal_id,
+        draft.preview.preview_id
+    );
+    for preview in &draft.preview.notes {
+        let note = draft
+            .proposal
+            .notes
+            .iter()
+            .find(|note| note.note_type == preview.note_type && note.path == preview.path)
+            .expect("core preview names one exact proposed note");
+        let _ = writeln!(
+            text,
+            "\n{} ({:?}, {} evidence claims)",
+            librarian_display(&preview.path.display().to_string()),
+            preview.action,
+            preview.evidence_claims
+        );
+        for line in note.source.lines() {
+            let _ = writeln!(text, "  | {}", librarian_display(line));
+        }
+    }
+    for (label, source) in [
+        ("Index", &draft.proposal.index),
+        ("Roadmap", &draft.proposal.roadmap),
+    ] {
+        let _ = writeln!(text, "\n{label}:");
+        for line in source.lines() {
+            let _ = writeln!(text, "  | {}", librarian_display(line));
+        }
+    }
+    write_stdout(&text)
+}
+
 pub(crate) fn render_librarian_packet(
     packet: &akasha_core::librarian::LibrarianPacket,
     output: OutputMode,

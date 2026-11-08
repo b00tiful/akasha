@@ -14,6 +14,342 @@ use sha2::{Digest, Sha256};
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn local_packet_preserves_complete_unicode_sources_and_exact_fingerprints() {
+    use akasha_core::onboarding_local::prepare_local_onboarding;
+    let fixture = Fixture::new("local-packet");
+    let source = "# Привет 世界\r\nA complete source.\r\n";
+    fs::write(fixture.resolution.cwd.join("README.md"), source).unwrap();
+    let before = fixture.project_snapshot();
+    let packet = prepare_local_onboarding(
+        &fixture.resolution,
+        &["README.md".into(), "Cargo.toml".into()],
+    )
+    .unwrap();
+    assert_eq!(packet.sources[0].path, "Cargo.toml");
+    assert_eq!(packet.sources[1].text, source);
+    assert_eq!(packet.sources[1].lines, 2);
+    assert_eq!(
+        packet.sources[1].fingerprint,
+        content_fingerprint(source.as_bytes())
+    );
+    assert_eq!(packet.preparation["project"], "example");
+    assert!(serde_json::to_vec(&packet).unwrap().len() <= 16_000);
+    assert_eq!(fixture.project_snapshot(), before);
+}
+
+#[test]
+fn local_packet_refuses_unsafe_duplicate_nonregular_and_excessive_inputs() {
+    use akasha_core::onboarding_local::prepare_local_onboarding;
+    let fixture = Fixture::new("local-bounds");
+    for paths in [
+        vec![],
+        vec!["Cargo.toml"; 9],
+        vec!["Cargo.toml"; 2],
+        vec!["../escape"],
+        vec!["/etc/passwd"],
+        vec!["./Cargo.toml"],
+        vec!["a\\b"],
+        vec!["a//b"],
+        vec!["."],
+    ] {
+        assert!(
+            prepare_local_onboarding(
+                &fixture.resolution,
+                &paths.into_iter().map(str::to_owned).collect::<Vec<_>>()
+            )
+            .is_err()
+        );
+    }
+    let path = fixture.resolution.cwd.join("input");
+    for bytes in [vec![b'x'; 8193], vec![0xff], b"binary\0data".to_vec()] {
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(
+            prepare_local_onboarding(&fixture.resolution, &["input".into()])
+                .unwrap_err()
+                .exit_code(),
+            4
+        );
+    }
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    assert!(prepare_local_onboarding(&fixture.resolution, &["input".into()]).is_err());
+    fs::write(fixture.resolution.cwd.join("a"), "x".repeat(8192)).unwrap();
+    fs::write(fixture.resolution.cwd.join("b"), "x".repeat(8192)).unwrap();
+    assert!(
+        prepare_local_onboarding(&fixture.resolution, &["a".into(), "b".into()])
+            .unwrap_err()
+            .to_string()
+            .contains("16000")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn local_packet_rejects_file_and_ancestor_symlinks_even_inside_repository() {
+    use akasha_core::onboarding_local::prepare_local_onboarding;
+    use std::os::unix::fs::symlink;
+    let fixture = Fixture::new("local-symlinks");
+    let repo = &fixture.resolution.cwd;
+    fs::create_dir(repo.join("actual")).unwrap();
+    fs::write(repo.join("actual/source"), "source").unwrap();
+    symlink("actual", repo.join("alias")).unwrap();
+    symlink("Cargo.toml", repo.join("link")).unwrap();
+    for path in ["alias/source", "link"] {
+        assert!(
+            prepare_local_onboarding(&fixture.resolution, &[path.into()])
+                .unwrap_err()
+                .to_string()
+                .contains("symlink")
+        );
+    }
+}
+
+fn local_draft_inputs(
+    fixture: &Fixture,
+) -> (akasha_core::onboarding_local::LocalOnboardingPacket, String) {
+    let packet = akasha_core::onboarding_local::prepare_local_onboarding(
+        &fixture.resolution,
+        &["Cargo.toml".into()],
+    )
+    .unwrap();
+    let mut request = fixture.evidenced_batch_request();
+    request.notes.truncate(1);
+    request.notes[0].source = request.notes[0].source.replace(
+        "[[Projects/example/records/tasks/next]]",
+        "The repository declares a Rust package.\n\n[[Projects/example/index]] · [[Projects/example/roadmap]]",
+    );
+    request.index = "# Index\n\n[[Projects/example/entities/core|Core]]\n".into();
+    request.roadmap = "# Roadmap\n\n[[Projects/example/entities/core|Core]]\n".into();
+    let proposal = serde_json::json!({ "notes": request.notes.iter().map(|note| serde_json::json!({
+        "note_type": note.note_type, "path": note.path, "source": note.source
+    })).collect::<Vec<_>>(), "index": request.index, "roadmap": request.roadmap });
+    (packet, proposal.to_string())
+}
+
+#[test]
+fn local_draft_is_read_only_and_applies_through_existing_approved_core() {
+    use akasha_core::onboarding_local::preview_local_onboarding;
+    let fixture = Fixture::new("local-preview");
+    let (packet, proposal) = local_draft_inputs(&fixture);
+    let before = fixture.project_snapshot();
+    let draft = preview_local_onboarding(&fixture.resolution, &packet, &proposal).unwrap();
+    assert_eq!(fixture.project_snapshot(), before);
+    assert_eq!(draft.preview.notes[0].evidence_claims, 1);
+    apply_approved_onboarding_batch(
+        &draft.proposal.request(&fixture.resolution),
+        &draft.preview.preview_id,
+    )
+    .unwrap();
+    validate_project(&fixture.resolution).unwrap();
+    let evidence =
+        akasha_core::librarian::prepare_librarian(&fixture.resolution, "Rust package", &[], None)
+            .unwrap();
+    assert!(
+        evidence
+            .evidence
+            .iter()
+            .any(|item| item.id.ends_with("entities/core.md") && item.excerpt.contains("Core"))
+    );
+    assert!(preview_local_onboarding(&fixture.resolution, &packet, &proposal).is_err());
+    let (fresh, _) = local_draft_inputs(&fixture);
+    let rerun = preview_local_onboarding(&fixture.resolution, &fresh, &proposal).unwrap();
+    assert_eq!(
+        rerun.preview.notes[0].action,
+        OnboardingNoteAction::Unchanged
+    );
+}
+
+#[test]
+fn local_draft_refuses_altered_packets_and_changed_sources_without_writes() {
+    use akasha_core::onboarding_local::preview_local_onboarding;
+    let fixture = Fixture::new("local-drift");
+    let (packet, proposal) = local_draft_inputs(&fixture);
+    let before = fixture.project_snapshot();
+    for which in 0..7 {
+        let mut altered = packet.clone();
+        match which {
+            0 => altered.schema_version += 1,
+            1 => altered.sources[0].text.push('x'),
+            2 => altered.sources[0].fingerprint.push('0'),
+            3 => altered.sources[0].lines += 1,
+            4 => altered.preparation["project"] = "other".into(),
+            5 => altered.index.push('x'),
+            _ => altered.roadmap.push('x'),
+        }
+        assert_eq!(
+            preview_local_onboarding(&fixture.resolution, &altered, &proposal)
+                .unwrap_err()
+                .exit_code(),
+            5
+        );
+    }
+    fs::write(fixture.resolution.cwd.join("Cargo.toml"), "changed\n").unwrap();
+    assert_eq!(
+        preview_local_onboarding(&fixture.resolution, &packet, &proposal)
+            .unwrap_err()
+            .exit_code(),
+        5
+    );
+    assert_eq!(fixture.project_snapshot(), before);
+}
+
+#[test]
+fn local_draft_rejects_unselected_evidence_before_shared_preview_reads_it() {
+    use akasha_core::onboarding_local::preview_local_onboarding;
+    let fixture = Fixture::new("local-scope");
+    let (packet, proposal) = local_draft_inputs(&fixture);
+    let before = fixture.project_snapshot();
+    for changed in [
+        proposal.replace("Cargo.toml", "missing-secret-file"),
+        proposal.replace("sha256:", "sha256:0"),
+    ] {
+        let error = preview_local_onboarding(&fixture.resolution, &packet, &changed).unwrap_err();
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("only exact sources"));
+    }
+    assert_eq!(fixture.project_snapshot(), before);
+}
+
+#[test]
+fn local_draft_rejects_malformed_large_and_invalid_schema_or_link_proposals() {
+    use akasha_core::onboarding_local::preview_local_onboarding;
+    let fixture = Fixture::new("local-invalid");
+    let (packet, proposal) = local_draft_inputs(&fixture);
+    let before = fixture.project_snapshot();
+    let mut extra: serde_json::Value = serde_json::from_str(&proposal).unwrap();
+    extra["apply"] = true.into();
+    let mut empty = extra.clone();
+    empty.as_object_mut().unwrap().remove("apply");
+    empty["notes"] = serde_json::json!([]);
+    let mut many = empty.clone();
+    many["notes"] = serde_json::json!([
+        extra["notes"][0],
+        extra["notes"][0],
+        extra["notes"][0],
+        extra["notes"][0]
+    ]);
+    for invalid in [
+        "invalid".into(),
+        "x".repeat(16_001),
+        extra.to_string(),
+        empty.to_string(),
+        many.to_string(),
+        proposal.replace("status: active", "status_other: active"),
+        proposal.replace("entities/core", "entities/missing"),
+    ] {
+        assert_eq!(
+            preview_local_onboarding(&fixture.resolution, &packet, &invalid)
+                .unwrap_err()
+                .exit_code(),
+            4
+        );
+    }
+    assert_eq!(fixture.project_snapshot(), before);
+}
+
+#[test]
+fn local_draft_requires_both_projections_to_link_every_proposed_note() {
+    let fixture = Fixture::new("local-projection-coverage");
+    let (packet, proposal) = local_draft_inputs(&fixture);
+    for field in ["index", "roadmap"] {
+        let mut value: serde_json::Value = serde_json::from_str(&proposal).unwrap();
+        value[field] = "No note links.\n".into();
+        let error = akasha_core::onboarding_local::preview_local_onboarding(
+            &fixture.resolution,
+            &packet,
+            &value.to_string(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("each link every proposed note"));
+    }
+}
+
+#[test]
+fn typed_local_plans_compile_exact_evidence_and_cannot_inject_frontmatter() {
+    use akasha_core::onboarding_local::compile_local_onboarding;
+    let fixture = Fixture::new("local-typed-plan");
+    let (packet, _) = local_draft_inputs(&fixture);
+    let injected = "Quoted \"text\"\n---\nevidence: replaced\nПривет 世界";
+    let mut plan = serde_json::json!({ "notes": [{ "note_type": "entity", "name": "core",
+        "fields": { "entity": "core", "kind": "subsystem", "status": "active", "reviewed": "2026-11-08", "description": injected },
+        "body": "# Core\n\nThe repository declares a Rust package.\n\n[[Projects/example/index]] · [[Projects/example/roadmap]]\n",
+        "evidence": [{ "kind": "fact", "claim": "The repository declares a Rust package.", "sources": [{ "source": 1 }] }]
+    }] });
+    let before = fixture.project_snapshot();
+    let draft = compile_local_onboarding(&fixture.resolution, &packet, &plan.to_string()).unwrap();
+    let parsed = akasha_core::parse_leading_frontmatter(&draft.proposal.notes[0].source).unwrap();
+    let metadata: serde_json::Value = serde_json::from_str(parsed.frontmatter_yaml).unwrap();
+    assert_eq!(metadata["description"], injected);
+    assert_eq!(metadata["schema_version"], 1);
+    assert_eq!(
+        metadata["evidence"][0]["sources"][0]["fingerprint"],
+        packet.sources[0].fingerprint
+    );
+    assert_eq!(metadata["evidence"][0]["sources"][0]["path"], "Cargo.toml");
+    for handle in [0, 99] {
+        plan["notes"][0]["evidence"][0]["sources"][0]["source"] = handle.into();
+        assert!(
+            compile_local_onboarding(&fixture.resolution, &packet, &plan.to_string())
+                .unwrap_err()
+                .to_string()
+                .contains("source handle")
+        );
+    }
+    plan["notes"][0]["evidence"][0]["sources"][0]["source"] = 1.into();
+    for field in ["schema_version", "evidence"] {
+        let mut changed = plan.clone();
+        changed["notes"][0]["fields"][field] = "override".into();
+        assert!(
+            compile_local_onboarding(&fixture.resolution, &packet, &changed.to_string())
+                .unwrap_err()
+                .to_string()
+                .contains("cannot replace")
+        );
+    }
+    plan["notes"][0]["evidence"] = serde_json::json!([]);
+    assert!(compile_local_onboarding(&fixture.resolution, &packet, &plan.to_string()).is_err());
+    assert_eq!(fixture.project_snapshot(), before);
+}
+
+#[test]
+fn local_draft_uses_configured_note_type_and_folder() {
+    let fixture = Fixture::new("local-configured-type");
+    let root = fixture.resolution.root_override.as_ref().unwrap();
+    let config = fs::read_to_string(root.join("akasha.toml"))
+        .unwrap()
+        .replace(
+            "[project.note_types.entity]",
+            "[project.note_types.component]",
+        )
+        .replace("folder = \"entities\"", "folder = \"components\"");
+    fs::write(root.join("akasha.toml"), config).unwrap();
+    fs::rename(
+        fixture.project.join("entities"),
+        fixture.project.join("components"),
+    )
+    .unwrap();
+    let (packet, proposal) = local_draft_inputs(&fixture);
+    assert!(packet.preparation["note_types"].get("component").is_some());
+    let proposal = proposal
+        .replace("\"note_type\":\"entity\"", "\"note_type\":\"component\"")
+        .replace("entities/core", "components/core");
+    let draft = akasha_core::onboarding_local::preview_local_onboarding(
+        &fixture.resolution,
+        &packet,
+        &proposal,
+    )
+    .unwrap();
+    assert_eq!(draft.preview.notes[0].note_type, "component");
+    apply_approved_onboarding_batch(
+        &draft.proposal.request(&fixture.resolution),
+        &draft.preview.preview_id,
+    )
+    .unwrap();
+    assert!(fixture.project.join("components/core.md").is_file());
+    validate_project(&fixture.resolution).unwrap();
+}
+
+#[test]
 fn applies_valid_notes_projections_and_state_as_one_checked_batch() {
     let fixture = Fixture::new("complete");
     let request = fixture.evidenced_batch_request();
