@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { setup, snapshot, withServer } from "./first-run-onboarding.mjs";
-import { draftLocalOnboarding, POLICY } from "./local-onboarding.mjs";
+import { draftLocalOnboarding, planSchema, POLICY } from "./local-onboarding.mjs";
 
 const cli = resolve("target/debug/akasha");
 function fixture(t) {
@@ -115,4 +115,79 @@ test("actual command failures keep stdout empty and diagnostics on stderr", t =>
     "--source", "../escape", "--server", "/absent", "--model", "/absent", "--model-sha256", "0".repeat(64)], { encoding: "utf8" });
   assert.equal(result.status, 1); assert.equal(result.stdout, "");
   assert(result.stderr.includes("Local onboarding failed:") && result.stderr.includes("repository-relative"));
+});
+
+test("component drafts remap local handles, preview together and retrieve each applied note", async t => {
+  const f = fixture(t), before = snapshot(f.root), repoBefore = snapshot(f.repository);
+  const components = [{ name: "library", sources: ["src/lib.rs"] }, { name: "manifest", sources: ["Cargo.toml"] }];
+  let calls = 0;
+  const result = await draftLocalOnboarding({ root: f.root, project: "first-run", components, json: true }, async (input, schema) => {
+    assert.equal(input.sources.length, 1);
+    assert.equal(input.sources[0].handle, 1);
+    assert.equal(schema.properties.notes.maxItems, 1);
+    assert.equal(schema.properties.notes.items.oneOf[0].properties.name.const, input.component);
+    calls++;
+    const note = plan(input).notes[0];
+    note.name = input.component; note.fields.entity = input.component;
+    note.evidence[0].sources = [{ source: 1 }];
+    note.body = input.component === "library" ? "# Library\n\nFlightPath stores waypoints." : "# Manifest\n\nThe manifest declares a Rust package.";
+    note.evidence[0].claim = note.body.split("\n\n")[1];
+    return { answer: JSON.stringify({ notes: [note] }), metrics: { fake: true } };
+  });
+  assert.equal(calls, 2);
+  const draft = JSON.parse(result.output);
+  assert.equal(draft.proposal.notes.length, 2);
+  assert(draft.proposal.notes[0].source.includes('"path": "src/lib.rs"'));
+  assert(draft.proposal.notes[1].source.includes('"path": "Cargo.toml"'));
+  assert.equal(result.metrics.components.length, 2);
+  assert.deepEqual(result.metrics.components.map(step => step.uncited_sources), [[], []]);
+  assert.deepEqual(snapshot(f.root), before);
+  await withServer(f, async ({ tool }) => {
+    const validated = await tool("akasha_onboarding_validate", { proposal: draft.proposal });
+    const preview = await tool("akasha_onboarding_preview", { proposal_id: validated.proposal_id });
+    await tool("akasha_onboarding_apply", { proposal_id: validated.proposal_id, approved_preview_id: preview.preview_id });
+  });
+  for (const term of ["waypoints", "manifest"]) {
+    const found = run(f, ["--json", "librarian-prepare", term]);
+    assert.equal(found.status, 0, found.stderr);
+    assert(JSON.parse(found.stdout).evidence.some(source => source.excerpt.toLowerCase().includes(term)));
+  }
+  assert.deepEqual(snapshot(f.repository), repoBefore);
+});
+
+test("component bounds and duplicate names refuse before inference", async t => {
+  const f = fixture(t);
+  const component = { name: "one", sources: ["src/lib.rs"] };
+  for (const components of [[], [component, component], Array(4).fill(component), [{ ...component, sources: ["src/lib.rs", "src/lib.rs"] }], [{ ...component, extra: true }]]) {
+    await assert.rejects(draftLocalOnboarding({ root: f.root, project: "first-run", components }, () => assert.fail("must not infer")), /component/i);
+  }
+});
+
+test("later component failure, out-of-group handles and drift never publish a partial batch", async t => {
+  const f = fixture(t), before = snapshot(f.root);
+  const components = [{ name: "library", sources: ["src/lib.rs"] }, { name: "manifest", sources: ["Cargo.toml"] }];
+  for (const mode of ["failure", "handle", "name", "drift", "cancel"]) {
+    const controller = new AbortController(); let calls = 0;
+    await assert.rejects(draftLocalOnboarding({ root: f.root, project: "first-run", components, signal: controller.signal }, async input => {
+      calls++;
+      const note = plan(input).notes[0]; note.name = input.component;
+      note.evidence[0].sources = [{ source: 1 }];
+      if (calls === 2) {
+        if (mode === "failure") throw new Error("later failure");
+        if (mode === "handle") note.evidence[0].sources[0].source = 2;
+        if (mode === "name") note.name = "wrong";
+        if (mode === "drift") writeFileSync(join(f.repository, "Cargo.toml"), readFileSync(join(f.repository, "Cargo.toml"), "utf8") + "\n");
+        if (mode === "cancel") controller.abort(new Error("cancelled"));
+      }
+      return { answer: JSON.stringify({ notes: [note] }) };
+    }));
+    assert.equal(calls, 2);
+    assert.deepEqual(snapshot(f.root), before);
+  }
+});
+
+
+test("configured reviewed fields are constrained to the supplied draft date", () => {
+  const schema = planSchema({ sources: [{path:"one"}], preparation: { project:"test", note_types: { entity: { required_fields: ["reviewed", "entity"] } } } }, "2026-11-08");
+  assert.deepEqual(schema.properties.notes.items.oneOf[0].properties.fields.properties.reviewed, { const: "2026-11-08" });
 });

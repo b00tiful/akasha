@@ -1,0 +1,5 @@
+[
+  {"name":"job-queue","sources":["src/queue.rs"]},
+  {"name":"capacity-settings","sources":["src/settings.rs"]},
+  {"name":"summary-report","sources":["src/report.rs"]}
+]

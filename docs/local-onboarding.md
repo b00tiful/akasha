@@ -20,6 +20,32 @@ node scripts/local-onboarding.mjs \
   --gpu-layers 99 --threads 4 --json > draft.json
 ```
 
+For multi-component coverage, replace the repeated `--source` options with
+`--components components.json --worker-session`. The JSON file is an array of 1–3 groups:
+
+```json
+[
+  {"name":"job-queue","sources":["src/queue.rs"]},
+  {"name":"capacity-settings","sources":["src/settings.rs"]},
+  {"name":"summary-report","sources":["src/report.rs"]}
+]
+```
+
+Each group gets one independent completion with only its complete selected sources and must
+produce exactly one note with that name. Numeric source handles are scoped to each completion;
+the host translates them back to the original packet before Rust compilation. Groups may share
+sources; the union still has at most eight files and the original 16,000-byte packet limit.
+All notes are compiled and previewed together, after every completion succeeds. A later failure,
+cancellation or observed drift produces no partial proposal or canonical writes.
+
+`--worker-session` explicitly reuses one owned worker within this request, with independent
+prompts and per-completion identity checks. The same 120-second overall deadline applies;
+large groups can refuse rather than return incomplete coverage. Cold completions remain the
+default. Metrics on stderr list each group's selected, cited and uncited sources; citation
+coverage measures attribution, not factual support. Names and groups are explicit operator
+choices, not a recursive scanner or a completeness guarantee. The sample fixture lives in
+`tests/fixtures/local-components/`.
+
 Without `--json`, the command displays the note bodies, projections, proposal ID and preview ID
 as bounded plain text. Metrics go to stderr. Failure returns nonzero with no normal stdout.
 The draft contains private repository material; keep saved artifacts private.
@@ -33,7 +59,8 @@ out of the model input.
 
 This command performs no canonical writes. Review every generated metadata value and claim against its supplied
 source, including labeled inferences and unknowns. Required string fields do not enforce every
-custom field's meaning; the live acceptance needed one reviewed-date correction. Source fingerprints and valid citations do not
+custom field's meaning; earlier live acceptance needed reviewed-date corrections. Configured `reviewed` fields are now
+grammar-constrained to the supplied draft date; a generated date still does not attest human review. Source fingerprints and valid citations do not
 establish factual entailment. To publish, pass `draft.json`'s `proposal` field to the existing
 onboarding MCP `akasha_onboarding_validate`, request `akasha_onboarding_preview`, review that
 summary, and approve `akasha_onboarding_apply` through the connected agent's normal approval
