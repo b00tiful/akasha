@@ -1,5 +1,13 @@
 # Librarian retrieval benchmark
 
+`multilingual.json` is the independent 12-note/16-question query-expansion fixture. It contains
+ten English/Russian/Chinese paraphrases, three exact controls, one hostile-note control and
+two negative/scope controls. It was frozen before expansion code changes or live inference;
+its author knows earlier failure classes. Use the separate
+[query-expansion comparison and exact replay](../../../docs/local-investigator.md). It reports
+initial-packet coverage, retained expanded evidence and final selection independently. The
+original corpora and labels remain unchanged.
+
 `investigator.json` freezes six references to the existing memory cases plus two real-index code
 smoke tasks for the separate [bounded investigator comparison](../../../docs/local-investigator.md).
 It introduces no new claims of blind validation and does not change the original corpus/labels.

@@ -8,6 +8,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, promisify } from "node:util";
 import { localCompletion } from "./local-librarian.mjs";
+import { expandQuery, validateExpansion } from "./librarian-query-expansion.mjs";
 
 const execute = promisify(execFile);
 const workspace = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -190,9 +191,10 @@ export async function createBroker({ root, project, cli = join(workspace, "targe
     return {
       codegraph: enabled, binding,
       get latestPacket() { return packets.at(-1); },
-      async search(query, note) {
+      async search(query, note, terms = []) {
         queryText(query);
-        const packet = await run(["librarian-prepare", query, ...(note ? ["--note", note] : [])]);
+        validateExpansion({ terms });
+        const packet = await run(["librarian-prepare", query, ...(note ? ["--note", note] : []), ...terms.flatMap(term => ["--term", term])]);
         const checked = await check(packet, packet.evidence.map(source => source.citation));
         const packetIndex = packets.length; packets.push(packet);
         return checked.matches.map(source => {
@@ -244,7 +246,7 @@ export async function createBroker({ root, project, cli = join(workspace, "targe
   } catch (error) { await rm(temporary, { recursive: true, force: true }); throw error; }
 }
 
-export async function investigate({ question, broker, decide, signal, maxSteps = 3, maxTools = 4, toolCatalog = false, symbol }) {
+export async function investigate({ question, broker, decide, expand, signal, maxSteps = 3, maxTools = 4, toolCatalog = false, symbol }) {
   queryText(question);
   if (symbol !== undefined) {
     symbolName(symbol);
@@ -281,7 +283,25 @@ export async function investigate({ question, broker, decide, signal, maxSteps =
       signal?.throwIfAborted(); tools++; collect(await broker.symbol(symbol));
       trace.push({ initial_symbol: symbol, observations: latest });
     }
-    for (let step = 0; step < maxSteps; step++) {
+    let firstStep = 0;
+    if (expand) {
+      if (maxSteps < 2) return await result("incomplete", "step_budget");
+      if (tools >= maxTools) return await result("incomplete", "tool_budget");
+      signal?.throwIfAborted();
+      const reply = await expand(question);
+      signal?.throwIfAborted();
+      trace.push({ step: 1, query_expansion: true, response: reply.answer, metrics: reply.metrics });
+      const terms = validateExpansion(JSON.parse(reply.answer));
+      trace.at(-1).terms = terms;
+      firstStep = 1;
+      if (terms.length) {
+        const original = [...latest];
+        tools++; collect(await broker.search(question, undefined, terms));
+        latest = [...new Map([...original, ...latest].map(source => [source.handle, source])).values()];
+        trace.push({ observations: latest });
+      }
+    }
+    for (let step = firstStep; step < maxSteps; step++) {
       signal?.throwIfAborted();
       const payload = { question, remaining_steps: maxSteps - step, remaining_tools: maxTools - tools,
         known: sources.map(({ handle, id, kind }) => ({ handle, id, kind })), observations: latest,
@@ -310,6 +330,7 @@ export async function investigate({ question, broker, decide, signal, maxSteps =
     }
     return await result("incomplete", "step_budget");
   } catch (error) {
+    if (error.queryExpansion) trace.push({ step: 1, query_expansion: true, ...error.queryExpansion });
     error.investigationTrace = { question, status: "failed", tools, trace, inspected: sources.map(({ handle, id, kind }) => ({ handle, id, kind })) };
     throw error;
   }
@@ -319,22 +340,25 @@ export async function runInvestigation(options) {
   const { gpuLayers = 0, threads = 4, maxContext = 8192 } = options;
   if (!Number.isInteger(gpuLayers) || gpuLayers < 0 || gpuLayers > 999 || !Number.isInteger(threads) || threads < 1 || threads > 256
     || ![4096, 8192, 16384, 32768].includes(maxContext)) throw new Error("Invalid investigator inference resource settings");
+  if (options.expandQuery !== undefined && typeof options.expandQuery !== "boolean") throw new Error("Invalid query-expansion control");
   const signal = AbortSignal.any([options.signal ?? new AbortController().signal, AbortSignal.timeout(120_000)]);
   const broker = await createBroker({ ...options, signal });
   try {
     return await investigate({ question: options.question, broker, signal, toolCatalog: options.toolCatalog ?? false, symbol: options.symbol,
+      ...(options.expandQuery ? { expand: question => expandQuery(question,
+        (payload, schema, policy) => localCompletion(payload, schema, policy, { ...options, signal })) } : {}),
       decide: (payload, schema) => localCompletion(payload, schema, POLICY, { ...options, signal }) });
   } finally { await broker.close(); }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const { values } = parseArgs({ options: Object.fromEntries(["root", "project", "question", "server", "model", "model-sha256", "codegraph", "symbol", "trace", "cli", "gpu-layers", "threads", "max-context"].map(name => [name, { type: "string" }]).concat(["json", "tool-catalog"].map(name => [name, { type: "boolean", default: false }]))) });
+  const { values } = parseArgs({ options: Object.fromEntries(["root", "project", "question", "server", "model", "model-sha256", "codegraph", "symbol", "trace", "cli", "gpu-layers", "threads", "max-context"].map(name => [name, { type: "string" }]).concat(["json", "tool-catalog", "expand-query"].map(name => [name, { type: "boolean", default: false }]))) });
   const controller = new AbortController(); const cancel = () => controller.abort();
   process.once("SIGINT", cancel); process.once("SIGTERM", cancel);
   let trace;
   try {
     for (const key of ["root", "project", "question", "server", "model", "model-sha256"]) if (!values[key]) throw new Error(`Required --${key}`);
-    const result = await runInvestigation({ ...values, modelSha256: values["model-sha256"], toolCatalog: values["tool-catalog"], signal: controller.signal,
+    const result = await runInvestigation({ ...values, modelSha256: values["model-sha256"], toolCatalog: values["tool-catalog"], expandQuery: values["expand-query"], signal: controller.signal,
       gpuLayers: Number(values["gpu-layers"] ?? 0), threads: Number(values.threads ?? 4), maxContext: Number(values["max-context"] ?? 8192) });
     trace = result;
     const clean = value => String(value).replace(/[\x00-\x1f\x7f-\x9f]/g, char => char === "\n" ? "\n  " : " ");

@@ -5,6 +5,44 @@ tool menu. It returns original source passages and an explicit finished/incomple
 Relevance, answer support and production device budgets remain evaluation concerns. It does not
 generate an authoritative answer or publish memory.
 
+Optional `--expand-query` adds one question-only local planning step for synonyms and translations
+into English, Russian and Simplified Chinese. It keeps the initial lexical candidates and adds a
+core search with up to eight validated literal terms. The model then selects from the retained
+sources. Expansion terms are retrieval hypotheses, never project facts. The expansion completion
+sees no notes, titles, paths or registry. Its response, validated terms and timings appear in the
+trace. Invalid output refuses; an empty term list keeps the initial results.
+
+The step uses one of the existing three model decisions, and its nonempty search uses one of
+the four retrieval calls. The 120-second deadline and input/evidence/source checks still apply.
+This option adds cold inference cost and can produce irrelevant candidates; it is experimental.
+For example, append `--expand-query --question "Что делать с истёкшим ключом доступа перед повторным соединением?"`
+to an otherwise configured memory request. The original question stays bound to the core packet;
+generated terms are passed as explicit literal substrings. Omit the flag for the previous behavior.
+
+Run the independent fictional comparison, or replay its exact decisions without inference:
+
+```sh
+node scripts/benchmark-query-expansion.mjs --out /tmp/memory-retrieval-NEW --live \
+  --server /path/to/llama-server --model /path/to/model.gguf \
+  --model-sha256 EXPECTED_64_CHARACTER_LOWERCASE_SHA256 --gpu-layers 99
+node scripts/benchmark-query-expansion.mjs --out /tmp/memory-replay-NEW \
+  --replay /tmp/memory-retrieval-NEW
+```
+
+The benchmark separates initial-packet coverage, retained expanded evidence and final selected
+passages. It saves exact decision inputs/outputs, checks hashes/physical source lines and source
+inventory/modes, and rejects replay input drift. It measures source navigation on 12 synthetic
+notes and 16 fixed questions; it does not measure factual answer generation or production use.
+
+The 2026-11-08 fixed Qwen3.5-9B UD-Q4_K_XL study recovers 8/10 paraphrases versus 2/10 in
+the initial lexical packets; necessary-span coverage across all positive cases is 12/14 versus
+5/14. All sixteen runs finish, exact-match coverage is retained, the dedicated hostile-note
+control selects only its relevant source, and both negative/scope controls select nothing.
+All 25 fixture files remain exact. The English/Russian upload paraphrases still miss, and three
+irrelevant final passages remain across the study. Median wall time is 80.38 seconds with the
+existing cold workers. This is same-author synthetic validation; initial packet coverage is not
+a separate no-expansion model-agent trial. Keep expansion opt-in and source relevance unverified.
+
 The investigator now supports a direct `symbol` action for complete source of one exact,
 unqualified ASCII identifier. With CodeGraph enabled, the host performs bounded JSON lookup,
 requires one exact match, validates its repository file and fetches file-pinned symbol source.
