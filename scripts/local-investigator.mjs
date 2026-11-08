@@ -16,6 +16,12 @@ export const POLICY = "Investigate the user's question by locating original sour
 
 const object = properties => ({ type: "object", additionalProperties: false, required: Object.keys(properties), properties });
 const text = { type: "string", minLength: 1, maxLength: 160 };
+const actionDescriptions = {
+  search: "Search saved project notes using a short query. These are project-memory sources, not implementation code.",
+  read: "Inspect a previously discovered project note and its recorded neighbors using a focused query.",
+  explore: "Query the existing repository CodeGraph for implementation code, symbols and call paths. The host fixes the repository and read-only tool options.",
+  finish: "Stop investigating and select up to six useful known source handles. An empty list means no source selected, not proof of missing knowledge.",
+};
 export function actionSchema(known, codegraph, canRetrieve = true) {
   const choices = [object({ action: { const: "search" }, query: text }),
     object({ action: { const: "finish" }, handles: { type: "array", maxItems: known.length ? 6 : 0,
@@ -77,6 +83,7 @@ export async function createBroker({ root, project, cli = join(workspace, "targe
     const graph = async query => {
       const { stdout } = await execute(codegraph, ["--no-color", "explore", queryText(query), "--path", repository, "--max-files", "2"],
         { cwd: repository, signal, timeout: 30_000, maxBuffer: 65_536 });
+      if (!stdout.trim()) throw new Error("CodeGraph returned an empty report");
       if (/auto-sync is DISABLED|changed on disk after the last index sync|Some files referenced below were edited/i.test(stdout)) throw new Error("CodeGraph reported stale source/index evidence");
       return stdout;
     };
@@ -118,8 +125,9 @@ export async function createBroker({ root, project, cli = join(workspace, "targe
   } catch (error) { await rm(temporary, { recursive: true, force: true }); throw error; }
 }
 
-export async function investigate({ question, broker, decide, signal, maxSteps = 3, maxTools = 4 }) {
+export async function investigate({ question, broker, decide, signal, maxSteps = 3, maxTools = 4, toolCatalog = false }) {
   queryText(question);
+  if (typeof toolCatalog !== "boolean") throw new Error("Invalid tool-catalog control");
   if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 3 || !Number.isInteger(maxTools) || maxTools < 1 || maxTools > 4) throw new Error("Invalid investigation limits");
   const sources = []; const trace = []; const actions = new Set(); let latest = []; let tools = 0;
   const collect = entries => {
@@ -149,10 +157,15 @@ export async function investigate({ question, broker, decide, signal, maxSteps =
       const payload = { question, remaining_steps: maxSteps - step, remaining_tools: maxTools - tools,
         known: sources.map(({ handle, id, kind }) => ({ handle, id, kind })), observations: latest,
         previous_actions: trace.filter(item => item.action).map(item => item.action) };
+      const schema = actionSchema(sources, broker.codegraph, step + 1 < maxSteps && tools < maxTools);
+      if (toolCatalog) payload.available_actions = schema.oneOf.map(choice => ({
+        description: actionDescriptions[choice.properties.action.const], schema: choice,
+      }));
       if (Buffer.byteLength(JSON.stringify(payload)) > 16_000) return await result("incomplete", "input_budget");
-      const reply = await decide(payload, actionSchema(sources, broker.codegraph, step + 1 < maxSteps && tools < maxTools));
+      const reply = await decide(payload, schema);
       signal?.throwIfAborted();
-      trace.push({ step: step + 1, response: reply.answer, metrics: reply.metrics });
+      trace.push({ step: step + 1, response: reply.answer, metrics: reply.metrics,
+        ...(toolCatalog ? { available_actions: payload.available_actions } : {}) });
       const action = validateAction(JSON.parse(reply.answer), sources, broker.codegraph);
       trace.at(-1).action = action;
       if (action.action === "finish") return await result("finished", "model_finished", action.handles);
@@ -176,19 +189,19 @@ export async function runInvestigation(options) {
   const signal = AbortSignal.any([options.signal ?? new AbortController().signal, AbortSignal.timeout(120_000)]);
   const broker = await createBroker({ ...options, signal });
   try {
-    return await investigate({ question: options.question, broker, signal,
+    return await investigate({ question: options.question, broker, signal, toolCatalog: options.toolCatalog ?? false,
       decide: (payload, schema) => localCompletion(payload, schema, POLICY, { ...options, signal }) });
   } finally { await broker.close(); }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const { values } = parseArgs({ options: Object.fromEntries(["root", "project", "question", "server", "model", "model-sha256", "codegraph", "trace", "cli"].map(name => [name, { type: "string" }]).concat([["json", { type: "boolean", default: false }]])) });
+  const { values } = parseArgs({ options: Object.fromEntries(["root", "project", "question", "server", "model", "model-sha256", "codegraph", "trace", "cli"].map(name => [name, { type: "string" }]).concat(["json", "tool-catalog"].map(name => [name, { type: "boolean", default: false }]))) });
   const controller = new AbortController(); const cancel = () => controller.abort();
   process.once("SIGINT", cancel); process.once("SIGTERM", cancel);
   let trace;
   try {
     for (const key of ["root", "project", "question", "server", "model", "model-sha256"]) if (!values[key]) throw new Error(`Required --${key}`);
-    const result = await runInvestigation({ ...values, modelSha256: values["model-sha256"], signal: controller.signal });
+    const result = await runInvestigation({ ...values, modelSha256: values["model-sha256"], toolCatalog: values["tool-catalog"], signal: controller.signal });
     trace = result;
     const clean = value => String(value).replace(/[\x00-\x1f\x7f-\x9f]/g, char => char === "\n" ? "\n  " : " ");
     process.stdout.write(values.json ? JSON.stringify(result) + "\n" : `Investigation ${result.status}: ${result.reason}\n` + result.matches.map(source => `[${source.handle}] ${clean(source.id)} (${source.kind})\n  ${clean(source.quote)}\n`).join(""));

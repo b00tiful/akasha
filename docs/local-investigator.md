@@ -10,6 +10,21 @@ The first same-model Qwen3 4B comparison fails utility acceptance: affirmative m
 passes 28 tests/eight exact decision replays. Keep this as an explicit experiment; further planner
 profiles require a new direction after the two preserved failed utility profiles.
 
+The directed follow-up adds an opt-in `--tool-catalog` control to both commands below. It puts
+fixed action descriptions and the exact currently enforced JSON action schemas into the model's
+input. Available note IDs/source handles and optional CodeGraph access come from the host;
+exhausted budgets advertise only finish. The catalog counts toward the same 16,000-byte input
+limit and is retained with each decision in the trace. Omit the flag to retain the previous
+payload and decoder behavior. This is a JSON-action framing experiment, not native function calling.
+Its same-model usefulness/resource evaluation is separate from operational test acceptance.
+The completed catalog profile finishes 8/8 and retains 3/4 affirmative memory cases, matching
+deterministic navigation. It still selects no CodeGraph actions (0/14 decisions), covers 0/2 code
+tasks and retains five irrelevant memory passages. Median memory wall time is 33.92 s versus
+0.68 s deterministic and 17.61 s selector in that run. It fails utility acceptance and remains
+opt-in; these are synthetic single-host/historical-comparison observations. Final 31 tests,
+eight default replays and eight core-backed catalog replays pass. Empty CodeGraph output now
+refuses before becoming source evidence.
+
 Build the existing normal CLI, then use the same pinned llama.cpp b12110 and explicit GGUF/hash
 as the [source-selector pilot](local-librarian.md):
 
@@ -66,6 +81,9 @@ node scripts/benchmark-local-investigator.mjs --out /tmp/investigator-NEW \
   --model-sha256 EXPECTED_64_CHARACTER_LOWERCASE_SHA256 \
   --codegraph /path/to/codegraph
 ```
+
+Add `--tool-catalog` for the explicit-catalog profile. Each new comparison directory includes
+`profile.json` recording the flag, model identity and CPU-thread setting, alongside source pins.
 
 The six memory tasks reuse fictional notes and predeclared labels. Two separate code smoke tasks
 query this workspace's existing CodeGraph index; when CodeGraph is omitted they are explicitly

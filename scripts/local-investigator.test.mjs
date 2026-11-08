@@ -48,6 +48,48 @@ test("decisions retain bounded action history and exhausted menus offer only fin
   assert.equal(result.status, "finished");
   assert.deepEqual(actionSchema([], false, false).oneOf.map(choice => choice.properties.action.const), ["finish"]);
 });
+test("opt-in catalog exactly advertises the decoder actions and current source bindings", async () => {
+  for (const codegraph of [false, true]) {
+    const broker = { ...fake(), codegraph }; let step = 0;
+    const result = await investigate({ question: "Find A", broker, maxSteps: 2, toolCatalog: true,
+      decide: async (payload, schema) => {
+        assert.deepEqual(payload.available_actions.map(entry => entry.schema), schema.oneOf);
+        const choices = payload.available_actions.map(entry => entry.schema.properties.action.const);
+        assert.equal(choices.includes("explore"), codegraph && step === 0);
+        const read = payload.available_actions.find(entry => entry.schema.properties.action.const === "read");
+        if (step++ === 0) {
+          assert.deepEqual(read.schema.properties.id.enum, [note.id]);
+          assert(payload.available_actions.every(entry => typeof entry.description === "string"));
+          return reply({ action: "read", id: note.id, query: "related" });
+        }
+        assert.deepEqual(choices, ["finish"]);
+        assert.deepEqual(schema.oneOf[0].properties.handles.items.enum, [1]);
+        return reply({ action: "finish", handles: [1] });
+      } });
+    assert(result.trace.filter(entry => entry.action).every(entry => entry.available_actions));
+  }
+});
+test("catalog defaults off and cannot enable tools after the retrieval budget is exhausted", async () => {
+  const original = await investigate({ question: "Find A", broker: fake(), decide: async (payload) => {
+    assert(!Object.hasOwn(payload, "available_actions"));
+    return reply({ action: "finish", handles: [1] });
+  } });
+  assert(!Object.hasOwn(original.trace[1], "available_actions"));
+  await investigate({ question: "Find A", broker: fake(), maxTools: 1, toolCatalog: true, decide: async (payload, schema) => {
+    assert.deepEqual(payload.available_actions.map(entry => entry.schema), schema.oneOf);
+    assert.deepEqual(schema.oneOf.map(choice => choice.properties.action.const), ["finish"]);
+    return reply({ action: "finish", handles: [1] });
+  } });
+  await assert.rejects(investigate({ question: "Find A", broker: fake(), toolCatalog: "true", decide: async () => {} }), /tool-catalog/);
+});
+test("catalog bytes count toward the existing decision input limit before model access", async () => {
+  const broker = fake(); broker.search = async () => [{ ...note, quote: "x".repeat(15_300) }];
+  let calls = 0;
+  const decide = async () => { calls++; return reply({ action: "finish", handles: [1] }); };
+  assert.equal((await investigate({ question: "Find A", broker, decide })).status, "finished");
+  assert.equal((await investigate({ question: "Find A", broker, decide, toolCatalog: true })).reason, "input_budget");
+  assert.equal(calls, 1);
+});
 test("invalid model output, cancellation, drift and verifier failure retain failed trace", async () => {
   for (const mode of ["json", "cancel", "drift", "verify"]) {
     const broker = fake(); const controller = new AbortController(); let count = 0;
@@ -90,4 +132,6 @@ test("CodeGraph is explicitly bound to resolved repository and reports are reche
   await broker.verify(unicode);
   await writeFile(tool, "#!/bin/sh\necho changed\n");
   await assert.rejects(broker.verify(sources), /changed/);
+  await writeFile(tool, "#!/bin/sh\nexit 0\n");
+  await assert.rejects(broker.explore("Empty"), /empty report/);
 });
