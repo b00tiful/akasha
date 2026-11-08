@@ -153,7 +153,7 @@ const COMMANDS: &[Completion] = &[
     Completion {
         command: "context",
         argument: "[--max-chars N]",
-        description: "Read project orientation; 16000 characters by default, explicit budget",
+        description: "Read project orientation; 8000-character fill, core up to 16000 by default",
     },
     Completion {
         command: "breadcrumb",
@@ -268,7 +268,7 @@ fn prompt_area(text: String) -> TextArea<'static> {
     prompt_area_with_placeholder(text, PROMPT_PLACEHOLDER)
 }
 
-pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nsetup PATH      review a new private data root (first run)\nonboard         prepare external-agent onboarding instructions\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to report / previous list\nfollow NUMBER   open a bound canonical graph result\nlinks [NOTE] [--limit N]\n                saved outgoing files (open note by default)\nbacklinks [NOTE] [--limit N]\n                saved incoming files; 30 default, 1..100 explicit\nsearch TEXT [--limit N]\n                current scope; 100 default, 1..100 explicit\nsearch-all TEXT [--limit N]\n                every project and global notes\nsearch -- TEXT  literal query, including --limit words\ncreate TYPE     guided configured record/entity creation\nlifecycle       edit and review the open record/entity and its projection\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\nstatus [--limit N]\n                all-project metrics; 30 default, 1..100 explicit\ndigest [--limit N]\n                all-project metrics by latest canonical note date\nresolve         inspect root, project and pointer selection\ncontext [--max-chars N]\n                project orientation; 16000 characters by default\nbreadcrumb      open tasks and latest handoff\nhandoff         guided multiline handoff authoring and exact review\nhandoff PATH | NAME=VALUE | ...\n                inline capture from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE      guided multiline event authoring and exact review\nevent TYPE PATH | NAME=VALUE | ...\n                inline configured immutable event creation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\ninit PROJECT [REPOSITORY]\n                review an empty project scaffold and registry update\nlink PROJECT [REPOSITORY]\n                review an exclusive repository pointer creation\nconfirm PLAN_ID authorize the displayed administration plan\nrecovery        inspect note journal presence without writing; Esc returns\nrecover-init    review root initialization recovery; confirm PLAN_ID applies\nrefresh         retry core recovery and reload validated data (F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\n/search memory --limit 10 bounds displayed results.\n/context --max-chars 32000 expands whole-entry orientation.\n/search -- memory --limit 10 searches that entire literal text.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and lifecycle forms show exact configured templates and\nmaintained projections. Creation and lifecycle use Ctrl-N to review the exact note and projection\nbefore Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. All guided template fields support multiline text;\nCtrl-N/Ctrl-P navigate and Ctrl-S publishes only after exact source review.\nIntegration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nFirst run: /setup PATH, /confirm PLAN_ID, /init PROJECT [REPOSITORY], then /onboard.\nOtherwise open from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
+pub(super) const HELP: &str = "AKASHA · TERMINAL\n\nTab             complete nonempty prompt; otherwise switch panes\nShift-Tab       switch panes even with a command draft\nEnter           open selected item / run command\nEscape          back to list / parent level\nBackspace       focus prompt outside text editing\nCtrl-S          save or apply the current checked form\nCtrl-N / Ctrl-P next / previous document in a form\nCtrl-Q          quit; unsaved changes prevent exit\nCtrl-C          clear command first, otherwise safe quit\nF2              edit selected note\nF5              refresh library\nF1              this help\nF3              search (type words, then Enter)\nF4 / F6         projects / global knowledge\nF7              back to list / parent level\n\nCOMMANDS\nsetup PATH      review a new private data root (first run)\nonboard         prepare external-agent onboarding instructions\nhome            return to the memory dashboard\nprojects        browse registered projects\nproject SLUG    select a project\nglobal          browse shared knowledge\nls              categories in current scope\ntype NAME       open a configured note category\nopen NUMBER     open a numbered item\nopen PATH       open an exact note identity\nback            return to report / previous list\nfollow NUMBER   open a bound canonical graph result\nlinks [NOTE] [--limit N]\n                saved outgoing files (open note by default)\nbacklinks [NOTE] [--limit N]\n                saved incoming files; 30 default, 1..100 explicit\nsearch TEXT [--limit N]\n                current scope; 100 default, 1..100 explicit\nsearch-all TEXT [--limit N]\n                every project and global notes\nsearch -- TEXT  literal query, including --limit words\ncreate TYPE     guided configured record/entity creation\nlifecycle       edit and review the open record/entity and its projection\nedit / read     source editor / reading mode\nsave            save through checked core transaction\ndiscard         discard editor changes or cancel a form\nstatus [--limit N]\n                all-project metrics; 30 default, 1..100 explicit\ndigest [--limit N]\n                all-project metrics by latest canonical note date\nresolve         inspect root, project and pointer selection\ncontext [--max-chars N]\n                orientation; fill 8000, core up to 16000\nbreadcrumb      open tasks and latest handoff\nhandoff         guided multiline handoff authoring and exact review\nhandoff PATH | NAME=VALUE | ...\n                inline capture from the configured template\ntemplate TYPE   read the exact configured note template\nevent TYPE      guided multiline event authoring and exact review\nevent TYPE PATH | NAME=VALUE | ...\n                inline configured immutable event creation\nvalidate        validate selected project\nintegrations CLIENT [HOME]\n                inspect read-only client wiring plans\nintegration apply|remove instructions|hook CLIENT [HOME]\n                review one exact client-home change\ninit PROJECT [REPOSITORY]\n                review an empty project scaffold and registry update\nlink PROJECT [REPOSITORY]\n                review an exclusive repository pointer creation\nconfirm PLAN_ID authorize the displayed administration plan\nrecovery        inspect note journal presence without writing; Esc returns\nrecover-init    review root initialization recovery; confirm PLAN_ID applies\nrefresh         retry core recovery and reload validated data (F5)\nmotion          toggle ambient animation\nhelp / quit     help / exit\n\nEDITOR\nArrows, Home/End, PageUp/Down; Shift selects text.\nCtrl-Z undo; Ctrl-Y redo; Ctrl-X cut; Ctrl-V internal paste.\nUse the terminal's paste shortcut for system clipboard text.\nEsc goes back; unsaved changes prevent leaving. Click the prompt to enter commands.\n\nMouse: click a row or action; wheel scrolls lists/readers.\nHold Shift with the mouse for terminal-native text selection.\nReading: arrows/PageUp/PageDown scroll; Left/Esc returns to list; Backspace focuses the prompt.\nCommand prompt: / opens commands; Up/Down select; Tab completes.\n/open then Tab lists notes; filter by title or path; Enter opens.\n/create then Tab lists configured record/entity types.\n/search memory finds titles or contents containing memory in the current scope.\n/search-all memory searches all projects and global notes.\n/search memory --limit 10 bounds displayed results.\n/context --max-chars 32000 expands whole-entry orientation.\n/search -- memory --limit 10 searches that entire literal text.\nEnter runs commands or fills an argument prefix; Esc closes the menu.\nWithout the menu, Up/Down recall session history.\nCtrl-A/E move to start/end; Ctrl-U/K clear before/after cursor.\nCtrl-W deletes the previous word.\n\nCreation and lifecycle forms show exact configured templates and\nmaintained projections. Creation and lifecycle use Ctrl-N to review the exact note and projection\nbefore Ctrl-S applies both through checked core writes;\nDiscard cancels without writing. All guided template fields support multiline text;\nCtrl-N/Ctrl-P navigate and Ctrl-S publishes only after exact source review.\nIntegration inspection never writes.\n/integration prepares one exact patch; /confirm PLAN_ID authorizes it.\n/discard cancels the review; stale plans require a fresh review.\n\nFirst run: /setup PATH, /confirm PLAN_ID, /init PROJECT [REPOSITORY], then /onboard.\nOtherwise open from a linked repository or pass --root PATH --project SLUG.\nSSH: run Akasha on the remote host in an allocated terminal.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Focus {
@@ -418,7 +418,7 @@ pub(super) enum Job {
     Check(ResolveRequest, Box<LibraryProjection>, Vec<WatchedSource>),
     Open(ViewOrigin, String),
     Search(ResolveRequest, String, LibraryScope, bool, usize),
-    Context(ResolveRequest, usize),
+    Context(ResolveRequest, Option<usize>),
     Breadcrumb(ResolveRequest),
     Resolve(ResolveRequest),
     LibraryReport(ResolveRequest, akasha_core::LibraryReportKind, usize),
@@ -487,7 +487,7 @@ pub(super) enum Response {
     LinkFollowed(Box<(LinkReport, u16, LibraryDocument)>),
     Text(ResolveRequest, String, String),
     Saved(String),
-    EventCreated(EventCreationResult),
+    EventCreated(EventCreationResult, Option<usize>),
     EventPrepared(ViewOrigin, EventCreationForm),
     EventPreviewed(ResolveRequest, Box<EventCreationPreview>),
     CreatePrepared(ViewOrigin, MutableNoteCreationForm),
@@ -679,7 +679,10 @@ fn execute_job_inner(job: Job) -> WorkResult {
                 .map_err(|e| err(&e))?;
             Ok(Response::Found(request, scope, result))
         }
-        Job::Context(request, max_chars) => assemble_context_with_budget(&request, max_chars)
+        Job::Context(request, max_chars) => match max_chars {
+            Some(max_chars) => assemble_context_with_budget(&request, max_chars),
+            None => akasha_core::assemble_context(&request),
+        }
             .map(|bundle| Response::Context(request, Box::new(bundle)))
             .map_err(|e| err(&e)),
         Job::Breadcrumb(request) => assemble_session_breadcrumb(&request)
@@ -698,7 +701,7 @@ fn execute_job_inner(job: Job) -> WorkResult {
         Job::FollowLink(request, report, index, scroll) => report.follow(&request, index)
             .map(|document| Response::LinkFollowed(Box::new((*report, scroll, document)))),
         Job::CaptureHandoff(request, path, fields) => capture_handoff(&request, &path, &fields)
-            .map(Response::EventCreated)
+            .map(|result| event_created(&request, result))
             .map_err(|e| err(&e)),
         Job::Template(request, note_type) => resolve_note_template(&request, &note_type)
             .map(|template| {
@@ -717,11 +720,19 @@ fn execute_job_inner(job: Job) -> WorkResult {
             .map_err(|e| err(&e)),
         Job::CreateEvent(request, note_type, path, fields) =>
             create_event(&request, &note_type, &path, &fields)
-                .map(Response::EventCreated)
+                .map(|result| event_created(&request, result))
                 .map_err(|e| err(&e)),
         Job::Validate(request) => validate_project(&request)
-            .map(|report| Response::Text(request, "VALIDATION".into(), format!("Validation passed\n\nProject: {}\nRoot: {}\n\nCanonical metadata, configured layout, links and project state were checked.", report.project, report.root.display())))
-            .map_err(|e| err(&e)),
+            .map_err(|e| err(&e))
+            .and_then(|report| {
+                let warnings = akasha_core::context_fit_warnings(&request).map_err(|e| err(&e))?;
+                let mut text = format!("Validation passed\n\nProject: {}\nRoot: {}\n\nCanonical metadata, configured layout, links and project state were checked.", report.project, report.root.display());
+                for warning in &warnings {
+                    text.push_str("\n\nContext warning: ");
+                    text.push_str(&crate::render::context_warning_text(warning));
+                }
+                Ok(Response::Text(request, "VALIDATION".into(), text))
+            }),
         Job::Save(request, id, expected, replacement) => {
             replace_library_document(&request, &id, &expected, &replacement).map_err(|e| err(&e))?;
             Ok(Response::Saved(replacement))
@@ -742,7 +753,7 @@ fn execute_job_inner(job: Job) -> WorkResult {
             .map(|preview| Response::EventPreviewed(request, Box::new(preview)))
             .map_err(|e| err(&e)),
         Job::ApplyEvent(request, preview) => apply_event_creation(&request, &preview)
-            .map(Response::EventCreated)
+            .map(|result| event_created(&request, result))
             .map_err(|e| err(&e)),
         Job::PreviewCreate(request, prepared, path, fields, projection) => preview_mutable_note_creation(
             &prepared,
@@ -1479,7 +1490,11 @@ impl App {
             Ok(Response::InitRecoveryCommitted(result)) => {
                 result.map(|r| crate::render::init_recovery_result_text(&r))
             }
-            Ok(Response::EventCreated(result)) => Ok(format!("Created {}.", result.id)),
+            Ok(Response::EventCreated(result, oversized)) => Ok(format!(
+                "Created {}.{}",
+                result.id,
+                oversized_handoff_suffix(oversized)
+            )),
             Ok(Response::Created(result)) => Ok(format!(
                 "Created {} and applied its maintained projection.",
                 result.id
@@ -3140,15 +3155,17 @@ impl App {
                 ));
                 self.load();
             }
-            Ok(Response::EventCreated(result)) => {
+            Ok(Response::EventCreated(result, oversized)) => {
                 self.workflow = None;
                 self.editor = None;
                 self.editing = false;
                 self.reset_prompt();
                 self.pending_open = Some(result.id.clone());
                 self.message(&format!(
-                    "Created {} through the configured {} event template.",
-                    result.id, result.note_type
+                    "Created {} through the configured {} event template.{}",
+                    result.id,
+                    result.note_type,
+                    oversized_handoff_suffix(oversized)
                 ));
                 self.load();
             }
@@ -3497,10 +3514,11 @@ impl App {
             }
             "context" => {
                 let words: Vec<_> = argument.split_whitespace().collect();
+                // Outer `None` is a usage error; inner `None` selects the core-protected default.
                 let max_chars = match words.as_slice() {
-                    [] => Some(akasha_core::DEFAULT_CONTEXT_MAX_CHARS),
+                    [] => Some(None),
                     ["--max-chars", value] if value.bytes().all(|byte| byte.is_ascii_digit()) =>
-                        value.parse::<u32>().ok().filter(|value| *value > 0).map(|value| value as usize),
+                        value.parse::<u32>().ok().filter(|value| *value > 0).map(|value| Some(value as usize)),
                     _ => None,
                 };
                 if let Some(max_chars) = max_chars {
@@ -4315,6 +4333,25 @@ pub(super) fn scope_name(scope: &LibraryScope) -> String {
         LibraryScope::Global => "GLOBAL".into(),
         LibraryScope::Project { project } => project.clone(),
     }
+}
+
+/// Measure a created handoff in the background job; the measurement is advisory only.
+fn event_created(request: &ResolveRequest, result: EventCreationResult) -> Response {
+    let oversized = akasha_core::oversized_handoff(request, &result.note_type, &result.path)
+        .ok()
+        .flatten();
+    Response::EventCreated(result, oversized)
+}
+
+fn oversized_handoff_suffix(oversized: Option<usize>) -> String {
+    oversized
+        .map(|chars| {
+            format!(
+                " Warning: {}.",
+                crate::render::oversized_handoff_text(chars)
+            )
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -5376,10 +5413,10 @@ mod tests {
         let mut fixture = Fixture::new();
         let before = link_snapshot(&fixture.root());
         for (command, budget) in [
-            ("context", 16_000),
-            ("context --max-chars 32000", 32_000),
-            ("context\t--max-chars\t0001", 1),
-            ("context --max-chars 4294967295", u32::MAX as usize),
+            ("context", None),
+            ("context --max-chars 32000", Some(32_000)),
+            ("context\t--max-chars\t0001", Some(1)),
+            ("context --max-chars 4294967295", Some(u32::MAX as usize)),
         ] {
             fixture.app.command(command);
             assert!(
@@ -5484,7 +5521,7 @@ mod tests {
             fixture.app.scroll = 2;
             let body = fixture.app.body.clone();
             let report = fixture.app.link_report.clone();
-            let response = execute_job(Job::Context(fixture.app.request.clone(), 32_000));
+            let response = execute_job(Job::Context(fixture.app.request.clone(), Some(32_000)));
             match change {
                 "root" => fixture.app.request.root_override = None,
                 "project" => fixture.app.request.project_override = None,
@@ -5523,7 +5560,7 @@ mod tests {
         assert!(fixture.jobs.try_recv().is_err());
         fixture.app.receive(execute_job(Job::Context(
             fixture.app.request.clone(),
-            32_000,
+            Some(32_000),
         )));
         assert_eq!(fixture.app.editor.as_ref().unwrap().source(), source);
         assert!(fixture.app.editor.as_mut().unwrap().area.undo());
@@ -5534,7 +5571,7 @@ mod tests {
         assert!(fixture.jobs.try_recv().is_err());
         fixture.app.receive(execute_job(Job::Context(
             fixture.app.request.clone(),
-            32_000,
+            Some(32_000),
         )));
         assert!(fixture.app.workflow.is_some());
         fixture.app.command("discard");
@@ -5555,7 +5592,7 @@ mod tests {
         assert!(fixture.jobs.try_recv().is_err());
         fixture.app.receive(execute_job(Job::Context(
             fixture.app.request.clone(),
-            32_000,
+            Some(32_000),
         )));
         assert_eq!(
             fixture.app.link_review.as_ref().unwrap().plan.plan_id,
@@ -7858,6 +7895,60 @@ mod tests {
                 .back()
                 .unwrap()
                 .contains("Operation failed:")
+        );
+    }
+
+    #[test]
+    fn terminal_validate_and_handoff_report_orientation_warnings() {
+        let mut fixture = Fixture::new();
+        fixture.app.command("validate");
+        fixture.finish();
+        assert_eq!(fixture.app.body_title, "VALIDATION");
+        assert!(!fixture.app.body.contains("Context warning"));
+
+        let task = fixture
+            .root()
+            .join("Projects/example/records/tasks/active.md");
+        let expected = fs::read_to_string(&task).unwrap();
+        let replacement = expected.replace("updated: 2026-07-13", "updated: 2026-07-14");
+        let roadmap = format!("# Roadmap\n\n{}", "- [x] finished slice\n".repeat(900));
+        akasha_core::update_record(
+            &fixture.app.request,
+            "Projects/example/records/tasks/active.md",
+            &expected,
+            &replacement,
+            &roadmap,
+        )
+        .unwrap();
+        fixture.app.command("validate");
+        fixture.finish();
+        assert!(
+            fixture
+                .app
+                .body
+                .contains("Context warning: Roadmap `roadmap.md` ("),
+            "{}",
+            fixture.app.body
+        );
+
+        fs::write(
+            fixture.root().join("Projects/example/templates/handoff.md"),
+            "---\nschema_version: 1\nproject: {{project}}\ntype: {{type}}\ndate: {{date}}\n---\n\n# {{title}}\n\n{{body}}\n",
+        )
+        .unwrap();
+        let body = "Detailed narrative that belongs in a record. ".repeat(60);
+        fixture.app.command(&format!(
+            "handoff tui-large.md | date=2026-09-29 | title=Large | body={body}"
+        ));
+        fixture.finish();
+        assert!(
+            fixture
+                .app
+                .messages
+                .iter()
+                .any(|message| message.contains("Warning: handoff body is")),
+            "{:?}",
+            fixture.app.messages
         );
     }
 

@@ -168,6 +168,69 @@ fn validate_json_is_machine_readable() {
     assert_eq!(value["projections"]["roadmap"]["sources"], 2);
     assert_eq!(value["wikilinks"], 1);
     assert_eq!(value["note_types"]["entity"]["class"], "entity");
+    assert_eq!(value["context_warnings"], serde_json::json!([]));
+}
+
+#[test]
+fn validate_reports_orientation_entries_that_cannot_fit_the_default_context() {
+    let temp = TempDir::copy_of(&fixtures());
+    let root = temp.path().join("valid-root");
+    fs::write(
+        root.join("templates/task.md"),
+        "---\nschema_version: 1\nproject: {{project}}\ntype: {{type}}\nstatus: {{status}}\ncreated: {{created}}\nupdated: {{updated}}\n---\n\n# {{title}}\n",
+    )
+    .unwrap();
+    let roadmap = temp.path().join("roadmap.next.md");
+    fs::write(
+        &roadmap,
+        format!("# Roadmap\n\n{}", "- [x] finished slice\n".repeat(900)),
+    )
+    .unwrap();
+    let akasha = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_akasha"))
+            .arg("--root")
+            .arg(&root)
+            .args(["--project", "example"])
+            .args(args)
+            .env_remove("AKASHA_ROOT")
+            .output()
+            .expect("run akasha")
+    };
+    let created = akasha(&[
+        "create-note",
+        "task",
+        "growth.md",
+        "--projection",
+        roadmap.to_str().unwrap(),
+        "--field",
+        "status=open",
+        "--field",
+        "title=Growth",
+        "--field",
+        "created=2026-08-01",
+        "--field",
+        "updated=2026-08-01",
+    ]);
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+
+    let plain = akasha(&["validate"]);
+    assert!(plain.status.success(), "warnings never fail validation");
+    assert!(plain.stderr.is_empty());
+    let stdout = String::from_utf8(plain.stdout).unwrap();
+    assert_eq!(stdout.matches("context warning: ").count(), 1, "{stdout}");
+    assert!(stdout.contains("context warning: Roadmap `roadmap.md` ("));
+    assert!(stdout.contains("does not fit the 16000-character orientation-core limit; compact it"));
+
+    let json = akasha(&["--json", "validate"]);
+    assert!(json.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(value["context_warnings"].as_array().map(Vec::len), Some(1));
+    assert_eq!(value["context_warnings"][0]["section"], "roadmap");
+    assert_eq!(value["context_warnings"][0]["source"], "roadmap.md");
 }
 
 #[test]

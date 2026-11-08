@@ -4,11 +4,12 @@ use std::io::{self, IsTerminal, Write as _};
 
 use akasha_core::{
     AgentWiringAction, AgentWiringOperation, AgentWiringPlan, AgentWiringRecovery,
-    AgentWiringResult, ContextBundle, EntityUpdateResult, EventCreationResult, InitRecovery,
-    InitResult, LinkResult, MutableNoteCreationResult, NoteClass, NoteEditRecovery,
-    ProjectValidationReport, RecordUpdateResult, ResolvedProject, SessionBreadcrumb,
-    SessionHookWiringAction, SessionHookWiringOperation, SessionHookWiringPlan,
-    SessionHookWiringRecovery, SessionHookWiringResult, render_context_markdown,
+    AgentWiringResult, ContextBundle, ContextOmission, DEFAULT_CONTEXT_MAX_CHARS,
+    EntityUpdateResult, EventCreationResult, InitRecovery, InitResult, LinkResult,
+    MutableNoteCreationResult, NoteClass, NoteEditRecovery, ProjectValidationReport,
+    RecordUpdateResult, ResolvedProject, SessionBreadcrumb, SessionHookWiringAction,
+    SessionHookWiringOperation, SessionHookWiringPlan, SessionHookWiringRecovery,
+    SessionHookWiringResult, context_section_label, render_context_markdown,
     render_session_breadcrumb,
 };
 
@@ -1026,11 +1027,17 @@ fn resolution_text_with_mode(resolved: &ResolvedProject, output: OutputMode) -> 
 
 pub(crate) fn render_validation(
     report: &ProjectValidationReport,
+    context_warnings: &[ContextOmission],
     output: OutputMode,
 ) -> io::Result<()> {
     let mut rendered = String::new();
     if output.json {
-        rendered = json_line(serde_json::to_string_pretty(report))?;
+        // Additive field: existing report keys are unchanged.
+        let value = serde_json::to_value(report).and_then(|mut value| {
+            value["context_warnings"] = serde_json::to_value(context_warnings)?;
+            Ok(value)
+        });
+        rendered = json_line(value.and_then(|value| serde_json::to_string_pretty(&value)))?;
     } else {
         print_status(&mut rendered, "valid", &report.project, output);
         print_field(&mut rendered, "registry", report.registry.display(), output);
@@ -1091,8 +1098,35 @@ pub(crate) fn render_validation(
                 output,
             );
         }
+        for warning in context_warnings {
+            print_field(
+                &mut rendered,
+                "context warning",
+                context_warning_text(warning),
+                output,
+            );
+        }
     }
     write_stdout(&rendered)
+}
+
+/// One orientation-core misfit, shared by named `validate` and terminal `/validate`.
+pub(crate) fn context_warning_text(warning: &ContextOmission) -> String {
+    format!(
+        "{} `{}` ({} characters) does not fit the {}-character orientation-core limit; compact it",
+        context_section_label(warning.section),
+        warning.source.display(),
+        warning.content_chars,
+        DEFAULT_CONTEXT_MAX_CHARS
+    )
+}
+
+/// Advisory text for a created handoff above the orientation guideline.
+pub(crate) fn oversized_handoff_text(chars: usize) -> String {
+    format!(
+        "handoff body is {chars} characters, over the {}-character orientation guideline; keep handoffs concise and link records or entities for detail",
+        akasha_core::HANDOFF_ORIENTATION_GUIDELINE_CHARS
+    )
 }
 
 pub(crate) fn render_context(context: &ContextBundle, output: OutputMode) -> io::Result<()> {

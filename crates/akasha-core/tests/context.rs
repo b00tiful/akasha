@@ -3,9 +3,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use akasha_core::{
-    ContextOmissionReason, ContextSection, DEFAULT_CONTEXT_MAX_CHARS, ResolutionEnvironment,
-    ResolveRequest, assemble_context, assemble_context_with_budget, assemble_session_breadcrumb,
-    render_context_markdown,
+    ContextOmissionReason, ContextSection, DEFAULT_CONTEXT_FILL_CHARS, DEFAULT_CONTEXT_MAX_CHARS,
+    HANDOFF_ORIENTATION_GUIDELINE_CHARS, ResolutionEnvironment, ResolveRequest, assemble_context,
+    assemble_context_with_budget, assemble_session_breadcrumb, context_fit_warnings,
+    oversized_handoff, render_context_markdown,
 };
 
 mod support;
@@ -42,23 +43,34 @@ fn assembles_context_in_priority_order() {
     assert_eq!(
         sections,
         [
-            ContextSection::OpenTask,
-            ContextSection::OpenProblem,
-            ContextSection::Roadmap,
             ContextSection::EntityIndex,
             ContextSection::LatestHandoff,
+            ContextSection::OpenTaskDigest,
+            ContextSection::OpenProblemDigest,
+            ContextSection::Roadmap,
+            ContextSection::OpenTask,
+            ContextSection::OpenProblem,
             ContextSection::RecentEvent,
         ]
     );
     assert!(
-        bundle.entries[4]
+        bundle.entries[1]
             .content
             .contains("Latest synthetic handoff")
     );
     assert!(
-        !bundle.entries[4]
+        !bundle.entries[1]
             .content
             .contains("Earlier synthetic handoff")
+    );
+    assert_eq!(bundle.entries[2].source, PathBuf::from("records/tasks"));
+    assert_eq!(
+        bundle.entries[2].content,
+        "- active · 2026-07-13 · Synthetic task — records/tasks/active.md"
+    );
+    assert_eq!(
+        bundle.entries[3].content,
+        "- open · 2026-07-13 · Synthetic open problem — records/problems/open.md"
     );
     assert!(!bundle.truncated);
     assert_eq!(bundle.omitted_entries, 0);
@@ -227,15 +239,23 @@ fn skips_an_early_oversized_entry_and_keeps_later_orientation() {
         .map(|entry| entry.section)
         .collect::<Vec<_>>();
 
+    // The oversized problem body is skipped, but its digest line keeps it visible.
     assert_eq!(
         sections,
         [
-            ContextSection::OpenTask,
-            ContextSection::Roadmap,
             ContextSection::EntityIndex,
             ContextSection::LatestHandoff,
+            ContextSection::OpenTaskDigest,
+            ContextSection::OpenProblemDigest,
+            ContextSection::Roadmap,
+            ContextSection::OpenTask,
             ContextSection::RecentEvent,
         ]
+    );
+    assert!(
+        bundle.entries[3]
+            .content
+            .contains("Oversized problem — records/problems/open.md")
     );
     assert_eq!(bundle.omitted_entries, 1);
     assert_eq!(bundle.omissions.len(), 1);
@@ -362,8 +382,15 @@ fn explicit_budget_expands_whole_unicode_entries_with_original_framing_and_order
     );
     let default = assemble_context(&request).unwrap();
     assert_eq!(
-        default,
-        assemble_context_with_budget(&request, DEFAULT_CONTEXT_MAX_CHARS).unwrap()
+        (default.max_chars, default.fill_chars),
+        (DEFAULT_CONTEXT_MAX_CHARS, DEFAULT_CONTEXT_FILL_CHARS)
+    );
+    assert_eq!(
+        default.entries,
+        assemble_context_with_budget(&request, DEFAULT_CONTEXT_MAX_CHARS)
+            .unwrap()
+            .entries,
+        "the remaining fixture entries fit the fill limit either way"
     );
     assert_eq!(default.omissions.len(), 1);
     assert_eq!(default.omissions[0].section, ContextSection::OpenProblem);
@@ -372,8 +399,12 @@ fn explicit_budget_expands_whole_unicode_entries_with_original_framing_and_order
     assert_eq!(expanded.max_chars, 32_000);
     assert!(!expanded.truncated);
     assert!(expanded.omissions.is_empty());
-    assert_eq!(expanded.entries[1].content, body);
-    assert_eq!(expanded.entries[1].section, ContextSection::OpenProblem);
+    let problem = expanded
+        .entries
+        .iter()
+        .find(|entry| entry.section == ContextSection::OpenProblem)
+        .expect("expanded open problem");
+    assert_eq!(problem.content, body);
     let markdown = render_context_markdown(&expanded);
     assert!(markdown.contains("```````akasha-project-data"));
     assert_eq!(
@@ -450,10 +481,11 @@ fn context_retention_preserves_large_sources_dated_ties_and_explicit_expansion()
             .iter()
             .map(|entry| entry.source.to_str().unwrap())
             .collect::<Vec<_>>(),
+        // Roadmap precedes open-record bodies; equal `updated` dates fall back to descending path.
         [
-            "records/tasks/a-large.md",
+            "roadmap.md",
             "records/tasks/z-large.md",
-            "roadmap.md"
+            "records/tasks/a-large.md"
         ]
     );
     assert!(
@@ -488,7 +520,13 @@ fn context_retention_preserves_large_sources_dated_ties_and_explicit_expansion()
     );
     let expanded = assemble_context_with_budget(&request, 2_000_000).unwrap();
     assert!(!expanded.truncated);
-    assert_eq!(expanded.entries[0].content, large.trim());
+    assert_eq!(expanded.entries[0].section, ContextSection::EntityIndex);
+    let roadmap = expanded
+        .entries
+        .iter()
+        .find(|entry| entry.section == ContextSection::Roadmap)
+        .expect("expanded roadmap");
+    assert_eq!(roadmap.content, large.trim());
     assert_eq!(
         expanded
             .entries
@@ -531,6 +569,199 @@ fn context_retention_keeps_validation_errors_before_tiny_budget_refusal() {
         assert_eq!(tiny.to_string(), default.to_string());
         assert_eq!(context_source_snapshot(&root), before);
     }
+}
+
+#[test]
+fn orientation_core_survives_growing_record_bodies_and_roadmap() {
+    // Regression for context orientation starvation: before 2026-11-08, open-record bodies and
+    // the roadmap filled the bundle first and the index and latest handoff were omitted.
+    let temp = TempDir::copy_of(&fixtures());
+    let project = temp.path().join("valid-root/Projects/example");
+    let progress = "Recorded progress against the agreed acceptance criteria. ".repeat(40);
+    for day in 1..=12 {
+        let title = format!("Task   {day:02}\twith  spaced title");
+        fs::write(
+            project.join(format!("records/tasks/t{day:02}.md")),
+            format!(
+                "---\nschema_version: 1\nproject: example\ntype: task\nstatus: active\ncreated: 2026-08-01\nupdated: 2026-08-{day:02}\n---\n\n# {title}\n\n{progress}\n"
+            ),
+        )
+        .unwrap();
+    }
+    fs::write(
+        project.join("records/tasks/long-title.md"),
+        format!(
+            "---\nschema_version: 1\nproject: example\ntype: task\nstatus: open\ncreated: 2026-07-01\nupdated: 2026-07-01\n---\n\n# {}\n",
+            "L".repeat(140)
+        ),
+    )
+    .unwrap();
+    fs::write(
+        project.join("roadmap.md"),
+        "# Roadmap\n\n".to_owned() + &"- [x] finished slice\n".repeat(900),
+    )
+    .unwrap();
+    refresh_context_state(&project);
+    let request = request(
+        temp.path().join("valid-root"),
+        temp.path().join("repository/nested"),
+    );
+
+    let bundle = assemble_context(&request).unwrap();
+    let sections = bundle
+        .entries
+        .iter()
+        .map(|entry| entry.section)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        &sections[..4],
+        [
+            ContextSection::EntityIndex,
+            ContextSection::LatestHandoff,
+            ContextSection::OpenTaskDigest,
+            ContextSection::OpenProblemDigest,
+        ]
+    );
+    let digest = bundle.entries[2].content.lines().collect::<Vec<_>>();
+    assert_eq!(
+        digest.len(),
+        14,
+        "every open task is listed, including the fixture task"
+    );
+    assert_eq!(
+        digest[0],
+        "- active · 2026-08-12 · Task 12 with spaced title — records/tasks/t12.md"
+    );
+    assert_eq!(
+        digest[11],
+        "- active · 2026-08-01 · Task 01 with spaced title — records/tasks/t01.md"
+    );
+    assert_eq!(
+        digest[13],
+        format!(
+            "- open · 2026-07-01 · {}… — records/tasks/long-title.md",
+            "L".repeat(99)
+        )
+    );
+    let bodies = bundle
+        .entries
+        .iter()
+        .filter(|entry| entry.section == ContextSection::OpenTask)
+        .map(|entry| entry.source.to_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        bodies[0], "records/tasks/t12.md",
+        "bodies fill newest-updated first"
+    );
+    assert!(
+        bundle
+            .omissions
+            .iter()
+            .any(|omission| omission.section == ContextSection::Roadmap)
+    );
+
+    let markdown = render_context_markdown(&bundle);
+    assert!(markdown.contains("- Not included: Roadmap `roadmap.md` ("));
+    assert!(
+        !markdown.contains("- Not included: Open task "),
+        "bodies are counted, not named"
+    );
+    assert_eq!(markdown.chars().count(), bundle.rendered_chars);
+    assert!(bundle.rendered_chars <= DEFAULT_CONTEXT_MAX_CHARS);
+
+    let warnings = context_fit_warnings(&request).unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].section, ContextSection::Roadmap);
+    assert_eq!(warnings[0].reason, ContextOmissionReason::DoesNotFit);
+}
+
+#[test]
+fn default_budget_protects_the_orientation_core_beyond_the_fill_limit() {
+    let temp = TempDir::copy_of(&fixtures());
+    let project = temp.path().join("valid-root/Projects/example");
+    let rows = (0..180)
+        .map(|n| format!("- comp-{n:03} — subsystem owning one bounded responsibility\n"))
+        .collect::<String>();
+    fs::write(project.join("index.md"), format!("# Index\n\n{rows}")).unwrap();
+    refresh_context_state(&project);
+    let request = request(
+        temp.path().join("valid-root"),
+        temp.path().join("repository/nested"),
+    );
+
+    let default = assemble_context(&request).unwrap();
+    let sections = default
+        .entries
+        .iter()
+        .map(|entry| entry.section)
+        .collect::<Vec<_>>();
+    assert!(default.entries[0].content.chars().count() > DEFAULT_CONTEXT_FILL_CHARS);
+    assert_eq!(
+        &sections[..4],
+        [
+            ContextSection::EntityIndex,
+            ContextSection::LatestHandoff,
+            ContextSection::OpenTaskDigest,
+            ContextSection::OpenProblemDigest,
+        ]
+    );
+    assert!(
+        !sections.contains(&ContextSection::OpenTask),
+        "fill stops at the fill limit"
+    );
+    assert!(default.rendered_chars <= DEFAULT_CONTEXT_MAX_CHARS);
+    let markdown = render_context_markdown(&default);
+    assert!(markdown.contains(&format!(
+        "within the {DEFAULT_CONTEXT_FILL_CHARS}-character bundle (orientation core up to {DEFAULT_CONTEXT_MAX_CHARS})"
+    )));
+    assert!(context_fit_warnings(&request).unwrap().is_empty());
+
+    let explicit = assemble_context_with_budget(&request, DEFAULT_CONTEXT_FILL_CHARS).unwrap();
+    assert_eq!(explicit.omissions[0].section, ContextSection::EntityIndex);
+    assert!(
+        render_context_markdown(&explicit).contains("- Not included: Entity index `index.md` (")
+    );
+}
+
+#[test]
+fn oversized_handoff_is_reported_only_for_the_handoff_role_above_the_guideline() {
+    let temp = TempDir::copy_of(&fixtures());
+    let project = temp.path().join("valid-root/Projects/example");
+    let request = request(
+        temp.path().join("valid-root"),
+        temp.path().join("repository/nested"),
+    );
+    let write = |name: &str, kind: &str, chars: usize| {
+        let path = project.join(format!("events/{kind}s/{name}.md"));
+        fs::write(
+            &path,
+            format!(
+                "---\nschema_version: 1\nproject: example\ntype: {kind}\ndate: 2026-08-01\n---\n\n{}\n",
+                "界".repeat(chars)
+            ),
+        )
+        .unwrap();
+        path
+    };
+    let at_limit = write("at-limit", "handoff", HANDOFF_ORIENTATION_GUIDELINE_CHARS);
+    assert_eq!(
+        oversized_handoff(&request, "handoff", &at_limit).unwrap(),
+        None
+    );
+    let over = write("over", "handoff", HANDOFF_ORIENTATION_GUIDELINE_CHARS + 1);
+    assert_eq!(
+        oversized_handoff(&request, "handoff", &over).unwrap(),
+        Some(HANDOFF_ORIENTATION_GUIDELINE_CHARS + 1)
+    );
+    let session = write(
+        "long-session",
+        "session",
+        HANDOFF_ORIENTATION_GUIDELINE_CHARS * 2,
+    );
+    assert_eq!(
+        oversized_handoff(&request, "session", &session).unwrap(),
+        None
+    );
 }
 
 fn refresh_context_state(project: &Path) {

@@ -1,7 +1,9 @@
 # Bounded project context
 
 `akasha context` validates the selected project and returns a Markdown orientation bundle,
-bounded to 16,000 Unicode characters by default. Request a different per-call budget explicitly:
+bounded by default: fill stops at 8,000 Unicode characters while the orientation core (index,
+latest handoff, open-record digests, roadmap) may use up to 16,000. An explicit budget is one
+hard limit. Request a different per-call budget explicitly:
 
 ```sh
 akasha context --max-chars 32000
@@ -15,9 +17,12 @@ length can be larger. JSON exposes `max_chars`, `rendered_chars`, selected `entr
 `omissions` ledger; JSON serialization overhead is outside the Markdown budget.
 
 If the complete bundle fits, every candidate is returned. Otherwise selection keeps whole entries
-in priority order: open tasks, open problems, roadmap, entity index, latest handoff and recent
-events. An entry that does not fit is skipped, and later entries are still considered. No note
-is cut. A budget too small for identity and omission framing fails on stderr with exit 4 and
+in priority order: entity index, latest handoff, the open-task digest, the open-problem digest,
+roadmap, open-task bodies, open-problem bodies and recent events. Each digest is generated with
+one line per open record (status, `updated`, first heading, path), most recently updated first;
+bodies use the same order. An entry that does not fit is skipped, and later entries are still
+considered. No note is cut. The Markdown omission summary names every skipped index, handoff,
+digest or roadmap with its size; `akasha validate` reports the same misfits as warnings. A budget too small for identity and omission framing fails on stderr with exit 4 and
 empty stdout. Invalid arguments fail with exit 2.
 
 Entry bodies are project data inside collision-proof fences. Context assembly changes no files,

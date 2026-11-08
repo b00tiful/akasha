@@ -28,7 +28,7 @@ fn assert_selection_parity(
             )
         })
         .collect();
-    let actual = fit_candidates(report, candidates, budget, |candidate| {
+    let actual = fit_candidates(report, candidates, budget, budget, |candidate| {
         Ok(entries
             .iter()
             .find(|entry| entry.source == candidate.source && entry.section == candidate.section)
@@ -70,11 +70,13 @@ fn assert_selection_parity(
 fn context_retention_matches_frozen_selection_across_seeded_budgets() {
     let report = validate_project(&fixture_request()).unwrap();
     let sections = [
-        ContextSection::OpenTask,
-        ContextSection::OpenProblem,
-        ContextSection::Roadmap,
         ContextSection::EntityIndex,
         ContextSection::LatestHandoff,
+        ContextSection::OpenTaskDigest,
+        ContextSection::OpenProblemDigest,
+        ContextSection::Roadmap,
+        ContextSection::OpenTask,
+        ContextSection::OpenProblem,
         ContextSection::RecentEvent,
     ];
     let mut seed = 0x8e72_1a0d_439b_c675_u64;
@@ -182,6 +184,7 @@ fn context_retention_drops_impossible_unicode_and_fence_bodies_with_exact_metric
             omitted_entries: 0,
             omissions: vec![],
             max_chars: exact,
+            fill_chars: exact,
             rendered_chars: 0,
         };
         let empty = ContextBundle {
@@ -225,7 +228,7 @@ fn context_retention_breadcrumb_collectors_keep_metadata_without_bodies() {
     )
     .unwrap();
     assert_eq!(tasks.len(), 1);
-    assert!(tasks.iter().all(|task| task.image.is_none()));
+    assert!(tasks.iter().all(|task| task.entry.image.is_none()));
     let handoffs = dated_entries(
         &report,
         &config,
@@ -276,6 +279,7 @@ fn reference_fit_candidates(
         omitted_entries: 0,
         omissions: Vec::new(),
         max_chars,
+        fill_chars: max_chars,
         rendered_chars: 0,
     };
 
@@ -290,12 +294,37 @@ fn reference_fit_candidates(
     bundle.truncated = total_entries > 0;
     bundle.omitted_entries = total_entries;
 
+    // Updated 2026-11-08: omitted orientation-core entries are named, and the names of
+    // still-undecided core entries are reserved while selecting.
+    let pending_core = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| is_orientation_core(entry.section))
+        .map(|(index, entry)| {
+            (
+                index,
+                ContextOmission {
+                    section: entry.section,
+                    source: entry.source.clone(),
+                    reason: ContextOmissionReason::DoesNotFit,
+                    content_chars: char_count(&entry.content),
+                },
+            )
+        })
+        .collect::<Vec<_>>();
     for (index, candidate) in candidates.into_iter().enumerate() {
         let remaining = total_entries - index - 1;
         bundle.entries.push(candidate);
         bundle.omitted_entries = bundle.omissions.len() + remaining;
         bundle.truncated = bundle.omitted_entries > 0;
-        if char_count(&reference_render_context_markdown(&bundle)) > max_chars {
+        let mut trial = bundle.clone();
+        trial.omissions.extend(
+            pending_core
+                .iter()
+                .filter(|(position, _)| *position > index)
+                .map(|(_, omission)| omission.clone()),
+        );
+        if char_count(&reference_render_context_markdown(&trial)) > max_chars {
             let omitted = bundle
                 .entries
                 .pop()
@@ -375,6 +404,25 @@ pub fn reference_render_context_markdown(bundle: &ContextBundle) -> String {
             bundle.omitted_entries, bundle.max_chars
         )
         .expect("writing to a string cannot fail");
+        for omission in &bundle.omissions {
+            if matches!(
+                omission.section,
+                ContextSection::EntityIndex
+                    | ContextSection::LatestHandoff
+                    | ContextSection::OpenTaskDigest
+                    | ContextSection::OpenProblemDigest
+                    | ContextSection::Roadmap
+            ) {
+                writeln!(
+                    output,
+                    "- Not included: {} `{}` ({} characters)",
+                    section_name(omission.section),
+                    omission.source.display(),
+                    omission.content_chars
+                )
+                .expect("writing to a string cannot fail");
+            }
+        }
     }
     output
 }

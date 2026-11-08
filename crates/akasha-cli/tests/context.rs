@@ -28,14 +28,18 @@ fn context_prints_bounded_markdown_in_priority_order() {
     assert!(stdout.starts_with("# Akasha context\n"));
     assert!(stdout.chars().count() <= 16_000);
 
-    let task = stdout.find("## Open task").expect("task section");
-    let problem = stdout.find("## Open problem").expect("problem section");
-    let roadmap = stdout.find("## Roadmap").expect("roadmap section");
-    let index = stdout.find("## Entity index").expect("index section");
-    let handoff = stdout.find("## Latest handoff").expect("handoff section");
-    let event = stdout.find("## Recent event").expect("event section");
-    assert!(task < problem && problem < roadmap && roadmap < index);
-    assert!(index < handoff && handoff < event);
+    // Orientation core first (index, latest handoff, open-record digests), then roadmap and fill.
+    let index = stdout.find("## Entity index —").expect("index section");
+    let handoff = stdout.find("## Latest handoff —").expect("handoff section");
+    let task_digest = stdout.find("## Open tasks —").expect("task digest");
+    let problem_digest = stdout.find("## Open problems —").expect("problem digest");
+    let roadmap = stdout.find("## Roadmap —").expect("roadmap section");
+    let task = stdout.find("## Open task —").expect("task section");
+    let problem = stdout.find("## Open problem —").expect("problem section");
+    let event = stdout.find("## Recent event —").expect("event section");
+    assert!(index < handoff && handoff < task_digest && task_digest < problem_digest);
+    assert!(problem_digest < roadmap && roadmap < task && task < problem && problem < event);
+    assert!(stdout.contains("- active · 2026-07-13 · Synthetic task — records/tasks/active.md"));
 }
 
 #[test]
@@ -62,8 +66,26 @@ fn context_json_contains_the_equivalent_selected_entries() {
     let value: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("parse context JSON");
     assert_eq!(value["project"], "example");
-    assert_eq!(value["entries"][0]["section"], "open-task");
-    assert_eq!(value["entries"][5]["section"], "recent-event");
+    let sections = value["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .map(|entry| entry["section"].as_str().expect("section"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sections,
+        [
+            "entity-index",
+            "latest-handoff",
+            "open-task-digest",
+            "open-problem-digest",
+            "roadmap",
+            "open-task",
+            "open-problem",
+            "recent-event",
+        ]
+    );
+    assert_eq!(value["entries"][2]["source"], "records/tasks");
     assert_eq!(value["truncated"], false);
     assert_eq!(value["omissions"].as_array().map(Vec::len), Some(0));
     assert!(value["rendered_chars"].as_u64().expect("character count") <= 16_000);
@@ -141,7 +163,7 @@ fn explicit_context_budget_preserves_default_and_plain_json_selection() {
     assert!(default.status.success());
     assert_eq!(
         default.stdout,
-        run(&["context", "--max-chars", "16000"]).stdout
+        run(&["context", "--max-chars", "8000"]).stdout
     );
     let json = run(&["--json", "context"]);
     let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();

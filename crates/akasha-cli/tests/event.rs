@@ -238,6 +238,46 @@ impl Fixture {
     }
 }
 
+#[test]
+fn capture_handoff_warns_on_stderr_when_the_body_exceeds_the_orientation_guideline() {
+    let fixture = Fixture::new("large-handoff");
+    let body = "Detailed narrative that belongs in a record. ".repeat(100);
+    let output = Command::new(env!("CARGO_BIN_EXE_akasha"))
+        .args(["--root", path(&fixture.root), "--project", "example"])
+        .args(["capture-handoff", "2026-07-17-large.md"])
+        .args([
+            "--field",
+            "date=2026-07-17",
+            "--field",
+            "title=Large handoff",
+        ])
+        .arg("--field")
+        .arg(format!("body={body}"))
+        .current_dir(&fixture.repository)
+        .env_remove("AKASHA_ROOT")
+        .output()
+        .expect("run large capture-handoff");
+
+    assert!(
+        output.status.success(),
+        "the published handoff stays a success"
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    assert!(
+        stdout.starts_with("created event: Projects/example/events/handoffs/2026-07-17-large.md\n")
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(
+        stderr.starts_with("akasha: warning: handoff body is "),
+        "{stderr}"
+    );
+    assert!(stderr.contains(&format!(
+        "over the {}-character orientation guideline",
+        akasha_core::HANDOFF_ORIENTATION_GUIDELINE_CHARS
+    )));
+    assert_eq!(stderr.lines().count(), 1);
+}
+
 fn event_template() -> &'static str {
     "---\nschema_version: 1\nproject: {{project}}\ntype: {{type}}\ndate: {{date}}\n---\n\n# {{title}}\n\n{{body}}\n"
 }

@@ -24,8 +24,8 @@ use Akasha's own terminal or desktop interface. Development notes under `akasha/
 temporary Markdown workbench accessed directly; they are not automatically migrated into
 a configured product root.
 
-Named and terminal context accept an explicit `--max-chars N` budget, preserving the 16,000
-default, whole entries and exact omissions. See [context usage](context.md).
+Named and terminal context accept an explicit `--max-chars N` budget, preserving the core-protected
+default (fill 8,000, core up to 16,000), whole entries and exact omissions. See [context usage](context.md).
 
 Akasha's core already parses and validates its supported exact vault-relative wikilinks
 and exposes outgoing note identities. The bounded named CLI commands `links NOTE` and

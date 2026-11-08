@@ -1424,6 +1424,7 @@ mod tests {
                     omitted_entries: 0,
                     omissions: vec![],
                     max_chars: 32_000,
+                    fill_chars: 32_000,
                     rendered_chars: 0,
                 }),
             )));

@@ -8,10 +8,11 @@ use std::process::ExitCode;
 use akasha_core::{
     AgentClient, InitRequest, LinkRequest, ResolveRequest, apply_agent_wiring,
     apply_session_hook_wiring, assemble_context_with_budget, assemble_session_breadcrumb,
-    assemble_session_breadcrumb_if_linked, capture_handoff, create_event, create_mutable_note,
-    initialize_project, link_project, prepare_agent_wiring, prepare_agent_wiring_removal,
-    prepare_session_hook_removal, prepare_session_hook_wiring, remove_agent_wiring,
-    remove_session_hook_wiring, resolve_project, update_entity, update_record, validate_project,
+    assemble_session_breadcrumb_if_linked, capture_handoff, context_fit_warnings, create_event,
+    create_mutable_note, initialize_project, link_project, prepare_agent_wiring,
+    prepare_agent_wiring_removal, prepare_session_hook_removal, prepare_session_hook_wiring,
+    remove_agent_wiring, remove_session_hook_wiring, resolve_project, update_entity, update_record,
+    validate_project,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -220,6 +221,9 @@ enum Command {
         path: PathBuf,
 
         /// UTF-8 file containing the complete accepted roadmap (record) or index (entity).
+        ///
+        /// Pass the current roadmap or index path to accept it unchanged; no copy is needed.
+        /// Edit a copy only when the new note belongs in it, keeping that file current-state.
         #[arg(long, value_name = "PATH")]
         projection: PathBuf,
 
@@ -242,6 +246,9 @@ enum Command {
         replacement: PathBuf,
 
         /// UTF-8 file containing the complete accepted roadmap after the update.
+        ///
+        /// Pass the current roadmap path to accept it unchanged; no copy is needed. Keep the
+        /// roadmap current-state: drop completed items, whose history stays in their records.
         #[arg(long, value_name = "PATH")]
         roadmap: PathBuf,
     },
@@ -260,6 +267,9 @@ enum Command {
         replacement: PathBuf,
 
         /// UTF-8 file containing the complete accepted index after the update.
+        ///
+        /// Pass the current index path to accept it unchanged; no copy is needed. Keep one
+        /// line per entity: name, one-line description and path.
         #[arg(long, value_name = "PATH")]
         index: PathBuf,
     },
@@ -353,9 +363,10 @@ enum Command {
     Validate,
     /// Assemble a deterministic, bounded orientation bundle for the selected project.
     Context {
-        /// Canonical Markdown character budget; entries are kept whole.
-        #[arg(long, value_name = "N", default_value_t = akasha_core::DEFAULT_CONTEXT_MAX_CHARS as u32, value_parser = clap::value_parser!(u32).range(1..))]
-        max_chars: u32,
+        /// Canonical Markdown character budget; entries are kept whole. Default: fill up to 8000
+        /// characters, orientation core (index, handoff, digests, roadmap) up to 16000.
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+        max_chars: Option<u32>,
     },
     /// Print the compact session-start project breadcrumb.
     Breadcrumb {
@@ -642,6 +653,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             let result = create_event(&request, &note_type, &path, &fields)
                 .map_err(report_event_creation)?;
             finish_output(render_event_creation(&result, output))?;
+            warn_oversized_handoff(&request, &result);
         }
         Command::CaptureHandoff { path, field } => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
@@ -649,6 +661,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             let result =
                 capture_handoff(&request, &path, &fields).map_err(report_event_creation)?;
             finish_output(render_event_creation(&result, output))?;
+            warn_oversized_handoff(&request, &result);
         }
         Command::CreateNote {
             note_type,
@@ -792,12 +805,16 @@ fn run(cli: Cli) -> Result<(), u8> {
         Command::Validate => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
             let report = validate_project(&request).map_err(report_validation)?;
-            finish_output(render_validation(&report, output))?;
+            let context_warnings = context_fit_warnings(&request).map_err(report_context)?;
+            finish_output(render_validation(&report, &context_warnings, output))?;
         }
         Command::Context { max_chars } => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
-            let context = assemble_context_with_budget(&request, max_chars as usize)
-                .map_err(report_context)?;
+            let context = match max_chars {
+                Some(max_chars) => assemble_context_with_budget(&request, max_chars as usize),
+                None => akasha_core::assemble_context(&request),
+            }
+            .map_err(report_context)?;
             finish_output(render_context(&context, output))?;
         }
         Command::Breadcrumb { optional } => {
@@ -857,6 +874,15 @@ fn report_validation(error: akasha_core::ProjectValidationError) -> u8 {
 fn report_context(error: akasha_core::ContextError) -> u8 {
     eprintln!("akasha: {error}");
     error.exit_code()
+}
+
+/// Advisory only: the handoff is already published, so measurement problems never fail the command.
+fn warn_oversized_handoff(request: &ResolveRequest, result: &akasha_core::EventCreationResult) {
+    match akasha_core::oversized_handoff(request, &result.note_type, &result.path) {
+        Ok(Some(chars)) => eprintln!("akasha: warning: {}", render::oversized_handoff_text(chars)),
+        Ok(None) => {}
+        Err(error) => eprintln!("akasha: warning: could not measure the created handoff: {error}"),
+    }
 }
 
 fn report_link(error: akasha_core::LinkError) -> u8 {

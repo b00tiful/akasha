@@ -12,11 +12,24 @@ use crate::markdown_source::read_markdown_source;
 use crate::project_validation::{
     ProjectValidationError, ProjectValidationReport, canonical_note_paths, validate_project,
 };
-use crate::resolution::{ResolveError, ResolveRequest, RootConfig, load_root_config};
+use crate::resolution::{
+    ResolveError, ResolveRequest, RootConfig, load_root_config, resolve_project,
+};
 use crate::state::content_fingerprint;
 use crate::validation::{ValidationError, parse_leading_frontmatter_bytes};
 
+/// Hard cap of the default bundle: the orientation core may use up to this many characters.
 pub const DEFAULT_CONTEXT_MAX_CHARS: usize = 16_000;
+
+/// Default limit for fill (open-record bodies, recent events) after the orientation core, so
+/// small projects get a compact bundle while large projects never lose the core to save space.
+pub const DEFAULT_CONTEXT_FILL_CHARS: usize = 8_000;
+
+/// A handoff above a quarter of the default bundle crowds out the rest of orientation.
+pub const HANDOFF_ORIENTATION_GUIDELINE_CHARS: usize = DEFAULT_CONTEXT_FILL_CHARS / 4;
+
+/// Digest titles are bounded so the open-record digest grows with record count, not prose.
+const DIGEST_TITLE_MAX_CHARS: usize = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -27,6 +40,28 @@ pub enum ContextSection {
     EntityIndex,
     LatestHandoff,
     RecentEvent,
+    /// One generated line per open task: status, `updated`, title and path.
+    OpenTaskDigest,
+    /// One generated line per open problem: status, `updated`, title and path.
+    OpenProblemDigest,
+}
+
+/// Human-readable label used for context headings and diagnostics.
+#[must_use]
+pub const fn context_section_label(section: ContextSection) -> &'static str {
+    section_name(section)
+}
+
+/// Orientation entries that should always reach the agent and are named when omitted.
+const fn is_orientation_core(section: ContextSection) -> bool {
+    matches!(
+        section,
+        ContextSection::EntityIndex
+            | ContextSection::LatestHandoff
+            | ContextSection::OpenTaskDigest
+            | ContextSection::OpenProblemDigest
+            | ContextSection::Roadmap
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -62,6 +97,8 @@ pub struct ContextBundle {
     pub omitted_entries: usize,
     pub omissions: Vec<ContextOmission>,
     pub max_chars: usize,
+    /// Limit for non-core entries; equals `max_chars` for explicit budgets.
+    pub fill_chars: usize,
     pub rendered_chars: usize,
 }
 
@@ -158,9 +195,14 @@ impl From<ProjectValidationError> for ContextError {
     }
 }
 
-/// Validate a project and assemble its default 16,000-character orientation bundle.
+/// Validate a project and assemble its default bundle: fill stops at 8,000 characters, while the
+/// orientation core (index, latest handoff, open-record digests, roadmap) may use up to 16,000.
 pub fn assemble_context(request: &ResolveRequest) -> Result<ContextBundle, ContextError> {
-    assemble_context_with_budget(request, DEFAULT_CONTEXT_MAX_CHARS)
+    assemble_context_with_limits(
+        request,
+        DEFAULT_CONTEXT_MAX_CHARS,
+        DEFAULT_CONTEXT_FILL_CHARS,
+    )
 }
 
 /// Validate a project and assemble whole entries within a caller-selected character budget.
@@ -172,14 +214,64 @@ pub fn assemble_context_with_budget(
     request: &ResolveRequest,
     max_chars: usize,
 ) -> Result<ContextBundle, ContextError> {
+    assemble_context_with_limits(request, max_chars, max_chars)
+}
+
+fn assemble_context_with_limits(
+    request: &ResolveRequest,
+    max_chars: usize,
+    fill_chars: usize,
+) -> Result<ContextBundle, ContextError> {
     let report = validate_project(request)?;
     let config = load_root_config(&report.root)
         .map_err(ProjectValidationError::from)
         .map_err(ContextError::from)?;
     let candidates = collect_candidates(&report, &config, max_chars)?;
-    fit_candidates(&report, candidates, max_chars, |candidate| {
-        read_selected_body(&report, candidate)
-    })
+    fit_candidates(
+        &report,
+        candidates,
+        max_chars,
+        fill_chars.min(max_chars),
+        |candidate| match &candidate.generated {
+            Some(content) => Ok(content.clone()),
+            None => read_selected_body(&report, candidate),
+        },
+    )
+}
+
+/// Orientation-core entries (index, latest handoff, open-record digests, roadmap) that the
+/// default bundle cannot carry. `akasha validate` reports them so they are compacted early.
+pub fn context_fit_warnings(
+    request: &ResolveRequest,
+) -> Result<Vec<ContextOmission>, ContextError> {
+    Ok(assemble_context(request)?
+        .omissions
+        .into_iter()
+        .filter(|omission| is_orientation_core(omission.section))
+        .collect())
+}
+
+/// Trimmed body length of a created handoff when it exceeds the orientation guideline.
+/// Returns `None` for other event types and for handoffs within the guideline.
+pub fn oversized_handoff(
+    request: &ResolveRequest,
+    note_type: &str,
+    path: &Path,
+) -> Result<Option<usize>, ContextError> {
+    let resolved = resolve_project(request).map_err(ProjectValidationError::from)?;
+    let config = load_root_config(&resolved.root).map_err(ProjectValidationError::from)?;
+    if note_type != config.context.handoffs {
+        return Ok(None);
+    }
+    let source = read_context_source(path, "read created handoff")?;
+    let parsed = parse_leading_frontmatter_bytes(&source).map_err(|source| {
+        ContextError::InvalidDocument {
+            path: path.to_path_buf(),
+            source: Box::new(source),
+        }
+    })?;
+    let chars = char_count(parsed.body.trim());
+    Ok((chars > HANDOFF_ORIENTATION_GUIDELINE_CHARS).then_some(chars))
 }
 
 /// Validate a project and assemble its compact session-start breadcrumb.
@@ -271,33 +363,15 @@ fn collect_candidates(
     config: &RootConfig,
     max_chars: usize,
 ) -> Result<Vec<ContextCandidate>, ContextError> {
-    let mut candidates = Vec::new();
-    candidates.extend(open_record_entries(
-        report,
-        config,
-        &config.context.tasks,
-        ContextSection::OpenTask,
-        max_chars,
-    )?);
-    candidates.extend(open_record_entries(
-        report,
-        config,
-        &config.context.problems,
-        ContextSection::OpenProblem,
-        max_chars,
-    )?);
-    candidates.push(read_project_file(
-        report,
-        &config.project.roadmap,
-        ContextSection::Roadmap,
-        max_chars,
-    )?);
-    candidates.push(read_project_file(
+    // Orientation core first: what exists (index), where work stopped (latest handoff), and one
+    // line per open record. Bodies and history only fill the remaining budget, so orientation
+    // scales with entity and open-record counts rather than with accumulated prose.
+    let mut candidates = vec![read_project_file(
         report,
         &config.project.index,
         ContextSection::EntityIndex,
         max_chars,
-    )?);
+    )?];
 
     let mut latest = None::<DatedEntry>;
     visit_dated_entries(
@@ -319,6 +393,41 @@ fn collect_candidates(
         candidates.push(latest.entry);
     }
 
+    let tasks = open_record_entries(
+        report,
+        config,
+        &config.context.tasks,
+        ContextSection::OpenTask,
+        max_chars,
+    )?;
+    let problems = open_record_entries(
+        report,
+        config,
+        &config.context.problems,
+        ContextSection::OpenProblem,
+        max_chars,
+    )?;
+    candidates.extend(record_digest(
+        ContextSection::OpenTaskDigest,
+        record_folder(config, &config.context.tasks),
+        &tasks,
+        max_chars,
+    ));
+    candidates.extend(record_digest(
+        ContextSection::OpenProblemDigest,
+        record_folder(config, &config.context.problems),
+        &problems,
+        max_chars,
+    ));
+    candidates.push(read_project_file(
+        report,
+        &config.project.roadmap,
+        ContextSection::Roadmap,
+        max_chars,
+    )?);
+    candidates.extend(tasks.into_iter().map(|record| record.entry));
+    candidates.extend(problems.into_iter().map(|record| record.entry));
+
     let mut recent_events = dated_entries(
         report,
         config,
@@ -331,33 +440,127 @@ fn collect_candidates(
     Ok(candidates)
 }
 
+struct OpenRecord {
+    status: String,
+    updated: Option<String>,
+    title: String,
+    entry: ContextCandidate,
+}
+
+fn record_folder<'a>(config: &'a RootConfig, note_type_name: &str) -> &'a Path {
+    &config
+        .project
+        .note_types
+        .get(note_type_name)
+        .expect("validated context roles always name configured note types")
+        .folder
+}
+
+/// Open records of one configured type, most recently `updated` first.
 fn open_record_entries(
     report: &ProjectValidationReport,
     config: &RootConfig,
     note_type_name: &str,
     section: ContextSection,
     max_chars: usize,
-) -> Result<Vec<ContextCandidate>, ContextError> {
-    let note_type = config
-        .project
-        .note_types
-        .get(note_type_name)
-        .expect("validated context roles always name configured note types");
-    let folder = report.project_dir.join(&note_type.folder);
-    let mut entries = Vec::new();
+) -> Result<Vec<OpenRecord>, ContextError> {
+    let folder = report
+        .project_dir
+        .join(record_folder(config, note_type_name));
+    let mut records = Vec::new();
     for path in canonical_note_paths(&folder)? {
         let note = read_note(&path, &report.project_dir, section, max_chars)?;
-        let status = metadata_string(&note.metadata, "status", &path)?;
-        if config
-            .context
-            .open_statuses
-            .iter()
-            .any(|open| open == status)
-        {
-            entries.push(note.entry);
+        let status = metadata_string(&note.metadata, "status", &path)?.to_owned();
+        if config.context.open_statuses.contains(&status) {
+            let updated = note
+                .metadata
+                .get("updated")
+                .and_then(serde_json::Value::as_str)
+                .map(one_line);
+            records.push(OpenRecord {
+                status: one_line(&status),
+                updated,
+                title: note.title,
+                entry: note.entry,
+            });
         }
     }
-    Ok(entries)
+    records.sort_by(newest_updated_first);
+    Ok(records)
+}
+
+/// Records with a string `updated` sort before undated ones; ties fall back to descending path.
+fn newest_updated_first(left: &OpenRecord, right: &OpenRecord) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (&left.updated, &right.updated) {
+        (Some(left), Some(right)) => right.cmp(left),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+    .then_with(|| right.entry.source.cmp(&left.entry.source))
+}
+
+/// One generated line per open record; `None` when the type has no open records.
+fn record_digest(
+    section: ContextSection,
+    folder: &Path,
+    records: &[OpenRecord],
+    max_chars: usize,
+) -> Option<ContextCandidate> {
+    if records.is_empty() {
+        return None;
+    }
+    let mut content = String::new();
+    for record in records {
+        if !content.is_empty() {
+            content.push('\n');
+        }
+        write!(
+            content,
+            "- {} · {} · {} — {}",
+            record.status,
+            record.updated.as_deref().unwrap_or("not dated"),
+            record.title,
+            record.entry.source.display()
+        )
+        .expect("writing to a string cannot fail");
+    }
+    Some(ContextCandidate::generated(
+        section,
+        folder.to_path_buf(),
+        content,
+        max_chars,
+    ))
+}
+
+/// Collapse all whitespace, including line breaks, so a digest field stays on one line.
+fn one_line(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The first level-one heading of a note body, bounded for the digest; else the file stem.
+fn note_title(body: &str, relative: &Path) -> String {
+    let heading = body
+        .lines()
+        .find_map(|line| line.strip_prefix("# "))
+        .map(one_line)
+        .filter(|title| !title.is_empty());
+    let title = heading.unwrap_or_else(|| {
+        relative
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    });
+    if title.chars().count() <= DIGEST_TITLE_MAX_CHARS {
+        return title;
+    }
+    let mut bounded = title
+        .chars()
+        .take(DIGEST_TITLE_MAX_CHARS - 1)
+        .collect::<String>();
+    bounded.push('…');
+    bounded
 }
 
 fn read_project_file(
@@ -451,6 +654,7 @@ fn dated_order(left: &DatedEntry, right: &DatedEntry) -> std::cmp::Ordering {
 
 struct ReadNote {
     metadata: serde_json::Value,
+    title: String,
     entry: ContextCandidate,
 }
 
@@ -471,6 +675,7 @@ fn read_note(
         .strip_prefix(project_dir)
         .expect("validated canonical notes remain inside the project directory")
         .to_path_buf();
+    let title = note_title(parsed.body, &relative);
     let entry = ContextCandidate::new(
         section,
         relative,
@@ -480,6 +685,7 @@ fn read_note(
     );
     Ok(ReadNote {
         metadata: parsed.metadata.clone(),
+        title,
         entry,
     })
 }
@@ -516,11 +722,13 @@ fn metadata_string<'a>(
         })
 }
 
-/// Selection retains metrics and original-read evidence, never candidate bodies.
+/// Selection retains metrics and original-read evidence, never candidate bodies. Generated
+/// digests have no source file to reread; their bounded text is retained only when it fits.
 struct ContextCandidate {
     section: ContextSection,
     source: PathBuf,
     image: Option<ContextSourceImage>,
+    generated: Option<String>,
     content_chars: usize,
     rendered_chars: usize,
 }
@@ -541,13 +749,7 @@ impl ContextCandidate {
     ) -> Self {
         let content = &source_text[body.clone()];
         let content_chars = char_count(content);
-        let mut heading = CharCounter::default();
-        write_entry_heading(&mut heading, section, &source);
-        let rendered_chars = heading
-            .0
-            .saturating_add(content_chars)
-            .saturating_add(context_fence_len(content).saturating_mul(2))
-            .saturating_add("akasha-project-data".len() + 3);
+        let rendered_chars = entry_rendered_chars(section, &source, content, content_chars);
         Self {
             section,
             source,
@@ -556,10 +758,44 @@ impl ContextCandidate {
                 fingerprint: content_fingerprint(source_text.as_bytes()),
                 body,
             }),
+            generated: None,
             content_chars,
             rendered_chars,
         }
     }
+
+    fn generated(
+        section: ContextSection,
+        source: PathBuf,
+        content: String,
+        max_chars: usize,
+    ) -> Self {
+        let content_chars = char_count(&content);
+        let rendered_chars = entry_rendered_chars(section, &source, &content, content_chars);
+        Self {
+            section,
+            source,
+            image: None,
+            generated: (rendered_chars <= max_chars).then_some(content),
+            content_chars,
+            rendered_chars,
+        }
+    }
+}
+
+fn entry_rendered_chars(
+    section: ContextSection,
+    source: &Path,
+    content: &str,
+    content_chars: usize,
+) -> usize {
+    let mut heading = CharCounter::default();
+    write_entry_heading(&mut heading, section, source);
+    heading
+        .0
+        .saturating_add(content_chars)
+        .saturating_add(context_fence_len(content).saturating_mul(2))
+        .saturating_add("akasha-project-data".len() + 3)
 }
 
 fn trimmed_body_range(body: &str, offset: usize) -> Range<usize> {
@@ -627,6 +863,7 @@ fn fit_candidates(
     report: &ProjectValidationReport,
     candidates: Vec<ContextCandidate>,
     max_chars: usize,
+    fill_chars: usize,
     load: impl FnMut(&ContextCandidate) -> Result<String, ContextError>,
 ) -> Result<ContextBundle, ContextError> {
     let total_entries = candidates.len();
@@ -640,6 +877,7 @@ fn fit_candidates(
         omitted_entries: 0,
         omissions: Vec::new(),
         max_chars,
+        fill_chars,
         rendered_chars: 0,
     };
 
@@ -651,24 +889,57 @@ fn fit_candidates(
     bundle.rendered_chars = candidates.iter().fold(header.0, |count, candidate| {
         count.saturating_add(candidate.rendered_chars)
     });
-    if bundle.rendered_chars <= max_chars {
+    if bundle.rendered_chars <= fill_chars {
         return hydrate_candidates(bundle, candidates, load);
     }
     bundle.truncated = total_entries > 0;
     bundle.omitted_entries = total_entries;
 
+    // Omitted orientation-core entries are named in the footer. Reserve their worst case while
+    // they are still undecided; they come first, so the reservation ends early.
+    let core = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| is_orientation_core(candidate.section))
+        .map(|(index, candidate)| {
+            (
+                index,
+                ContextOmission {
+                    section: candidate.section,
+                    source: candidate.source.clone(),
+                    reason: ContextOmissionReason::DoesNotFit,
+                    content_chars: candidate.content_chars,
+                },
+            )
+        })
+        .collect::<Vec<_>>();
     let mut selected_chars = header.0;
     let mut selected = Vec::new();
     for (index, candidate) in candidates.into_iter().enumerate() {
         let remaining = total_entries - index - 1;
         bundle.omitted_entries = bundle.omissions.len() + remaining;
         bundle.truncated = bundle.omitted_entries > 0;
+        let pending = core
+            .iter()
+            .filter(|(position, _)| *position > index)
+            .map(|(_, omission)| omission);
         let mut footer = CharCounter::default();
-        write_context_omissions(&mut footer, &bundle);
+        write_omission_footer(
+            &mut footer,
+            bundle.omitted_entries,
+            bundle.max_chars,
+            bundle.fill_chars,
+            bundle.omissions.iter().chain(pending),
+        );
         let trial_chars = selected_chars
             .saturating_add(candidate.rendered_chars)
             .saturating_add(footer.0);
-        if trial_chars > max_chars {
+        let limit = if is_orientation_core(candidate.section) {
+            max_chars
+        } else {
+            fill_chars
+        };
+        if trial_chars > limit {
             bundle.omissions.push(ContextOmission {
                 section: candidate.section,
                 source: candidate.source,
@@ -773,11 +1044,45 @@ fn write_entry_heading(output: &mut impl Write, section: ContextSection, source:
 
 fn write_context_omissions(output: &mut impl Write, bundle: &ContextBundle) {
     if bundle.truncated {
-        writeln!(output, "\n## Truncated\n").expect("writing to a string cannot fail");
+        write_omission_footer(
+            output,
+            bundle.omitted_entries,
+            bundle.max_chars,
+            bundle.fill_chars,
+            bundle.omissions.iter(),
+        );
+    }
+}
+
+/// Count every omission; name omitted orientation-core sources so the agent can read them.
+fn write_omission_footer<'a>(
+    output: &mut impl Write,
+    omitted_entries: usize,
+    max_chars: usize,
+    fill_chars: usize,
+    omissions: impl Iterator<Item = &'a ContextOmission>,
+) {
+    if omitted_entries == 0 {
+        return;
+    }
+    writeln!(output, "\n## Truncated\n").expect("writing to a string cannot fail");
+    let bound = if fill_chars < max_chars {
+        format!("{fill_chars}-character bundle (orientation core up to {max_chars})")
+    } else {
+        format!("{max_chars}-character bundle")
+    };
+    writeln!(
+        output,
+        "Skipped {omitted_entries} context entries that did not fit individually within the {bound}. Later candidates were still considered; `akasha --json context` reports each skipped source and reason."
+    )
+    .expect("writing to a string cannot fail");
+    for omission in omissions.filter(|omission| is_orientation_core(omission.section)) {
         writeln!(
             output,
-            "Skipped {} context entries that did not fit individually within the {}-character bundle. Later candidates were still considered; `akasha --json context` reports each skipped source and reason.",
-            bundle.omitted_entries, bundle.max_chars
+            "- Not included: {} `{}` ({} characters)",
+            section_name(omission.section),
+            omission.source.display(),
+            omission.content_chars
         )
         .expect("writing to a string cannot fail");
     }
@@ -879,6 +1184,8 @@ const fn section_name(section: ContextSection) -> &'static str {
         ContextSection::EntityIndex => "Entity index",
         ContextSection::LatestHandoff => "Latest handoff",
         ContextSection::RecentEvent => "Recent event",
+        ContextSection::OpenTaskDigest => "Open tasks",
+        ContextSection::OpenProblemDigest => "Open problems",
     }
 }
 

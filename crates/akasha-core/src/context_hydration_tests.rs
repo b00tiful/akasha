@@ -68,7 +68,7 @@ fn context_hydration_reads_only_selected_occurrences_with_output_bounded_bytes()
             })
             .collect();
         let mut reads = Vec::new();
-        let result = fit_candidates(&fixture.report, candidates, budget, |candidate| {
+        let result = fit_candidates(&fixture.report, candidates, budget, budget, |candidate| {
             reads.push(candidate.source.clone());
             Ok(content.clone())
         });
@@ -184,9 +184,13 @@ fn context_hydration_omitted_sources_are_not_read_again() {
     let first_chars = candidates[0].rendered_chars;
     let path = fixture.report.project_dir.join("first.md");
     fs::write(&path, b"\xff").unwrap();
-    let bundle = fit_candidates(&fixture.report, candidates, first_chars, |candidate| {
-        read_selected_body(&fixture.report, candidate)
-    })
+    let bundle = fit_candidates(
+        &fixture.report,
+        candidates,
+        first_chars,
+        first_chars,
+        |candidate| read_selected_body(&fixture.report, candidate),
+    )
     .unwrap();
     assert_eq!(bundle.omissions.len(), 1);
     assert_eq!(bundle.omissions[0].source, Path::new("first.md"));
@@ -203,7 +207,7 @@ fn context_hydration_returns_no_bundle_after_later_selected_drift() {
         fixture.candidate("last.md", "last"),
     ];
     let mut reads = 0;
-    let result = fit_candidates(&fixture.report, candidates, 16_000, |candidate| {
+    let result = fit_candidates(&fixture.report, candidates, 16_000, 16_000, |candidate| {
         reads += 1;
         let body = read_selected_body(&fixture.report, candidate)?;
         fs::write(fixture.report.project_dir.join("last.md"), "edit").unwrap();
