@@ -26,6 +26,97 @@ function plan(packet) {
   }] };
 }
 
+function slottedReply(input) {
+  const original = plan(input).notes[0];
+  const implementation = input.planned_note.role === "implementation";
+  return { schema_version: 4, notes: [{ slot: input.planned_note.slot,
+    fields: { ...original.fields, entity: input.planned_note.role, reviewed: input.date },
+    evidence: implementation ? original.evidence : [{ kind: "unknown", claim: "Runtime behavior needs further review.",
+      rationale: "This test uses a role group without interpreting its source text.", sources: [] }],
+  }] };
+}
+
+test("automatic Rust planning fixes unique slots and remaps source handles through reviewed publication", async t => {
+  const f = fixture(t), before = snapshot(f.root), repoBefore = snapshot(f.repository);
+  const saved = join(f.directory, "planned-review");
+  let calls = 0;
+  const result = await draftLocalOnboarding({ ...optionsForDiscovery(f), autoPlan: true, saveInputs: saved }, async (input, schema, policy) => {
+    calls++;
+    assert(input.planned_note && policy.includes("host supplies name and note_type"));
+    assert.equal(schema.properties.schema_version.const, 4);
+    const variant = schema.properties.notes.items.oneOf[0];
+    assert.deepEqual(Object.keys(variant.properties).sort(), ["evidence", "fields", "slot"]);
+    assert.equal(variant.properties.slot.const, input.planned_note.slot);
+    assert.equal(schema.properties.notes.items.oneOf.length, 1);
+    assert(!JSON.stringify(input).includes(f.root));
+    if (input.planned_note.role === "implementation") assert.deepEqual(input.sources.map(s => s.path), ["src/lib.rs"]);
+    return { answer: JSON.stringify(slottedReply(input)) };
+  });
+  assert.equal(calls, 2);
+  const draft = JSON.parse(result.output), identities = JSON.parse(readFileSync(join(saved, "identity-plan.json")));
+  assert.equal(new Set(draft.proposal.notes.map(n => n.path)).size, 2);
+  assert(draft.proposal.notes.every(n => n.note_type === "entity" && n.path.startsWith("onboarding-")));
+  assert.deepEqual(identities, result.metrics.identity_plan);
+  const planFile = JSON.parse(readFileSync(join(saved, "plan.json")));
+  assert.equal(planFile.schema_version, 4);
+  assert.equal(planFile.notes[1].evidence[0].sources[0].source, 3);
+  const plain = run(f, ["local-onboarding-plan", "--packet", join(saved, "packet.json")]);
+  assert.equal(plain.status, 0, plain.stderr);
+  assert(plain.stdout.includes("semantic review required") && plain.stdout.includes(identities.slots[0].path) && !plain.stdout.includes("\x1b"));
+  if (process.platform !== "win32") assert.equal(statSync(join(saved, "identity-plan.json")).mode & 0o777, 0o600);
+  assert.deepEqual(snapshot(f.root), before);
+  assert.deepEqual(snapshot(f.repository), repoBefore);
+  const applied = run(f, ["--json", "local-onboarding-apply", "--packet", join(saved, "packet.json"), "--proposal", join(saved, "proposal.json"), "--approved-preview-id", draft.preview.preview_id]);
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(run(f, ["validate"]).status, 0);
+  const librarian = run(f, ["--json", "librarian-prepare", "FlightPath waypoints vector"]);
+  assert.equal(librarian.status, 0, librarian.stderr);
+  assert(JSON.parse(librarian.stdout).evidence.some(s => s.excerpt.includes("stores waypoints in a vector")));
+  assert.deepEqual(snapshot(f.repository), repoBefore);
+});
+
+test("automatic plan refuses slot/name injection, later-group failure and source drift without publication", async t => {
+  const f = fixture(t), before = snapshot(f.root);
+  for (const mutation of [
+    p => { p.notes[0].slot = 99; },
+    p => { p.notes[0].name = "escape"; },
+    p => { p.notes[0].note_type = "task"; },
+  ]) await assert.rejects(draftLocalOnboarding({ ...options(f), autoPlan: true }, async input => {
+    const p = slottedReply(input); mutation(p); return { answer: JSON.stringify(p) };
+  }), /Component must produce/);
+  let calls = 0;
+  const saved = join(f.directory, "partial-planning");
+  await assert.rejects(draftLocalOnboarding({ ...options(f), autoPlan: true, saveInputs: saved }, async input => {
+    if (++calls === 2) throw new Error("later group failed");
+    return { answer: JSON.stringify(slottedReply(input)) };
+  }), /later group failed/);
+  assert.equal(calls, 2);
+  assert(existsSync(join(saved, "identity-plan.json")) && existsSync(join(saved, "completion-1.json")));
+  assert(!existsSync(join(saved, "proposal.json")));
+  await assert.rejects(draftLocalOnboarding({ ...options(f), autoPlan: true }, async input => {
+    if (input.planned_note.role === "implementation") writeFileSync(join(f.repository, "src/lib.rs"), "pub struct Changed;\n");
+    return { answer: JSON.stringify(slottedReply(input)) };
+  }), error => error.code === 5);
+  assert.deepEqual(snapshot(f.root), before);
+});
+
+test("automatic plan rejects incompatible options and supports sampled explicit sources", async t => {
+  const f = fixture(t);
+  for (const options of [
+    { ...optionsForDiscovery(f), autoPlan: "yes" },
+    { root: f.root, project: "first-run", components: [{ name: "one", sources: ["README.md"] }], autoPlan: true },
+  ]) await assert.rejects(draftLocalOnboarding(options, () => assert.fail("must refuse before inference")), /auto-plan/);
+  writeFileSync(join(f.repository, "src/lib.rs"), "// filler for bounded samples\n".repeat(400));
+  const result = await draftLocalOnboarding({ root: f.root, project: "first-run", sources: ["src/lib.rs"], autoPlan: true, sampleLargeFiles: true, json: true }, async input => {
+    assert(input.sources[0].sampling);
+    const p = slottedReply(input);
+    p.notes[0].evidence = [{ kind: "fact", claim: "The selected source contains filler comments.", sources: [{ source: 1, excerpt: 3 }] }];
+    return { answer: JSON.stringify(p) };
+  });
+  assert.equal(result.metrics.identity_plan.slots.length, 1);
+  assert.equal(JSON.parse(result.output).review.sampled_sources.length, 1);
+});
+
 test("large-file sampling supports sources, groups and discovery through reviewed apply and retrieval", async t => {
   const f = fixture(t);
   const text = "// multilingual filler 世界 for bounded coverage\r\n".repeat(399) + "pub const TAIL: usize = 37;";

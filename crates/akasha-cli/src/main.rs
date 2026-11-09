@@ -86,6 +86,11 @@ enum Command {
         #[arg(long)]
         sample_large_files: bool,
     },
+    /// Plan unique configured entity notes and source groups from a fresh packet (no writes).
+    LocalOnboardingPlan {
+        #[arg(long)]
+        packet: PathBuf,
+    },
     /// Validate a local onboarding draft and return its exact proposal/preview (no writes).
     LocalOnboardingPreview {
         #[arg(long)]
@@ -427,6 +432,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             | Command::LibrarianPrepare { .. }
             | Command::LocalOnboardingPrepare { .. }
             | Command::LocalOnboardingDiscover { .. }
+            | Command::LocalOnboardingPlan { .. }
             | Command::LocalOnboardingPreview { .. }
             | Command::LocalOnboardingCompile { .. }
             | Command::LocalOnboardingApply { .. }
@@ -484,6 +490,16 @@ fn run(cli: Cli) -> Result<(), u8> {
             )
             .map_err(report_onboarding)?;
             finish_output(render::render_local_onboarding_result(&result, output))?;
+        }
+        Command::LocalOnboardingPlan { packet } => {
+            let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
+            let packet = serde_json::from_str(&read_librarian_input(&packet)?).map_err(|_| {
+                eprintln!("akasha: invalid local onboarding packet JSON");
+                4
+            })?;
+            let plan = akasha_core::onboarding_local::plan_local_onboarding(&request, &packet)
+                .map_err(report_onboarding)?;
+            finish_output(render::render_local_onboarding_plan(&plan, output))?;
         }
         Command::LocalOnboardingCompile { packet, plan } => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;

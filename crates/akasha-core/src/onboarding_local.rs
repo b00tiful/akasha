@@ -213,6 +213,172 @@ struct LocalPlan {
     notes: Vec<PlannedNote>,
 }
 
+/// Deterministic initial-note slots. Roles describe filename groups, not inferred components.
+#[derive(Debug, Serialize)]
+pub struct LocalOnboardingIdentityPlan {
+    pub schema_version: u32,
+    pub slots: Vec<LocalOnboardingSlot>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LocalOnboardingSlot {
+    pub slot: usize,
+    pub role: String,
+    pub note_type: String,
+    pub name: String,
+    /// Project-relative destination, using the configured entity folder.
+    pub path: PathBuf,
+    /// One-based handles in the original packet, never completion-local handles.
+    pub sources: Vec<usize>,
+}
+
+/// Plan a bounded partition before inference; an ambiguous entity schema refuses.
+pub fn plan_local_onboarding(
+    request: &ResolveRequest,
+    packet: &LocalOnboardingPacket,
+) -> Result<LocalOnboardingIdentityPlan, OnboardingBatchError> {
+    bounded_json(packet)?;
+    if packet != &rebuild_local_onboarding(request, packet)? {
+        return Err(OnboardingBatchError::Conflict {
+            path: PathBuf::from("<local-onboarding>"),
+            message: "local onboarding packet is stale or altered; prepare again".into(),
+        });
+    }
+    let types = packet.preparation["note_types"]
+        .as_object()
+        .ok_or_else(|| invalid("missing configured note types"))?;
+    let entities = types
+        .iter()
+        .filter(|(_, schema)| schema["class"] == "entity")
+        .collect::<Vec<_>>();
+    if entities.len() != 1 {
+        return Err(invalid(
+            "automatic note planning requires exactly one configured entity type; use explicit components instead",
+        ));
+    }
+    let (note_type, schema) = entities[0];
+    let folder = schema["folder"]
+        .as_str()
+        .ok_or_else(|| invalid("missing entity folder"))?;
+    let mut groups: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (index, source) in packet.sources.iter().enumerate() {
+        if source.excerpts.is_empty() || source.text.trim().is_empty() {
+            return Err(invalid(
+                "automatic note planning requires nonempty source excerpt catalogs",
+            ));
+        }
+        let group = match crate::onboarding_discovery::role(&source.path) {
+            Some("tests") => "verification",
+            Some("implementation") => "implementation",
+            Some(_) => "context",
+            None => {
+                return Err(invalid(
+                    "automatic note planning requires recognized source roles; use explicit components instead",
+                ));
+            }
+        };
+        groups.entry(group).or_default().push(index + 1);
+    }
+    let mut slots = Vec::new();
+    for (role, sources) in groups {
+        let paths = sources
+            .iter()
+            .map(|handle| &packet.sources[handle - 1].path)
+            .collect::<Vec<_>>();
+        // Content changes keep the identity; source-set changes are visible as a new plan.
+        // JSON array encoding avoids ambiguous path concatenations. Never suffix a conflict.
+        let identity =
+            serde_json::to_vec(&(1, note_type, role, paths)).map_err(|e| invalid(e.to_string()))?;
+        let digest = content_fingerprint(&identity);
+        let name = format!("onboarding-{role}-{}", &digest[7..39]);
+        slots.push(LocalOnboardingSlot {
+            slot: slots.len() + 1,
+            role: role.into(),
+            note_type: note_type.clone(),
+            path: Path::new(folder).join(format!("{name}.md")),
+            name,
+            sources,
+        });
+    }
+    let plan = LocalOnboardingIdentityPlan {
+        schema_version: 1,
+        slots,
+    };
+    bounded_json(&plan)?;
+    Ok(plan)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SlottedPlan {
+    schema_version: u32,
+    notes: Vec<SlottedNote>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SlottedNote {
+    slot: usize,
+    fields: BTreeMap<String, String>,
+    evidence: Vec<PlannedClaim>,
+}
+
+fn resolve_slotted_plan(
+    request: &ResolveRequest,
+    packet: &LocalOnboardingPacket,
+    json: &str,
+) -> Result<LocalPlan, OnboardingBatchError> {
+    let plan: SlottedPlan =
+        serde_json::from_str(json).map_err(|e| invalid(format!("invalid slotted plan: {e}")))?;
+    if plan.schema_version != 4 {
+        return Err(invalid("slotted plans require schema_version 4"));
+    }
+    let identities = plan_local_onboarding(request, packet)?;
+    if plan.notes.len() != identities.slots.len() {
+        return Err(invalid(
+            "slotted plan must cover every planned slot exactly once",
+        ));
+    }
+    let mut notes = BTreeMap::new();
+    for note in plan.notes {
+        let slot = note
+            .slot
+            .checked_sub(1)
+            .and_then(|index| identities.slots.get(index))
+            .ok_or_else(|| invalid("unknown planned note slot"))?;
+        for claim in &note.evidence {
+            for reference in &claim.sources {
+                match reference {
+                    PlannedSource::Excerpt { source, .. } if slot.sources.contains(source) => {}
+                    _ => {
+                        return Err(invalid(
+                            "planned note evidence must select excerpt handles within its source group",
+                        ));
+                    }
+                }
+            }
+        }
+        if notes
+            .insert(
+                note.slot,
+                PlannedNote {
+                    note_type: slot.note_type.clone(),
+                    name: slot.name.clone(),
+                    fields: note.fields,
+                    evidence: note.evidence,
+                },
+            )
+            .is_some()
+        {
+            return Err(invalid("duplicate planned note slot"));
+        }
+    }
+    Ok(LocalPlan {
+        schema_version: 3,
+        notes: notes.into_values().collect(),
+    })
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PlannedNote {
@@ -248,8 +414,14 @@ pub fn compile_local_onboarding(
     if plan_json.len() > MAX_LOCAL_ONBOARDING_BYTES {
         return Err(invalid("local onboarding plan exceeds 16000 bytes"));
     }
-    let plan: LocalPlan = serde_json::from_str(plan_json)
+    let version: serde_json::Value = serde_json::from_str(plan_json)
         .map_err(|error| invalid(format!("invalid local onboarding plan: {error}")))?;
+    let plan: LocalPlan = if version["schema_version"] == 4 {
+        resolve_slotted_plan(request, packet, plan_json)?
+    } else {
+        serde_json::from_str(plan_json)
+            .map_err(|error| invalid(format!("invalid local onboarding plan: {error}")))?
+    };
     if ![2, 3].contains(&plan.schema_version) {
         return Err(invalid(
             "local onboarding plans require schema_version 2 (quotes) or 3 (excerpt handles); regenerate legacy body plans",

@@ -31,6 +31,30 @@ impl OutputMode {
     }
 }
 
+pub(crate) fn render_local_onboarding_plan(
+    plan: &akasha_core::onboarding_local::LocalOnboardingIdentityPlan,
+    output: OutputMode,
+) -> io::Result<()> {
+    if output.json {
+        return write_stdout(&json_line(serde_json::to_string_pretty(plan))?);
+    }
+    let mut text =
+        String::from("Planned initial notes (filename roles; semantic review required)\n");
+    for slot in &plan.slots {
+        writeln!(
+            text,
+            "Slot {} [{}] {}: {}\n  Source handles: {:?}",
+            slot.slot,
+            librarian_display(&slot.role),
+            librarian_display(&slot.note_type),
+            librarian_display(&slot.path.to_string_lossy()),
+            slot.sources
+        )
+        .expect("writing to a string cannot fail");
+    }
+    write_stdout(&text)
+}
+
 pub(crate) fn render_local_onboarding_discovery(
     discovery: &akasha_core::onboarding_discovery::LocalOnboardingDiscovery,
     output: OutputMode,

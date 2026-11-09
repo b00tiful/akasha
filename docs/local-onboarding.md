@@ -144,6 +144,55 @@ Ctrl-C cancels. No model download, cloud fallback, model tools or persistent wor
 Full autonomous repository onboarding, route preferences, model installation/distribution,
 desktop integration and representative quality/device acceptance remain future work.
 
+## Automatic initial-note planning
+
+Add `--auto-plan --worker-session` to a `--discover` or repeated `--source` invocation to have
+Rust choose unique note identities before inference. No component-plan JSON is needed:
+
+```sh
+node scripts/local-onboarding.mjs \
+  --root /path/to/akasha-root --project example \
+  --discover . --auto-plan --worker-session \
+  --save-inputs /private/path/new-review \
+  --server "$inference_dir/runtimes/llama-b12110-vulkan/llama-server" \
+  --model "$inference_dir/models/Qwen3.5-9B-UD-Q4_K_XL.gguf" \
+  --model-sha256 6f5d30666c2d8ae16a306e616d95341dcf3cc46810df84d7e6f5a7d1e4c1b293 \
+  --gpu-layers 99 --threads 4 --json > draft.json
+```
+
+Rust partitions selected files into up to three groups: context (overview, manifests, docs and
+workflows), implementation, and verification (tests). Every selected file belongs to one group.
+These filename roles do not establish components or complete repository coverage. Planning needs
+exactly one configured entity-class type and recognized source roles; otherwise use explicit
+`--components` with reviewed names/types. `--auto-plan` and `--components` cannot be combined.
+Sampling remains an independent opt-in.
+
+Inspect the same plan without inference or writes:
+
+```sh
+target/debug/akasha --root /path/to/akasha-root --project example \
+  local-onboarding-plan --packet packet.json
+```
+
+Plain output lists slot, role, configured type, project-relative destination and original-packet
+source handles. `--json` returns `{schema_version: 1, slots}` with these fields. Filenames use
+`onboarding-ROLE-HASH`, with a stable 128-bit path-set hash; content edits retain the identity.
+Source-set/type changes can change names. Existing targets are never silently renamed or
+suffixed: differing contents refuse at compilation. Review the exact proposed destinations.
+
+One independent completion per slot supplies a version-4 plan: `notes` contain `slot`, `fields`
+and `evidence`; there are no model-owned `name` or `note_type` fields. The adapter remaps local
+source handles to the original packet. Rust rebuilds the plan, requires all slots exactly once
+and rejects citations outside a slot's group. All notes still need metadata/claim review and
+full-ID application. Worker reuse retains the same overall deadline; a later failure returns no
+partial proposal.
+
+`--save-inputs` also preserves `identity-plan.json` privately before inference. Correct a copy of
+saved version-4 `plan.json` using its original slot IDs and original-packet source handles, then
+run ordinary `local-onboarding-compile` against `packet.json`. Names/types and group membership
+come from the packet, not the correction file. Existing version-2/3 correction plans and explicit
+component groups retain their behavior. Draft/proposal/publication formats remain unchanged.
+
 ## Bounded directory discovery
 
 Replace `--source`/`--components` with one or more `--discover DIRECTORY` arguments to let Rust

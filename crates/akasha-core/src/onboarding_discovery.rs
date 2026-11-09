@@ -97,7 +97,7 @@ fn excluded(name: &str) -> bool {
             .any(|word| name.contains(word))
 }
 
-fn role(path: &str) -> Option<&'static str> {
+pub(crate) fn role(path: &str) -> Option<&'static str> {
     let name = path.rsplit('/').next()?.to_ascii_lowercase();
     if name.starts_with("readme.") {
         return Some("overview");

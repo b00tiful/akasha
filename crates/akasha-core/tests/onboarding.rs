@@ -13,6 +13,238 @@ use sha2::{Digest, Sha256};
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
+fn identity_fixture(
+    label: &str,
+) -> (
+    Fixture,
+    akasha_core::onboarding_local::LocalOnboardingPacket,
+) {
+    let f = Fixture::new(label);
+    for path in ["src/alpha/lib.rs", "src/beta/lib.rs", "tests/check.rs"] {
+        let target = f.resolution.cwd.join(path);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(target, "pub const LIMIT: usize = 37;\n").unwrap();
+    }
+    fs::write(
+        f.resolution.cwd.join("README.md"),
+        "# Fixture\nA bounded source fixture.\n",
+    )
+    .unwrap();
+    let packet = akasha_core::onboarding_local::prepare_local_onboarding(
+        &f.resolution,
+        &[
+            "README.md",
+            "Cargo.toml",
+            "src/alpha/lib.rs",
+            "src/beta/lib.rs",
+            "tests/check.rs",
+        ]
+        .map(str::to_owned),
+    )
+    .unwrap();
+    (f, packet)
+}
+
+fn slotted_claim_plan(
+    f: &Fixture,
+    packet: &akasha_core::onboarding_local::LocalOnboardingPacket,
+) -> serde_json::Value {
+    let identities =
+        akasha_core::onboarding_local::plan_local_onboarding(&f.resolution, packet).unwrap();
+    serde_json::json!({"schema_version": 4, "notes": identities.slots.iter().map(|slot| serde_json::json!({
+        "slot": slot.slot,
+        "fields": {"entity": slot.role, "kind": "source-group", "status": "observed", "reviewed": "2026-11-09"},
+        "evidence": [{"kind": "unknown", "claim": "Behavior needs source review.", "rationale": "This boundary test makes no semantic assertion.", "sources": []}]
+    })).collect::<Vec<_>>()})
+}
+
+#[test]
+fn automatic_note_slots_partition_sources_with_stable_unique_configured_identities() {
+    use akasha_core::onboarding_local::{plan_local_onboarding, prepare_local_onboarding};
+    let (f, packet) = identity_fixture("identity-partition");
+    let before = f.project_snapshot();
+    let plan = plan_local_onboarding(&f.resolution, &packet).unwrap();
+    assert_eq!(
+        plan.slots
+            .iter()
+            .map(|s| s.role.as_str())
+            .collect::<Vec<_>>(),
+        ["context", "implementation", "verification"]
+    );
+    let handles = plan
+        .slots
+        .iter()
+        .flat_map(|s| s.sources.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(handles, (1..=5).collect());
+    assert_eq!(plan.slots.iter().map(|s| s.sources.len()).sum::<usize>(), 5);
+    assert_eq!(
+        plan.slots
+            .iter()
+            .map(|s| &s.name)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        3
+    );
+    assert!(plan.slots.iter().all(|s| s.path
+        == Path::new("entities").join(format!("{}.md", s.name))
+        && s.note_type == "entity"
+        && s.name.len() <= 80));
+    let paths = packet
+        .sources
+        .iter()
+        .rev()
+        .map(|s| s.path.clone())
+        .collect::<Vec<_>>();
+    let reordered = prepare_local_onboarding(&f.resolution, &paths).unwrap();
+    assert_eq!(
+        serde_json::to_value(plan_local_onboarding(&f.resolution, &reordered).unwrap()).unwrap(),
+        serde_json::to_value(&plan).unwrap()
+    );
+    fs::write(
+        f.resolution.cwd.join("src/alpha/lib.rs"),
+        "pub const LIMIT: usize = 38;\n",
+    )
+    .unwrap();
+    assert!(plan_local_onboarding(&f.resolution, &packet).is_err());
+    let changed = prepare_local_onboarding(&f.resolution, &paths).unwrap();
+    assert_eq!(
+        serde_json::to_value(plan_local_onboarding(&f.resolution, &changed).unwrap()).unwrap(),
+        serde_json::to_value(&plan).unwrap()
+    );
+    assert_eq!(f.project_snapshot(), before);
+}
+
+#[test]
+fn slotted_compilation_refuses_missing_duplicate_injected_and_out_of_group_notes() {
+    use akasha_core::onboarding_local::compile_local_onboarding;
+    let (f, packet) = identity_fixture("identity-validation");
+    let before = f.project_snapshot();
+    let good = slotted_claim_plan(&f, &packet);
+    let draft = compile_local_onboarding(&f.resolution, &packet, &good.to_string()).unwrap();
+    assert_eq!(draft.proposal.notes.len(), 3);
+    for variant in 0..7 {
+        let mut plan = good.clone();
+        match variant {
+            0 => {
+                plan["notes"].as_array_mut().unwrap().pop();
+            }
+            1 => plan["notes"][1]["slot"] = 1.into(),
+            2 => plan["notes"][0]["slot"] = 0.into(),
+            3 => plan["notes"][0]["name"] = "injected".into(),
+            4 => plan["notes"][0]["note_type"] = "task".into(),
+            5 => {
+                plan["notes"][0]["evidence"] = serde_json::json!([{"kind": "fact", "claim": "Wrong source group", "sources": [{"source": 3, "excerpt": 1}]}])
+            }
+            _ => {
+                plan["notes"][0]["evidence"] = serde_json::json!([{"kind": "fact", "claim": "Quote injection", "sources": [{"source": 1, "quote": "package"}]}])
+            }
+        }
+        assert!(
+            compile_local_onboarding(&f.resolution, &packet, &plan.to_string()).is_err(),
+            "variant {variant}"
+        );
+    }
+    let mut reordered = good;
+    reordered["notes"].as_array_mut().unwrap().reverse();
+    assert_eq!(
+        compile_local_onboarding(&f.resolution, &packet, &reordered.to_string())
+            .unwrap()
+            .preview
+            .proposal_id,
+        draft.preview.proposal_id
+    );
+    assert_eq!(f.project_snapshot(), before);
+}
+
+#[test]
+fn automatic_plan_uses_custom_entity_schema_and_refuses_ambiguous_or_unknown_roles() {
+    use akasha_core::onboarding_local::{plan_local_onboarding, prepare_local_onboarding};
+    let (f, _) = identity_fixture("identity-config");
+    let root = f.resolution.root_override.as_ref().unwrap();
+    let config_path = root.join("akasha.toml");
+    let original = fs::read_to_string(&config_path).unwrap();
+    let custom = original
+        .replace(
+            "[project.note_types.entity]",
+            "[project.note_types.component]",
+        )
+        .replace("folder = \"entities\"", "folder = \"components\"");
+    fs::rename(f.project.join("entities"), f.project.join("components")).unwrap();
+    fs::write(&config_path, &custom).unwrap();
+    let packet = prepare_local_onboarding(&f.resolution, &["Cargo.toml".into()]).unwrap();
+    let plan = plan_local_onboarding(&f.resolution, &packet).unwrap();
+    assert_eq!(plan.slots[0].note_type, "component");
+    assert!(plan.slots[0].path.starts_with("components"));
+    let extra = "\n[project.note_types.other]\nclass = \"entity\"\nfolder = \"other\"\nrequired_fields = [\"entity\"]\n";
+    fs::create_dir(f.project.join("other")).unwrap();
+    fs::write(&config_path, custom + extra).unwrap();
+    let ambiguous = prepare_local_onboarding(&f.resolution, &["Cargo.toml".into()]).unwrap();
+    assert!(
+        plan_local_onboarding(&f.resolution, &ambiguous)
+            .unwrap_err()
+            .to_string()
+            .contains("exactly one")
+    );
+    fs::write(&config_path, original).unwrap();
+    fs::rename(f.project.join("components"), f.project.join("entities")).unwrap();
+    fs::write(f.resolution.cwd.join("input.custom"), "custom syntax\n").unwrap();
+    let unknown = prepare_local_onboarding(&f.resolution, &["input.custom".into()]).unwrap();
+    assert!(
+        plan_local_onboarding(&f.resolution, &unknown)
+            .unwrap_err()
+            .to_string()
+            .contains("recognized source roles")
+    );
+}
+
+#[test]
+fn planned_note_conflicts_never_allocate_an_unreviewed_suffix() {
+    use akasha_core::onboarding_local::{
+        apply_local_onboarding, compile_local_onboarding, plan_local_onboarding,
+        prepare_local_onboarding, preview_local_onboarding,
+    };
+    let (f, packet) = identity_fixture("identity-publication");
+    let plan = slotted_claim_plan(&f, &packet);
+    let draft = compile_local_onboarding(&f.resolution, &packet, &plan.to_string()).unwrap();
+    apply_local_onboarding(
+        &f.resolution,
+        &packet,
+        &serde_json::to_string(&draft.proposal).unwrap(),
+        &draft.preview.preview_id,
+    )
+    .unwrap();
+    let before = f.project_snapshot();
+    let paths = packet
+        .sources
+        .iter()
+        .map(|s| s.path.clone())
+        .collect::<Vec<_>>();
+    let fresh = prepare_local_onboarding(&f.resolution, &paths).unwrap();
+    let identities = plan_local_onboarding(&f.resolution, &fresh).unwrap();
+    assert_eq!(
+        identities.slots[0].name.clone() + ".md",
+        draft.proposal.notes[0].path.to_str().unwrap()
+    );
+    let replay = preview_local_onboarding(
+        &f.resolution,
+        &fresh,
+        &serde_json::to_string(&draft.proposal).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        replay
+            .preview
+            .notes
+            .iter()
+            .all(|n| n.action == OnboardingNoteAction::Unchanged)
+    );
+    let mut altered = plan;
+    altered["notes"][0]["evidence"][0]["claim"] = "Different reviewed claim.".into();
+    assert!(compile_local_onboarding(&f.resolution, &fresh, &altered.to_string()).is_err());
+    assert_eq!(f.project_snapshot(), before);
+}
+
 #[test]
 fn sampled_sources_preserve_original_coordinates_unicode_and_complete_omission_coverage() {
     use akasha_core::onboarding_local::{
