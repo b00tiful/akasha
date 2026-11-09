@@ -97,7 +97,11 @@ Repeat `--term` up to eight times for literal substring matching. Without explic
 automatic queries discard common English lookup/function words and match full alphanumeric tokens
 in bodies, canonical identities and recorded status. Filename/status matches receive additional
 weight; selected notes and their neighbors retain priority. Status values have no hardcoded order;
-this is not semantic or multilingual word segmentation. Optional
+the strongest initial result keeps that ranking. Later results favor query terms not yet present
+in displayed excerpts, identities or status, so repeated matches on one topic do not automatically
+consume all six slots. Collection retains bounded candidates per term before choosing the final
+six. This remains lexical retrieval; repeated notes can still crowd out a fact about the same
+topic. Optional
 `--note Projects/example/entities/cache.md` prioritizes that exact canonical note and its outgoing
 neighbors in the selected project. Folder paths follow configuration. Keep the original question
 or useful terms even when selecting a note; unrelated notes are not evidence of a relationship.
@@ -108,11 +112,15 @@ bodies are excluded. Shared validation can inspect foreign link-target metadata.
 an atomic filesystem snapshot. Regenerate disposable packets after retrieval changes; old
 packets that no longer match current evidence refuse as stale.
 
-Bodies fitting the 1,000-character source cap stay whole. Longer bodies use the line with greatest query-term
-overlap, then nearby complete lines within a 640-character context target. A long winning line
+Bodies fitting the 1,000-character source cap stay whole. Longer bodies score contiguous windows
+of complete lines within a 640-character context target, favoring distinct query-term coverage
+and then the shortest window. This can retain adjacent timeout and capacity facts together.
+The excerpt begins at the winning window and includes nearby complete lines. A long winning line
 and no-body-match fallback can still use the 1,000-character hard cap. Excerpts preserve source
 bytes and physical lines; partial coverage is explicit. Filename weighting and lexical windows
-can still select an irrelevant passage or miss synonyms.
+can still select an irrelevant passage or miss synonyms. A term beyond the visible portion of
+a clipped long line cannot win passage selection. Regenerate older disposable evidence packets
+when selection changes; the wire schema and normal checking commands are unchanged.
 
 The worker returns only `{"selections":[{"citation":1}]}` using a grammar restricted to supplied
 citation IDs. Rust rebuilds the packet, rejects drift/duplicate/unknown IDs and supplies each

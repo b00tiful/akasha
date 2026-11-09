@@ -162,23 +162,69 @@ fn matches_term(text: &str, term: &str, automatic: bool) -> bool {
     }
 }
 
-// Keep a line-aligned exact quote: choose coverage before proximity, then add bounded context.
+fn term_mask(text: &str, needles: &BTreeSet<String>, automatic: bool) -> u32 {
+    needles.iter().enumerate().fold(0, |mask, (bit, term)| {
+        mask | (u32::from(matches_term(text, term, automatic)) << bit)
+    })
+}
+
+// Score contiguous complete-line windows, rather than one isolated winning line.
+// The queue holds at most 640 characters; long lines are considered separately.
 fn ranked_excerpt(body: &str, needles: &BTreeSet<String>, automatic: bool) -> (usize, String) {
     if body.chars().take(EXCERPT_CHARS + 1).count() <= EXCERPT_CHARS {
         return (0, body.to_owned());
     }
     let mut best_hits = 0;
+    let mut best_chars = usize::MAX;
     let mut best_offset = 0;
     let mut offset = 0;
+    let mut window = std::collections::VecDeque::new();
+    let mut counts = [0u16; 32];
+    let mut chars = 0;
     for line in body.split_inclusive('\n') {
-        let folded = line.to_lowercase();
-        let hits = needles
-            .iter()
-            .filter(|term| matches_term(&folded, term, automatic))
-            .count();
-        if hits > best_hits {
-            best_hits = hits;
-            best_offset = offset;
+        let line_chars = line.chars().take(EXCERPT_CHARS + 1).count();
+        let visible: String = line.chars().take(EXCERPT_CHARS).collect();
+        let mask = term_mask(&visible.to_lowercase(), needles, automatic);
+        if line_chars > EXCERPT_CONTEXT_CHARS {
+            window.clear();
+            counts.fill(0);
+            chars = 0;
+            let hits = mask.count_ones();
+            if hits > best_hits || (hits == best_hits && line_chars < best_chars) {
+                best_hits = hits;
+                best_chars = line_chars;
+                best_offset = offset;
+            }
+        } else {
+            window.push_back((offset, line_chars, mask));
+            chars += line_chars;
+            for (bit, count) in counts.iter_mut().enumerate() {
+                *count += u16::from(mask & (1 << bit) != 0);
+            }
+            while let Some(&(_, length, first)) = window.front() {
+                // Remove context that adds no distinct query term. All remaining windows
+                // still end on this line and are contiguous exact source substrings.
+                let redundant = counts
+                    .iter()
+                    .enumerate()
+                    .all(|(bit, count)| first & (1 << bit) == 0 || *count > 1);
+                if chars <= EXCERPT_CONTEXT_CHARS && !redundant {
+                    break;
+                }
+                window.pop_front();
+                chars -= length;
+                for (bit, count) in counts.iter_mut().enumerate() {
+                    *count -= u16::from(first & (1 << bit) != 0);
+                }
+            }
+            let hits = counts.iter().filter(|count| **count > 0).count() as u32;
+            if let Some(&(start, _, _)) = window.front()
+                && (hits > best_hits || (hits == best_hits && chars < best_chars))
+            {
+                best_hits = hits;
+                best_chars = chars;
+                best_offset = start;
+            }
         }
         offset += line.len();
     }
@@ -200,6 +246,66 @@ fn ranked_excerpt(body: &str, needles: &BTreeSet<String>, automatic: bool) -> (u
         }
     }
     (best_offset, excerpt)
+}
+
+struct SourceCandidate {
+    priority: u8,
+    lexical: usize,
+    terms: u32,
+    evidence: LibrarianEvidence,
+}
+
+// Keep the six best overall and per displayed query term. This bounds retained
+// excerpts independently of library size while protecting minority query facets.
+fn retain_candidates(candidates: &mut Vec<SourceCandidate>) {
+    candidates.sort_by(|a, b| {
+        (b.priority, b.lexical)
+            .cmp(&(a.priority, a.lexical))
+            .then_with(|| a.evidence.id.cmp(&b.evidence.id))
+    });
+    let mut counts = [0usize; 32];
+    let mut index = 0;
+    candidates.retain(|candidate| {
+        let mut keep = index < MAX_SOURCES;
+        index += 1;
+        for (bit, count) in counts.iter_mut().enumerate() {
+            if candidate.terms & (1 << bit) != 0 {
+                keep |= *count < MAX_SOURCES;
+                *count += 1;
+            }
+        }
+        keep
+    });
+}
+
+fn select_candidates(mut candidates: Vec<SourceCandidate>) -> Vec<LibrarianEvidence> {
+    let mut selected = Vec::new();
+    let mut covered = 0;
+    while !candidates.is_empty() && selected.len() < MAX_SOURCES {
+        // Preserve the strongest initial lexical result. Subsequently prefer uncovered
+        // displayed query terms within each existing anchor/neighbor priority tier.
+        let mut best = 0;
+        for index in 1..candidates.len() {
+            let rank = |candidate: &SourceCandidate| {
+                (
+                    candidate.priority,
+                    if selected.is_empty() {
+                        0
+                    } else {
+                        (candidate.terms & !covered).count_ones()
+                    },
+                    candidate.lexical,
+                )
+            };
+            if rank(&candidates[index]) > rank(&candidates[best]) {
+                best = index;
+            }
+        }
+        let candidate = candidates.remove(best);
+        covered |= candidate.terms;
+        selected.push(candidate.evidence);
+    }
+    selected
 }
 
 fn invalid(path: &Path, message: &str) -> NoteLinksError {
@@ -286,7 +392,7 @@ pub fn prepare_librarian(
         }
     }
     // Retain bounded excerpts only, not a second archive of canonical bodies.
-    let mut best: Vec<((u8, usize), LibrarianEvidence)> = Vec::new();
+    let mut best = Vec::new();
     let mut matched_notes = 0;
     for (id, path) in &paths {
         let source = read_checked_source(&report.root, path)?;
@@ -349,12 +455,19 @@ pub fn prepare_librarian(
             excerpt_truncated: offset > body_start || offset + excerpt.len() < source.len(),
             excerpt,
         };
-        best.push(((priority, lexical), evidence));
-        best.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
-        best.truncate(MAX_SOURCES);
+        let visible_terms = term_mask(&evidence.excerpt.to_lowercase(), &needles, terms.is_empty())
+            | term_mask(&folded_id, &needles, terms.is_empty())
+            | term_mask(&folded_status, &needles, terms.is_empty());
+        best.push(SourceCandidate {
+            priority,
+            lexical,
+            terms: visible_terms,
+            evidence,
+        });
+        retain_candidates(&mut best);
     }
     let mut evidence = Vec::new();
-    for (_, mut entry) in best {
+    for mut entry in select_candidates(best) {
         let source = read_checked_source(&report.root, &paths[&entry.id])?;
         if content_fingerprint(source.as_bytes()) != entry.fingerprint {
             return Err(NoteLinksError::StaleSource(entry.id));
@@ -613,4 +726,54 @@ pub fn check_librarian_sources(
         ));
     }
     Ok(checked)
+}
+
+#[cfg(test)]
+mod retrieval_tests {
+    use super::*;
+
+    #[test]
+    fn candidate_retention_is_bounded_and_protects_each_term_and_priority() {
+        let mut candidates = Vec::new();
+        for index in 0..2048 {
+            candidates.push(SourceCandidate {
+                priority: 0,
+                lexical: index,
+                terms: 1 << (index % 32),
+                evidence: LibrarianEvidence {
+                    citation: 0,
+                    id: format!("{index:04}"),
+                    fingerprint: String::new(),
+                    status: None,
+                    line_start: 1,
+                    line_end: 1,
+                    excerpt: String::new(),
+                    excerpt_truncated: false,
+                },
+            });
+            retain_candidates(&mut candidates);
+            assert!(candidates.len() <= MAX_SOURCES * 33);
+        }
+        assert_eq!(candidates.len(), MAX_SOURCES * 32);
+        for bit in 0..32 {
+            let values: Vec<_> = candidates
+                .iter()
+                .filter(|item| item.terms == 1 << bit)
+                .map(|item| item.lexical)
+                .collect();
+            assert_eq!(values.len(), MAX_SOURCES);
+            assert!(values.iter().all(|value| *value >= 2048 - 32 * MAX_SOURCES));
+        }
+        // An anchor with no query overlap must still precede both neighbors and matches.
+        candidates[0].priority = 2;
+        candidates[0].terms = 0;
+        let anchor = candidates[0].evidence.id.clone();
+        candidates[1].priority = 1;
+        let neighbor = candidates[1].evidence.id.clone();
+        retain_candidates(&mut candidates);
+        let selected = select_candidates(candidates);
+        assert_eq!(selected.len(), MAX_SOURCES);
+        assert_eq!(selected[0].id, anchor);
+        assert_eq!(selected[1].id, neighbor);
+    }
 }

@@ -624,3 +624,112 @@ fn librarian_filename_rank_resists_body_noise_and_retains_anchor_priority() {
     assert_eq!(anchored.evidence[1].id, neighbor);
     assert_eq!(before, link_fixture_snapshot(&f.root));
 }
+
+#[test]
+fn librarian_preserves_a_minority_question_part_beyond_the_first_six_candidates() {
+    let f = fixture("librarian-question-parts");
+    let base = "---\nschema_version: 1\nentity: sample\nkind: subsystem\nstatus: draft\nreviewed: 2026-11-07\n---\n\n";
+    let mut entities = vec!["entities/core.md".to_owned()];
+    for index in 0..24 {
+        let path = format!("entities/delivery-queue-{index:02}.md");
+        fs::write(
+            f.root.join("Projects/alpha").join(&path),
+            format!("{base}Delivery queue retries use backoff.\n"),
+        )
+        .unwrap();
+        entities.push(path);
+    }
+    let cancel = "entities/cancellation.md";
+    fs::write(
+        f.root.join("Projects/alpha").join(cancel),
+        format!("{base}Cancellation waits for the worker to exit.\n"),
+    )
+    .unwrap();
+    entities.push(cancel.into());
+    support::write_project_state(
+        &f.root.join("Projects/alpha"),
+        &[],
+        &entities.iter().map(String::as_str).collect::<Vec<_>>(),
+        &["records/tasks/ship-mvp.md"],
+    );
+    let before = link_fixture_snapshot(&f.root);
+    let question = "How do delivery queue retries work and what does cancellation wait for?";
+    let packet = prepare_librarian(&f.request, question, &[], None).unwrap();
+    assert_eq!(packet.evidence.len(), 6);
+    assert_eq!(packet.matched_notes, 25);
+    assert_eq!(packet.omitted_notes, 19);
+    assert!(packet.evidence[0].id.contains("delivery-queue"));
+    assert!(packet.evidence[1].id.ends_with(cancel));
+    assert_eq!(
+        packet,
+        prepare_librarian(&f.request, question, &[], None).unwrap()
+    );
+    let selected = serde_json::json!({"selections": packet.evidence.iter()
+        .map(|item| serde_json::json!({"citation":item.citation})).collect::<Vec<_>>()});
+    let checked =
+        akasha_core::librarian::check_librarian_sources(&f.request, &packet, &selected.to_string())
+            .unwrap();
+    assert_eq!(
+        checked.matches[1].quote,
+        "\nCancellation waits for the worker to exit.\n"
+    );
+    assert_eq!(before, link_fixture_snapshot(&f.root));
+}
+
+#[test]
+fn librarian_contiguous_windows_cover_adjacent_facts_in_unicode_crlf_sources() {
+    let f = fixture("librarian-window-coverage");
+    let id = "Projects/alpha/entities/core.md";
+    let target =
+        "Transport request timeout is 18 seconds. 🌍\r\nTransport buffer capacity is 48 KiB.\r\n";
+    append_link_source(
+        &f.root,
+        id,
+        &format!(
+            "\r\nTransport request timeout buffer overview\r\n{}{target}",
+            "Historical observation without configuration values.\r\n".repeat(80)
+        ),
+    );
+    refresh(&f);
+    let packet = prepare_librarian(
+        &f.request,
+        "What are the transport request timeout and buffer capacity?",
+        &[],
+        None,
+    )
+    .unwrap();
+    let item = &packet.evidence[0];
+    assert_eq!(item.excerpt, target);
+    assert!(item.excerpt_truncated);
+    let checked = akasha_core::librarian::check_librarian_sources(
+        &f.request,
+        &packet,
+        &source_selection(item.citation, None),
+    )
+    .unwrap();
+    let source = fs::read_to_string(f.root.join(id)).unwrap();
+    assert!(
+        source
+            .split_inclusive('\n')
+            .skip(checked.matches[0].line_start - 1)
+            .collect::<String>()
+            .starts_with(target)
+    );
+    assert_eq!(checked.matches[0].line_end, item.line_start + 1);
+}
+
+#[test]
+fn librarian_clipped_long_line_cannot_claim_invisible_query_coverage() {
+    let f = fixture("librarian-visible-window");
+    let id = "Projects/alpha/entities/core.md";
+    let visible = "Visible buffer capacity is 48 KiB.\n";
+    append_link_source(
+        &f.root,
+        id,
+        &format!("\n{} buffer capacity\n{visible}", "x".repeat(1200)),
+    );
+    refresh(&f);
+    let packet = prepare_librarian(&f.request, "buffer capacity", &[], None).unwrap();
+    assert_eq!(packet.evidence[0].excerpt, visible);
+    assert!(packet.evidence[0].excerpt_truncated);
+}
