@@ -141,6 +141,9 @@ enum Command {
         packet: PathBuf,
         #[arg(long)]
         selection: PathBuf,
+        /// Inspect recorded repository evidence and freshness (additional read-only scope).
+        #[arg(long)]
+        provenance: bool,
     },
     /// Show validated cross-project metrics in project-name order.
     Status {
@@ -616,7 +619,11 @@ fn run(cli: Cli) -> Result<(), u8> {
                     })?;
             finish_output(render::render_librarian_answer(&checked, output))?;
         }
-        Command::LibrarianCheckSources { packet, selection } => {
+        Command::LibrarianCheckSources {
+            packet,
+            selection,
+            provenance,
+        } => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
             let packet_text = read_librarian_input(&packet)?;
             let packet = serde_json::from_str(&packet_text).map_err(|_| {
@@ -624,6 +631,16 @@ fn run(cli: Cli) -> Result<(), u8> {
                 4
             })?;
             let selection = read_librarian_input(&selection)?;
+            if provenance {
+                let checked = akasha_core::librarian_provenance::inspect_librarian_provenance(
+                    &request, &packet, &selection,
+                )
+                .map_err(|error| {
+                    eprintln!("akasha: {error}");
+                    error.exit_code()
+                })?;
+                return finish_output(render::render_librarian_provenance(&checked, output));
+            }
             let checked =
                 akasha_core::librarian::check_librarian_sources(&request, &packet, &selection)
                     .map_err(|error| {

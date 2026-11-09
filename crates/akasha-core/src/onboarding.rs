@@ -1045,17 +1045,17 @@ fn validate_proposal_bounds(request: &OnboardingBatchRequest) -> Result<(), Onbo
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PersistentEvidenceClaim {
-    kind: PersistentEvidenceKind,
-    claim: String,
+pub(crate) struct PersistentEvidenceClaim {
+    pub(crate) kind: PersistentEvidenceKind,
+    pub(crate) claim: String,
     #[serde(default)]
-    sources: Vec<PersistentEvidenceSource>,
-    rationale: Option<String>,
+    pub(crate) sources: Vec<PersistentEvidenceSource>,
+    pub(crate) rationale: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum PersistentEvidenceKind {
+pub(crate) enum PersistentEvidenceKind {
     Fact,
     Inference,
     Unknown,
@@ -1063,11 +1063,11 @@ enum PersistentEvidenceKind {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PersistentEvidenceSource {
-    path: String,
-    fingerprint: String,
-    line_start: Option<usize>,
-    line_end: Option<usize>,
+pub(crate) struct PersistentEvidenceSource {
+    pub(crate) path: String,
+    pub(crate) fingerprint: String,
+    pub(crate) line_start: Option<usize>,
+    pub(crate) line_end: Option<usize>,
 }
 
 fn validate_persistent_evidence(

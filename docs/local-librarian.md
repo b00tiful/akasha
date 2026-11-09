@@ -166,6 +166,30 @@ no-match retrieval skips model access. Abrupt parent death can leave a worker or
 Trusted packages remain necessary; this is not OS egress isolation or the deferred privacy mode.
 No chat history or canonical writes are performed. Weights remain installed between calls.
 
+Add `--provenance` to the ordinary local librarian command to inspect repository evidence
+recorded by onboarding. The selector still sees only saved memory. After the worker closes,
+Rust attaches each uniquely quoted recorded claim's fact/inference/unknown label, rationale,
+original repository path/line range and whole-file hash comparison. Unchanged sources can show
+exact code excerpts. Changed or missing sources are explicit and supply no stale code excerpt.
+An unrelated edit anywhere in the source file also marks it changed. This is a freshness check;
+it does not establish that a saved claim accurately describes the code.
+
+Saved packet/selection inspection needs no model:
+
+```sh
+target/debug/akasha --root /path/to/root --project example \
+  librarian-check-sources --packet packet.json --selection selection.json --provenance
+```
+
+Use `--json` before the command for an experimental `source_provenance` report, with existing
+checked passages nested under `sources` and per-citation recorded claims under `notes`. The
+flag explicitly adds read-only access to the selected project's registered repository; default
+retrieval scope/output stays unchanged. Missing or invalid recorded evidence and unmatched or
+ambiguous quote text are explicit. Symlinks, escaping paths and special files are not read.
+Inspection is bounded to eight files of at most 256 KiB, 24 claims, 48 references, 2,048 bytes
+per code excerpt and 64 KiB serialized output; overflow refuses or marks an unavailable excerpt
+as specified in the report. This flag cannot be combined with experimental `--answer`.
+
 `librarian-check --packet FILE --answer FILE` also remains directly usable for saved draft
 checking; `--answer` invokes that same checker after host compilation of exact supporting quotations. Valid citations do not prove factual support. The prior
 Qwen3 4B free-form trial failed (8/16 expanded cases, 0/8 missing-information cases); source

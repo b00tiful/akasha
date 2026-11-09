@@ -498,6 +498,10 @@ pub(crate) fn render_librarian_sources(
     if output.json {
         return write_stdout(&json_line(serde_json::to_string_pretty(checked))?);
     }
+    write_stdout(&librarian_sources_text(checked))
+}
+
+fn librarian_sources_text(checked: &akasha_core::librarian::CheckedLibrarianSources) -> String {
     let mut text = String::from("Source passages — exact text verified; relevance needs review.\n");
     if checked.matches.is_empty() {
         text.push_str("No source passages selected. Retrieval may be incomplete.\n");
@@ -536,6 +540,66 @@ pub(crate) fn render_librarian_sources(
     text.push_str(
         "Link scope: complete wikilinks in these quotes targeting this evidence packet.\n",
     );
+    text
+}
+
+pub(crate) fn render_librarian_provenance(
+    report: &akasha_core::librarian_provenance::LibrarianProvenance,
+    output: OutputMode,
+) -> io::Result<()> {
+    if output.json {
+        return write_stdout(&json_line(serde_json::to_string_pretty(report))?);
+    }
+    let mut text = librarian_sources_text(&report.sources);
+    text.push_str(
+        "\nRecorded repository evidence — unchanged bytes do not establish factual support.\n",
+    );
+    for note in &report.notes {
+        let _ = writeln!(
+            text,
+            "[{}] Evidence: {}; {} recorded claims outside/ambiguous in this quote.",
+            note.citation, note.evidence_state, note.unmatched_claims
+        );
+        for claim in &note.claims {
+            let _ = writeln!(
+                text,
+                "  Recorded {} at note line {}: {:?}",
+                claim.recorded_kind, claim.note_line, claim.claim
+            );
+            if let Some(reason) = &claim.rationale {
+                let _ = writeln!(text, "  Rationale: {reason:?}");
+            }
+            for source in &claim.sources {
+                let lines = match (source.line_start, source.line_end) {
+                    (Some(start), Some(end)) => format!("{start}–{end}"),
+                    _ => "not recorded".into(),
+                };
+                let _ = writeln!(
+                    text,
+                    "  Repository source: {:?} lines {}\n  Freshness: {}; excerpt: {}\n  Recorded: {:?}\n  Observed: {:?}",
+                    source.path,
+                    lines,
+                    source.freshness,
+                    source.excerpt_state,
+                    source.recorded_fingerprint,
+                    source
+                        .observed_fingerprint
+                        .as_deref()
+                        .unwrap_or("not available")
+                );
+                if let Some(excerpt) = &source.excerpt {
+                    for (index, line) in excerpt.lines().enumerate() {
+                        let _ = writeln!(
+                            text,
+                            "    {} | {:?}",
+                            source.line_start.unwrap_or(1) + index,
+                            line
+                        );
+                    }
+                }
+            }
+        }
+    }
     write_stdout(&text)
 }
 

@@ -358,6 +358,8 @@ export async function localCompletion(input, schema, policy, options) {
 export async function askLibrarian(options, complete) {
   const commandStarted = performance.now();
   if (options.answer !== undefined && typeof options.answer !== "boolean") throw new Error("Invalid answer control");
+  if (options.provenance !== undefined && typeof options.provenance !== "boolean") throw new Error("Invalid provenance control");
+  if (options.answer && options.provenance) throw new Error("Use --provenance with source passages; --answer is a separate experimental protocol");
   const signal = AbortSignal.any([options.signal ?? new AbortController().signal, AbortSignal.timeout(120_000)]);
   const cli = resolve(options.cli ?? join(workspace, "target/debug/akasha"));
   const identity = async () => createHash("sha256").update(await readFile(cli)).digest("hex");
@@ -388,8 +390,8 @@ export async function askLibrarian(options, complete) {
     await writeFile(answerPath, result.answer, { mode: 0o600, flag: "wx" });
     const checkStarted = performance.now();
     output = await run([...(options.json ? ["--json"] : []), options.answer ? "librarian-check" : "librarian-check-sources",
-      "--packet", packetPath, options.answer ? "--answer" : "--selection", answerPath]);
-    metrics = { ...result.metrics, mode: options.answer ? "answer" : "sources", core_prepare_ms: prepareMs, core_check_ms: performance.now() - checkStarted };
+      "--packet", packetPath, options.answer ? "--answer" : "--selection", answerPath, ...(options.provenance ? ["--provenance"] : [])]);
+    metrics = { ...result.metrics, mode: options.answer ? "answer" : options.provenance ? "provenance" : "sources", core_prepare_ms: prepareMs, core_check_ms: performance.now() - checkStarted };
   } finally {
     if (temporary) await rm(temporary, { recursive: true, force: true });
   }
@@ -406,6 +408,7 @@ async function main() {
     threads: { type: "string", default: String(Math.min(4, availableParallelism())) },
     note: { type: "string" }, term: { type: "string", multiple: true, default: [] }, json: { type: "boolean", default: false },
     answer: { type: "boolean", default: false },
+    provenance: { type: "boolean", default: false },
   } });
   for (const key of ["root", "project", "question", "server", "model", "model-sha256"]) {
     if (!values[key]) throw new Error(`Required --${key}; see docs/local-librarian.md`);

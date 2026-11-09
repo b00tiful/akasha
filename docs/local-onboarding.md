@@ -97,6 +97,12 @@ summary, and approve `akasha_onboarding_apply` through the connected agent's nor
 flow. Validation, preview and apply must use one MCP server lifetime; the development command's
 preview is not a retained MCP approval. Changed sources or project state require fresh review.
 
+After approved publication, the [local librarian](local-librarian.md) can use optional
+`--provenance` to trace uniquely quoted claims back to these saved repository references.
+It preserves draft status and recorded evidence kinds, displays exact code only while whole-file
+hashes match, and warns after source changes or deletion. It performs no automatic note refresh
+or review approval; semantic corrections still use the explicit review/application workflow.
+
 Model-free inspection and checking are also available:
 
 ```sh

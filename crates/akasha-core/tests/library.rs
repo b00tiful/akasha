@@ -27,6 +27,9 @@ mod markdown_source_limit_tests;
 #[path = "support/librarian.rs"]
 mod librarian_tests;
 
+#[path = "support/librarian_provenance.rs"]
+mod librarian_provenance_tests;
+
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 struct TempDir(PathBuf);

@@ -49,6 +49,7 @@ const server = http.createServer(async (request, response) => {
     result = { stop: true, truncated: scenario === "truncated", stop_type: scenario === "limit" ? "limit" : "eos",
       content: scenario === "investigator-invalid" ? '{"action":"invalid"}' : scenario === "investigator"
         ? JSON.stringify(body.json_schema.properties?.terms ? { terms: [] } : { action: "finish", handles: [] })
+        : scenario === "provenance" ? '{"selections":[{"citation":1}]}'
         : scenario === "answer" ? JSON.stringify(body.json_schema.properties.parts?.items.type === "string"
           ? { parts: ["How does FlightPath store waypoints?"] }
           : { uncovered_question: false, parts: [{ part: 1, sufficient: true,

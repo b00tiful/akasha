@@ -7,6 +7,7 @@ pub mod event;
 mod evidence;
 pub mod init;
 pub mod librarian;
+pub mod librarian_provenance;
 pub mod library;
 pub mod library_report;
 pub mod link;
