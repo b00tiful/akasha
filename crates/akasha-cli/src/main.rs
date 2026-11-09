@@ -70,6 +70,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Discover bounded complete sources in explicit repository directories (no writes/model).
+    LocalOnboardingDiscover {
+        #[arg(long = "directory", required = true)]
+        directories: Vec<String>,
+    },
     /// Collect explicit repository files for an experimental local onboarding draft.
     LocalOnboardingPrepare {
         #[arg(long = "source", required = true)]
@@ -415,6 +420,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             Command::SetupRoot { .. }
             | Command::LibrarianPrepare { .. }
             | Command::LocalOnboardingPrepare { .. }
+            | Command::LocalOnboardingDiscover { .. }
             | Command::LocalOnboardingPreview { .. }
             | Command::LocalOnboardingCompile { .. }
             | Command::LocalOnboardingApply { .. }
@@ -484,6 +490,17 @@ fn run(cli: Cli) -> Result<(), u8> {
                 akasha_core::onboarding_local::compile_local_onboarding(&request, &packet, &plan)
                     .map_err(report_onboarding)?;
             finish_output(render::render_local_onboarding_draft(&draft, output))?;
+        }
+        Command::LocalOnboardingDiscover { directories } => {
+            let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
+            let discovery = akasha_core::onboarding_discovery::discover_local_onboarding(
+                &request,
+                &directories,
+            )
+            .map_err(report_onboarding)?;
+            finish_output(render::render_local_onboarding_discovery(
+                &discovery, output,
+            ))?;
         }
         Command::LocalOnboardingPrepare { sources } => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;

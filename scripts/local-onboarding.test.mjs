@@ -26,6 +26,53 @@ function plan(packet) {
   }] };
 }
 
+test("directory discovery feeds a fresh core packet, saves coverage and publishes searchable facts", async t => {
+  const f = fixture(t), before = snapshot(f.root), repoBefore = snapshot(f.repository);
+  const saved = join(f.directory, "discovered-review");
+  const plain = run(f, ["local-onboarding-discover", "--directory", "."]);
+  assert.equal(plain.status, 0, plain.stderr);
+  assert(plain.stdout.includes("Selected [implementation]: src/lib.rs"));
+  assert(plain.stdout.includes("Coverage is limited") && !plain.stdout.includes("\x1b"));
+  const result = await draftLocalOnboarding({ root: f.root, project: "first-run", discover: ["."], saveInputs: saved, json: true }, async input => {
+    assert(input.selected_source_roles.some(s => s.path === "src/lib.rs" && s.role === "implementation"));
+    assert(!JSON.stringify(input).includes(f.repository));
+    return { answer: JSON.stringify(plan(input)) };
+  });
+  const draft = JSON.parse(result.output);
+  const discovery = JSON.parse(readFileSync(join(saved, "discovery.json")));
+  assert.deepEqual(discovery.packet, JSON.parse(readFileSync(join(saved, "packet.json"))));
+  assert.deepEqual(discovery.coverage, result.metrics.source_discovery);
+  assert.equal(discovery.coverage.candidates, discovery.coverage.selected.length + discovery.coverage.omitted.length);
+  if (process.platform !== "win32") assert.equal(statSync(join(saved, "discovery.json")).mode & 0o777, 0o600);
+  assert.deepEqual(snapshot(f.root), before);
+  assert.deepEqual(snapshot(f.repository), repoBefore);
+  const applied = run(f, ["--json", "local-onboarding-apply", "--packet", join(saved, "packet.json"), "--proposal", join(saved, "proposal.json"), "--approved-preview-id", draft.preview.preview_id]);
+  assert.equal(applied.status, 0, applied.stderr);
+  const librarian = run(f, ["--json", "librarian-prepare", "FlightPath waypoints vector"]);
+  assert.equal(librarian.status, 0, librarian.stderr);
+  assert(JSON.parse(librarian.stdout).evidence.some(s => s.excerpt.includes("stores waypoints in a vector")));
+  assert.deepEqual(snapshot(f.repository), repoBefore);
+});
+
+test("discovery refuses invalid scope and conflicting modes before inference and checks selected source drift", async t => {
+  const f = fixture(t), before = snapshot(f.root);
+  for (const options of [
+    { ...optionsForDiscovery(f), sources: ["README.md"] },
+    { ...optionsForDiscovery(f), components: [{ name: "one", sources: ["README.md"] }] },
+    { ...optionsForDiscovery(f), discover: [".."] },
+    { ...optionsForDiscovery(f), discover: [".", "src"] },
+  ]) await assert.rejects(draftLocalOnboarding(options, () => assert.fail("must refuse before inference")));
+  const failed = run(f, ["--json", "local-onboarding-discover", "--directory", ".."]);
+  assert.notEqual(failed.status, 0); assert.equal(failed.stdout, ""); assert(failed.stderr.length);
+  await assert.rejects(draftLocalOnboarding(optionsForDiscovery(f), async input => {
+    writeFileSync(join(f.repository, "src/lib.rs"), readFileSync(join(f.repository, "src/lib.rs"), "utf8") + "\n// drift\n");
+    return { answer: JSON.stringify(plan(input)) };
+  }), error => error.code === 5);
+  assert.deepEqual(snapshot(f.root), before);
+});
+
+function optionsForDiscovery(f) { return { root: f.root, project: "first-run", discover: ["."], json: true }; }
+
 test("local draft uses exact core input and preview; disposable MCP apply makes knowledge searchable", async t => {
   const f = fixture(t), before = snapshot(f.root), repoBefore = snapshot(f.repository);
   let calls = 0;

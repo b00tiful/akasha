@@ -5,8 +5,8 @@ and return a Rust-validated proposal and preview. It shares the librarian's owne
 transport. Existing external-agent onboarding (`akasha onboard`) remains available.
 
 Build the CLI and initialize a disposable or chosen configured project first. Then select the
-repository files the model should see; paths are relative to that project's registered repository.
-The adapter does not scan directories or choose additional files.
+repository files or discovery directories the model should see; paths are relative to that
+project's registered repository.
 
 ```sh
 cargo build -p akasha-cli -p akasha-mcp
@@ -143,6 +143,50 @@ Ctrl-C cancels. No model download, cloud fallback, model tools or persistent wor
 
 Full autonomous repository onboarding, route preferences, model installation/distribution,
 desktop integration and representative quality/device acceptance remain future work.
+
+## Bounded directory discovery
+
+Replace `--source`/`--components` with one or more `--discover DIRECTORY` arguments to let Rust
+select complete files within explicit directories. For a small repository use `--discover .`;
+for a larger one select narrow, non-overlapping directories, such as `--discover src/parser
+--discover tests/parser`. Inspect selection without inference or writes first:
+
+```sh
+target/debug/akasha --root /path/to/akasha-root --project example \
+  local-onboarding-discover --directory .
+```
+
+`--json` returns `{schema_version: 1, packet, coverage}`. `packet` is the existing version-2
+preparation input and can be saved for ordinary compilation/preview/application. `coverage`
+lists selected paths/roles, every omitted candidate/reason, excluded-entry count and up to
+32 excluded examples. Excluded directories count as one entry; their descendants are not scanned
+or counted. The draft adapter includes coverage in stderr metrics and saves `discovery.json`
+alongside private inputs. Plain generation shows a coverage summary; successful draft JSON
+keeps its existing schema. Inference receives only selected sources and their roles.
+
+Selection cycles through overview, manifest, implementation, tests, documentation and workflow
+roles, preferring shallow paths and different implementation directories. Roles are filename
+heuristics, not component understanding. Files must fit the existing eight-file/8-KiB-per-file/
+16,000-byte-packet bounds in full; larger files, invalid text, empty/overlong-line sources and
+budget omissions are explicit. A later smaller candidate can still fit after an omission.
+Every selected byte/hash/catalog is rebuilt through ordinary preparation before return and
+checked again by compilation. Unselected content is not a source for generated claims.
+
+The scan allows common code/Markdown extensions and named manifests (`Cargo.toml`, `package.json`,
+`pyproject.toml`, `go.mod`, `CMakeLists.txt`, `Makefile`, `rust-toolchain.toml`). It excludes nested
+hidden names, dependency/build directories, names containing `secret`, `credential` or
+`private-key`, all symlinks and nonregular entries. These filename rules are not secret detection.
+**Discovery does not interpret `.gitignore`.** Explicit directory scope authorizes inspection of
+eligible files there, including ignored files; use narrow directories or explicit sources when
+that distinction matters. Directory arguments themselves are explicit scope choices, so an
+explicit hidden directory is allowed; hidden descendants remain excluded.
+
+More than 2,048 inspected entries, 128 candidate files, eight levels below a requested directory,
+or a discovered path over 1,024 UTF-8 bytes refuses the entire scan before inference. Absolute,
+traversing, repeated, overlapping and symlinked scopes refuse. Filesystem errors refuse; there is
+no partially scanned success. Source/projection drift also refuses. This is bounded source
+selection, not a whole-repository completeness claim. Review generated meaning and metadata
+through the same workflow above; discovery never approves or publishes notes.
 
 ```sh
 node --test scripts/local-onboarding.test.mjs scripts/local-librarian.test.mjs \

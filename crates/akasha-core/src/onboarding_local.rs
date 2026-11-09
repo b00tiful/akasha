@@ -530,14 +530,14 @@ fn review_local_proposal(
     Ok(review)
 }
 
-fn invalid(message: impl Into<String>) -> OnboardingBatchError {
+pub(crate) fn invalid(message: impl Into<String>) -> OnboardingBatchError {
     OnboardingBatchError::Validation {
         path: PathBuf::from("<local-onboarding>"),
         message: message.into(),
     }
 }
 
-fn bounded_json<T: Serialize>(value: &T) -> Result<(), OnboardingBatchError> {
+pub(crate) fn bounded_json<T: Serialize>(value: &T) -> Result<(), OnboardingBatchError> {
     let bytes = serde_json::to_vec(value).map_err(|error| invalid(error.to_string()))?;
     if bytes.len() > MAX_LOCAL_ONBOARDING_BYTES {
         return Err(invalid(
@@ -614,23 +614,36 @@ pub fn prepare_local_onboarding(
     if unique.len() != paths.len() {
         return Err(invalid("duplicate local onboarding source path"));
     }
-    let preparation = prepare_onboarding(request)?;
-    let config = load_root_config(&preparation.root)?;
-    let mut sources = Vec::new();
+    let (mut packet, repository) = local_onboarding_base(request)?;
     for path in unique {
-        let text = read_relative(
-            &preparation.repository_dir,
-            path,
-            MAX_LOCAL_ONBOARDING_FILE_BYTES,
-        )?;
-        sources.push(LocalOnboardingSource {
-            path: path.clone(),
-            fingerprint: content_fingerprint(text.as_bytes()),
-            lines: text.lines().count().max(1),
-            excerpts: source_excerpts(&text),
-            text,
-        });
+        packet
+            .sources
+            .push(read_local_onboarding_source(&repository, path)?);
     }
+    bounded_json(&packet)?;
+    Ok(packet)
+}
+
+pub(crate) fn read_local_onboarding_source(
+    repository: &Path,
+    path: &str,
+) -> Result<LocalOnboardingSource, OnboardingBatchError> {
+    let text = read_relative(repository, path, MAX_LOCAL_ONBOARDING_FILE_BYTES)?;
+    Ok(LocalOnboardingSource {
+        path: path.into(),
+        fingerprint: content_fingerprint(text.as_bytes()),
+        lines: text.lines().count().max(1),
+        excerpts: source_excerpts(&text),
+        text,
+    })
+}
+
+pub(crate) fn local_onboarding_base(
+    request: &ResolveRequest,
+) -> Result<(LocalOnboardingPacket, PathBuf), OnboardingBatchError> {
+    let preparation = prepare_onboarding(request)?;
+    let repository = preparation.repository_dir.clone();
+    let config = load_root_config(&preparation.root)?;
     let projection = |path: &Path| {
         read_relative(
             &preparation.project_dir,
@@ -645,10 +658,10 @@ pub fn prepare_local_onboarding(
         roadmap: projection(&config.project.roadmap)?,
         preparation: serde_json::to_value(preparation)
             .map_err(|error| invalid(error.to_string()))?,
-        sources,
+        sources: Vec::new(),
     };
     bounded_json(&packet)?;
-    Ok(packet)
+    Ok((packet, repository))
 }
 
 /// Rebuild exact input, constrain evidence to selected sources, then use the shared preview.

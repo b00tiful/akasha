@@ -31,6 +31,48 @@ impl OutputMode {
     }
 }
 
+pub(crate) fn render_local_onboarding_discovery(
+    discovery: &akasha_core::onboarding_discovery::LocalOnboardingDiscovery,
+    output: OutputMode,
+) -> io::Result<()> {
+    if output.json {
+        return write_stdout(&json_line(serde_json::to_string_pretty(discovery))?);
+    }
+    let coverage = &discovery.coverage;
+    let mut text = format!(
+        "Local onboarding source discovery (no writes/model)\nInspected: {} entries; {} candidates; {} selected; {} excluded entries\nCoverage is limited to the requested directories and eligible complete files.\n",
+        coverage.entries_inspected,
+        coverage.candidates,
+        coverage.selected.len(),
+        coverage.excluded_entries
+    );
+    for source in &coverage.selected {
+        let _ = writeln!(
+            text,
+            "Selected [{}]: {}",
+            source.role,
+            librarian_display(&source.path)
+        );
+    }
+    for source in &coverage.omitted {
+        let _ = writeln!(
+            text,
+            "Omitted [{}]: {}",
+            source.reason,
+            librarian_display(&source.path)
+        );
+    }
+    for source in &coverage.excluded_examples {
+        let _ = writeln!(
+            text,
+            "Excluded example [{}]: {}",
+            source.reason,
+            librarian_display(&source.path)
+        );
+    }
+    write_stdout(&text)
+}
+
 pub(crate) fn render_local_onboarding_packet(
     packet: &akasha_core::onboarding_local::LocalOnboardingPacket,
     output: OutputMode,

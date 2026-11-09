@@ -14,6 +14,218 @@ use sha2::{Digest, Sha256};
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn discovery_balances_roles_and_directories_and_is_read_only() {
+    use akasha_core::onboarding_discovery::discover_local_onboarding;
+    use akasha_core::onboarding_local::prepare_local_onboarding;
+    let fixture = Fixture::new("discovery-balanced");
+    let repo = &fixture.resolution.cwd;
+    for directory in ["src/alpha", "src/beta", "tests", "docs", "scripts"] {
+        fs::create_dir_all(repo.join(directory)).unwrap();
+    }
+    for (path, text) in [
+        ("README.md", "# Example\nComplete overview.\n"),
+        ("src/alpha/a.rs", "fn alpha() {}\n"),
+        ("src/alpha/b.rs", "fn extra() {}\n"),
+        ("src/beta/b.rs", "fn beta() {}\n"),
+        ("tests/check.rs", "#[test] fn check() {}\n"),
+        ("docs/design.md", "# Design\nObserved behavior.\n"),
+        ("scripts/check.sh", "cargo test\n"),
+    ] {
+        fs::write(repo.join(path), text).unwrap();
+    }
+    let before = fixture.project_snapshot();
+    let result = discover_local_onboarding(&fixture.resolution, &[".".into()]).unwrap();
+    assert_eq!(fixture.project_snapshot(), before);
+    assert_eq!(result.coverage.selected.len(), 8);
+    for role in [
+        "overview",
+        "manifest",
+        "implementation",
+        "tests",
+        "documentation",
+        "workflow",
+    ] {
+        assert!(result.coverage.selected.iter().any(|s| s.role == role));
+    }
+    assert!(
+        result
+            .coverage
+            .selected
+            .iter()
+            .any(|s| s.path == "src/beta/b.rs")
+    );
+    let paths = result
+        .packet
+        .sources
+        .iter()
+        .map(|s| s.path.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        result.packet,
+        prepare_local_onboarding(&fixture.resolution, &paths).unwrap()
+    );
+    assert_eq!(
+        result.coverage.candidates,
+        result.coverage.selected.len() + result.coverage.omitted.len()
+    );
+    fs::write(repo.join("src/alpha/c.rs"), "fn c() {}\n").unwrap();
+    fs::write(repo.join("src/alpha/d.rs"), "fn d() {}\n").unwrap();
+    let limited = discover_local_onboarding(&fixture.resolution, &[".".into()]).unwrap();
+    assert!(
+        limited
+            .coverage
+            .omitted
+            .iter()
+            .any(|s| s.reason == "file_limit")
+    );
+    fs::remove_file(repo.join("src/alpha/c.rs")).unwrap();
+    fs::remove_file(repo.join("src/alpha/d.rs")).unwrap();
+    assert_eq!(
+        serde_json::to_value(&result).unwrap(),
+        serde_json::to_value(
+            discover_local_onboarding(&fixture.resolution, &[".".into()]).unwrap()
+        )
+        .unwrap()
+    );
+    let scoped = discover_local_onboarding(&fixture.resolution, &["src/beta".into()]).unwrap();
+    assert_eq!(scoped.packet.sources.len(), 1);
+    assert_eq!(scoped.packet.sources[0].path, "src/beta/b.rs");
+}
+
+#[test]
+fn discovery_reports_ineligible_files_and_keeps_packet_budget() {
+    use akasha_core::onboarding_discovery::discover_local_onboarding;
+    let fixture = Fixture::new("discovery-omissions");
+    let repo = &fixture.resolution.cwd;
+    fs::create_dir(repo.join("sample")).unwrap();
+    for (name, bytes) in [
+        ("README.md", vec![b'x'; 8193]),
+        ("empty.rs", Vec::new()),
+        ("binary.py", vec![255]),
+        ("nul.rs", vec![0]),
+        ("line.js", vec![b'x'; 2049]),
+        ("large-a.rs", "// complete\n".repeat(600).into_bytes()),
+        ("large-b.rs", "// complete\n".repeat(600).into_bytes()),
+        ("small.rs", b"fn small() {}\n".to_vec()),
+    ] {
+        fs::write(repo.join("sample").join(name), bytes).unwrap();
+    }
+    let result = discover_local_onboarding(&fixture.resolution, &["sample".into()]).unwrap();
+    for reason in [
+        "file_too_large",
+        "empty_or_overlong_line",
+        "invalid_source",
+        "packet_budget",
+    ] {
+        assert!(
+            result.coverage.omitted.iter().any(|s| s.reason == reason),
+            "missing {reason}"
+        );
+    }
+    assert!(
+        result
+            .packet
+            .sources
+            .iter()
+            .any(|s| s.path.ends_with("small.rs"))
+    );
+    assert!(serde_json::to_vec(&result.packet).unwrap().len() <= 16_000);
+    assert_eq!(
+        result.coverage.candidates,
+        result.coverage.selected.len() + result.coverage.omitted.len()
+    );
+}
+
+#[test]
+fn discovery_refuses_ambiguous_scopes_and_scan_exhaustion_without_writes() {
+    use akasha_core::onboarding_discovery::discover_local_onboarding;
+    let fixture = Fixture::new("discovery-refusals");
+    let repo = &fixture.resolution.cwd;
+    fs::create_dir_all(repo.join("sample/child")).unwrap();
+    let before = fixture.project_snapshot();
+    for paths in [
+        vec![],
+        vec![".."],
+        vec!["/tmp"],
+        vec!["sample", "sample"],
+        vec![".", "sample"],
+        vec!["sample", "sample/child"],
+        vec!["missing"],
+        vec!["sample/../sample"],
+        vec!["sample"],
+    ] {
+        assert!(
+            discover_local_onboarding(
+                &fixture.resolution,
+                &paths.into_iter().map(str::to_owned).collect::<Vec<_>>()
+            )
+            .is_err()
+        );
+    }
+    for index in 0..129 {
+        fs::write(repo.join(format!("sample/{index}.rs")), "fn a() {}\n").unwrap();
+    }
+    assert!(
+        discover_local_onboarding(&fixture.resolution, &["sample".into()])
+            .unwrap_err()
+            .to_string()
+            .contains("128 candidates")
+    );
+    fs::create_dir(repo.join("entries")).unwrap();
+    for index in 0..2049 {
+        fs::write(repo.join(format!("entries/{index}.bin")), "").unwrap();
+    }
+    assert!(
+        discover_local_onboarding(&fixture.resolution, &["entries".into()])
+            .unwrap_err()
+            .to_string()
+            .contains("2048 entries")
+    );
+    fs::create_dir_all(repo.join("deep/a/b/c/d/e/f/g/h/i")).unwrap();
+    assert!(
+        discover_local_onboarding(&fixture.resolution, &["deep".into()])
+            .unwrap_err()
+            .to_string()
+            .contains("8 directory levels")
+    );
+    assert_eq!(fixture.project_snapshot(), before);
+}
+
+#[test]
+#[cfg(unix)]
+fn discovery_never_reads_excluded_subtrees_or_symlinks() {
+    use akasha_core::onboarding_discovery::discover_local_onboarding;
+    use std::os::unix::fs::symlink;
+    let fixture = Fixture::new("discovery-exclusions");
+    let repo = &fixture.resolution.cwd;
+    for name in [".private", "node_modules", "target", "vendor", "secrets"] {
+        fs::create_dir(repo.join(name)).unwrap();
+        fs::write(repo.join(name).join("source.rs"), "MUST NOT BE SELECTED").unwrap();
+    }
+    fs::write(repo.join("credentials.py"), "MUST NOT BE SELECTED").unwrap();
+    symlink("Cargo.toml", repo.join("link.rs")).unwrap();
+    symlink("src", repo.join("alias")).unwrap();
+    let result = discover_local_onboarding(&fixture.resolution, &[".".into()]).unwrap();
+    assert_eq!(result.packet.sources.len(), 1);
+    assert_eq!(result.packet.sources[0].path, "Cargo.toml");
+    assert!(
+        result
+            .coverage
+            .excluded_examples
+            .iter()
+            .any(|s| s.reason == "symlink")
+    );
+    assert!(
+        !result
+            .packet
+            .sources
+            .iter()
+            .any(|s| s.text.contains("MUST NOT BE SELECTED"))
+    );
+    assert!(discover_local_onboarding(&fixture.resolution, &["alias".into()]).is_err());
+}
+
+#[test]
 fn local_excerpt_catalog_is_lossless_bounded_and_resists_handle_tampering() {
     use akasha_core::onboarding_local::{compile_local_onboarding, prepare_local_onboarding};
     let fixture = Fixture::new("local-excerpt-handles");

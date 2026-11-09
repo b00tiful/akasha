@@ -51,7 +51,7 @@ export function componentSources(components) {
 
 export async function draftLocalOnboarding(options, complete = localCompletion) {
   const started = performance.now();
-  if (options.components !== undefined && options.sources !== undefined) throw new Error("Choose sources or components, not both");
+  if ([options.components, options.sources, options.discover].filter(value => value !== undefined).length !== 1) throw new Error("Choose sources or components or discover directories");
   const sources = options.components === undefined ? options.sources : componentSources(options.components);
   if (options.workerSession !== undefined && typeof options.workerSession !== "boolean") throw new Error("Invalid worker-session control");
   const signal = AbortSignal.any([options.signal ?? new AbortController().signal, AbortSignal.timeout(120_000)]);
@@ -67,7 +67,8 @@ export async function draftLocalOnboarding(options, complete = localCompletion) 
     signal.throwIfAborted();
     return stdout;
   };
-  const packet = JSON.parse(await run(["--json", "local-onboarding-prepare", ...sources.flatMap(path => ["--source", path])]));
+  const discovery = options.discover === undefined ? undefined : JSON.parse(await run(["--json", "local-onboarding-discover", ...options.discover.flatMap(path => ["--directory", path])]));
+  const packet = discovery?.packet ?? JSON.parse(await run(["--json", "local-onboarding-prepare", ...sources.flatMap(path => ["--source", path])]));
   if (packet.schema_version !== 2) throw new Error("Rebuild the CLI for excerpt-based onboarding packets");
   for (const source of packet.sources) {
     if (!source.excerpts.length) throw new Error(`Source ${source.path} has no complete excerpt catalog (empty or a line exceeds 2048 bytes)`);
@@ -92,13 +93,14 @@ export async function draftLocalOnboarding(options, complete = localCompletion) 
     }
     await mkdir(saved, { mode: 0o700 });
     await writeFile(join(saved, "packet.json"), JSON.stringify(packet), { mode: 0o600, flag: "wx" });
+    if (discovery) await writeFile(join(saved, "discovery.json"), JSON.stringify(discovery), { mode: 0o600, flag: "wx" });
   }
   let completions = 0;
   const save = async (name, value) => { if (saved) await writeFile(join(saved, name), value, { mode: 0o600, flag: "wx" }); };
   const input = { date: new Date().toISOString().slice(0, 10), project: packet.preparation.project,
     note_types: packet.preparation.note_types, templates: packet.preparation.templates,
     existing_notes: packet.preparation.existing_notes, omitted_existing_notes: packet.preparation.omitted_existing_notes,
-    sources: modelSources(packet.sources) };
+    sources: modelSources(packet.sources), ...(discovery ? { selected_source_roles: discovery.coverage.selected } : {}) };
   const steps = [];
   let session, completion;
   try {
@@ -166,7 +168,8 @@ export async function draftLocalOnboarding(options, complete = localCompletion) 
         output = await run(["local-onboarding-preview", "--packet", packetPath, "--proposal", reviewPath]);
       }
     }
-    return { output, metrics: { ...completion.metrics, ...(options.components ? { components: steps } : {}), ...(session ? { inference_session: session.metrics } : {}), command_ms: performance.now() - started } };
+    if (discovery && !options.json) output = `Source discovery: ${discovery.coverage.selected.length}/${discovery.coverage.candidates} candidates selected; ${discovery.coverage.omitted.length} omitted; ${discovery.coverage.excluded_entries} excluded entries. Inspect discovery.json or local-onboarding-discover for paths/reasons.\n${output}`;
+    return { output, metrics: { ...completion.metrics, ...(discovery ? { source_discovery: discovery.coverage } : {}), ...(options.components ? { components: steps } : {}), ...(session ? { inference_session: session.metrics } : {}), command_ms: performance.now() - started } };
   } finally { await rm(temporary, { recursive: true, force: true }); }
 }
 
@@ -174,6 +177,7 @@ async function main() {
   const { values } = parseArgs({ options: {
     "save-inputs": { type: "string" }, components: { type: "string" }, "worker-session": { type: "boolean", default: false },
     root: { type: "string" }, project: { type: "string" }, source: { type: "string", multiple: true },
+    discover: { type: "string", multiple: true },
     server: { type: "string" }, model: { type: "string" }, "model-sha256": { type: "string" },
     "max-context": { type: "string", default: "8192" }, "gpu-layers": { type: "string", default: "0" },
     threads: { type: "string", default: String(Math.min(4, availableParallelism())) }, json: { type: "boolean", default: false },
@@ -181,7 +185,7 @@ async function main() {
   for (const key of ["root", "project", "server", "model", "model-sha256"]) {
     if (!values[key]) throw new Error(`Required --${key}; see docs/local-onboarding.md`);
   }
-  if (Boolean(values.source) === Boolean(values.components)) throw new Error("Choose --source or --components");
+  if ([values.source, values.components, values.discover].filter(Boolean).length !== 1) throw new Error("Choose --source or --components or --discover DIRECTORY");
   let components;
   if (values.components) {
     const file = await readFile(values.components);
@@ -193,7 +197,7 @@ async function main() {
   const cancel = () => controller.abort(new Error("Local onboarding cancelled"));
   process.once("SIGINT", cancel); process.once("SIGTERM", cancel);
   try {
-    const result = await draftLocalOnboarding({ root: values.root, project: values.project, sources: values.source, components, saveInputs: values["save-inputs"], workerSession: values["worker-session"],
+    const result = await draftLocalOnboarding({ root: values.root, project: values.project, sources: values.source, discover: values.discover, components, saveInputs: values["save-inputs"], workerSession: values["worker-session"],
       server: values.server, model: values.model, modelSha256: values["model-sha256"], maxContext: Number(values["max-context"]),
       gpuLayers: Number(values["gpu-layers"]), threads: Number(values.threads), json: values.json, signal: controller.signal });
     process.stdout.write(result.output);
