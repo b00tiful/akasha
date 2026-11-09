@@ -377,7 +377,41 @@ Click **Export correction plan** to download `reviewed-plan.json`. Changes stay 
 exported; closing with unsaved corrections prompts you to keep them. The page edits existing
 claims and preserves note identities, fields and recorded draft/unreviewed status.
 
-Compile the downloaded plan using the same root/project and saved packet:
+Turn the downloaded correction plan into a complete fresh review bundle with one model-free
+command. Choose a new output directory outside the memory root and repository:
+
+```sh
+node scripts/local-onboarding-review.mjs prepare \
+  --root /path/to/memory --project example \
+  --capture /private/path/new-review --plan /private/path/reviewed-plan.json \
+  --output /private/path/corrected-review
+```
+
+This snapshots bounded inputs, recompiles through Rust, refreshes the plain source/metadata
+review and creates `packet.json`, `plan.json`, `draft.json`, `proposal.json`, `review.txt` and
+`review.html`. Core-planned source groups and captured discovery gaps are retained when present.
+The claim/citation review is fresh; discovery coverage still describes the original scan, not
+new files added since then. The original capture is preserved. The new directory is create-only
+and owner-only, as are its files. Preparation performs no inference or canonical writes.
+Open the new `review.html` or read `review.txt`, then explicitly approve its full preview ID:
+
+```sh
+node scripts/local-onboarding-review.mjs apply \
+  --root /path/to/memory --project example \
+  --bundle /private/path/corrected-review \
+  --approved-preview-id sha256:THE_FULL_REVIEWED_IDENTIFIER
+```
+
+Application snapshots the bundle's packet/proposal into private scratch and delegates to the
+existing Rust approved writer. Changed claims, sources, relevant configuration or project state
+refuse; no preview is approved implicitly and there is no automatic refresh/retry. `--json` on
+prepare returns the bundle path, compiled draft and plain review; on apply it returns the existing
+core batch result. Failures have nonzero status, stderr diagnostics and no normal stdout. SIGINT
+and SIGTERM cancel subprocesses and clean scratch. If a signal arrives after publication starts,
+inspect state and follow the recovery guidance below; cancellation cannot undo a committed batch.
+This adapter supports the excerpt-based version-3/4/5 plans used by the offline editor.
+
+Alternatively, compile the downloaded plan directly using the same root/project and saved packet:
 
 ```sh
 target/debug/akasha --root /path/to/memory --project example --json \
@@ -422,7 +456,8 @@ updated projections and state; `--json` returns the shared-core batch result. Er
 exit status, diagnostics on stderr and no normal stdout. A validation error may precede a stale
 conflict when a concurrent edit leaves the project invalid.
 
-For corrections, preserve the raw inputs, edit a copy of `plan.json`, then compile it with
+For corrections, the review-bundle commands above handle proposal extraction and fresh preview.
+For a manual CLI-only handoff, preserve the raw inputs, edit a copy of `plan.json`, then compile it with
 `local-onboarding-compile --packet ... --plan reviewed-plan.json --json > reviewed-draft.json`.
 Save its `proposal` object as a separate private `reviewed-proposal.json` and preview that file.
 Use that proposal and its new full preview ID for application. The earlier ID cannot approve
