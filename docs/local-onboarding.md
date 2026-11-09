@@ -259,6 +259,66 @@ an approval. Keep originals, edit a copy of `plan.json`, then use `local-onboard
 with the saved packet to obtain a fresh review. If source/configuration/project bytes changed,
 prepare and review again. This opt-in writes private review artifacts; it never publishes notes.
 
+## Focused source targeting
+
+Use repeated literal `--focus` terms to onboard a particular subsystem without listing its files:
+
+```sh
+target/debug/akasha --root /path/to/akasha-root --project example \
+  local-onboarding-discover --directory . --sample-large-files \
+  --focus lease --focus deadline
+```
+
+The same flags work with `local-onboarding-prepare --source ...` and the development adapter:
+
+```sh
+node scripts/local-onboarding.mjs --root /path/to/akasha-root --project example \
+  --discover . --focus lease --focus deadline --sample-large-files --auto-plan \
+  --worker-session --save-inputs /private/path/lease-review \
+  --server /path/to/llama-server --model /path/to/main.gguf \
+  --model-sha256 THE_VERIFIED_SHA256 --gpu-layers 99
+```
+
+Terms are case-insensitive literal substrings, including paths; they are not regular expressions
+or a semantic search. Supply 1..8 raw terms of at most 80 UTF-8 bytes each, without control
+characters. Trimming, Unicode lowercasing and deduplication produce stable stored terms; the
+normalized byte bound also applies. Changing term order/case does not change selection.
+
+Within each existing filename role, discovery prefers sources matching more distinct terms.
+Repeated occurrences add no weight. Directory diversity breaks relevance ties for implementation
+files. Unmatched README/manifests remain eligible for orientation; other unmatched candidates are
+reported as `focus_no_match`. A request fails if no matching source fits. Scope, exclusions,
+inventory limits, packet/file limits and role balancing still apply. Focus does not widen scopes
+or follow dependencies. A directory name matching a term also makes its descendants path matches;
+choose specific terms or narrower scopes when that is too broad.
+
+Focused discovery inspects **all eligible size-bounded candidate contents**, including files that
+will not enter the model packet. At most 128 candidates of 8 KiB (or 256 KiB with sampling) are
+read, plus bounded rebuild reads of selected sources. Excluded names/directories, symlinks and
+oversized files are not opened. Coverage records successfully inspected source bytes, each
+selected file's matching terms and every omitted candidate/reason. Invalid source bytes are not
+included in that successful-byte counter. Only selected excerpts go to inference.
+
+With large-file sampling, Rust retains the opening complete-line window and then the two windows
+matching the most distinct terms, with original-order ties. Any remaining slots use middle/end
+windows. No matches reproduce positional sampling. Each window remains at most 16 lines/2,048
+bytes; partial coverage and omitted original line intervals remain explicit. Matching words can
+occur in comments/examples; neither ranking nor an exact excerpt proves a claim or complete
+function coverage. Without sampling, selected sources remain complete files under 8 KiB.
+
+Focused input packets use experimental version 4 and store `{terms, sample_large_files}` in
+`focus`. Core planning/compilation/review rebuild from these exact controls, checking all selected
+whole-file fingerprints, including omitted lines. Version-2/3 packets remain supported and
+serialize as before; the plan's version-4 slot format is a separate schema. Persistent notes,
+MCP and approved-write formats are unchanged. Capture preserves packet/coverage/plan/proposal;
+metrics expose `source_focus`. Review lists `uncited_focus_excerpts` (paths, original line ranges
+and matching terms) for text-matching windows with no overlapping claim citation, even when
+another window in that file is cited. Plain output highlights these gaps. A partial/incorrect
+citation can still hide missing meaning; absence of gaps is not semantic approval.
+Review metadata, claims and gaps before the ordinary explicit
+full-ID publication. Unselected-file edits and new candidates do not invalidate a saved packet;
+rediscover when the repository coverage needs refreshing.
+
 ## Large-file sampling
 
 Add `--sample-large-files` to the development adapter or either core input command when useful

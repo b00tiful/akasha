@@ -36,6 +36,85 @@ function slottedReply(input) {
   }] };
 }
 
+test("focused onboarding selects off-position windows through sources/groups/discovery and reviewed application", async t => {
+  const f = fixture(t);
+  const lines = Array.from({ length: 400 }, (_, i) => i === 81
+    ? "pub const LEASE_SECONDS: usize = 37; // lease deadline\r\n"
+    : `// ordinary multilingual 世界 filler ${i + 1}\r\n`);
+  writeFileSync(join(f.repository, "src/lib.rs"), lines.join(""));
+  writeFileSync(join(f.repository, "src/a-unrelated.rs"), "pub const OTHER: usize = 1;\n");
+  const before = snapshot(f.root), repoBefore = snapshot(f.repository);
+  let draft, saved;
+  for (const [index, selection] of [
+    { sources: ["src/lib.rs"] },
+    { components: [{ name: "lease-core", note_type: "entity", sources: ["src/lib.rs"] }] },
+    { discover: ["src"], autoPlan: true },
+  ].entries()) {
+    saved = join(f.directory, `focused-${index}`);
+    const result = await draftLocalOnboarding({ root: f.root, project: "first-run", ...selection, focus: [" Lease ", "deadline"],
+      sampleLargeFiles: true, saveInputs: saved, json: index !== 2 }, async (input, _schema, policy) => {
+      assert.deepEqual(input.source_focus, ["deadline", "lease"]);
+      assert(policy.includes("literal-focus ranked") && input.focus_rule.includes("unknown"));
+      assert(!JSON.stringify(input).includes(f.root));
+      assert(!input.sources.some(s => s.path.includes("unrelated")));
+      const source = input.sources.find(s => s.path === "src/lib.rs");
+      const excerpt = source.excerpts.find(e => e.text.includes("LEASE_SECONDS"));
+      assert(excerpt && excerpt.line_start <= 82 && excerpt.line_end >= 82);
+      const note = input.planned_note ? slottedReply(input).notes[0] : plan(input).notes[0];
+      if (input.component && !input.planned_note) note.name = input.component;
+      note.evidence = [{ kind: "fact", claim: "The lease duration constant is 37 seconds.", sources: [{ source: source.handle, excerpt: excerpt.handle }] }];
+      return { answer: JSON.stringify({ schema_version: input.planned_note ? 4 : 3, notes: [note] }) };
+    });
+    const packet = JSON.parse(readFileSync(join(saved, "packet.json")));
+    assert.equal(packet.schema_version, 4);
+    assert.deepEqual(packet.focus, { terms: ["deadline", "lease"], sample_large_files: true });
+    assert.deepEqual(result.metrics.source_focus, packet.focus);
+    draft = JSON.parse(readFileSync(join(saved, "draft.json")));
+    assert.equal(draft.review.requires_review, true);
+    assert(JSON.stringify(draft.review).includes("LEASE_SECONDS"));
+    assert(!draft.review.uncited_focus_excerpts);
+    if (index === 2) {
+      assert(result.output.includes("Source discovery:") && result.output.includes("37 seconds"));
+      const plain = run(f, ["local-onboarding-discover", "--directory", "src", "--sample-large-files", "--focus", "lease", "--focus", "deadline"]);
+      assert.equal(plain.status, 0, plain.stderr);
+      assert(plain.stdout.includes("Literal focus: deadline, lease") && plain.stdout.includes("Matched focus terms:") && plain.stdout.includes("focus_no_match"));
+      assert(!plain.stdout.includes("\x1b"));
+    }
+    assert.deepEqual(snapshot(f.root), before);
+    assert.deepEqual(snapshot(f.repository), repoBefore);
+  }
+  const neglected = await draftLocalOnboarding({ root: f.root, project: "first-run", sources: ["src/lib.rs"],
+    focus: ["lease"], sampleLargeFiles: true }, async input => {
+    const p = plan(input);
+    p.notes[0].evidence = [{ kind: "unknown", claim: "Behavior is not summarized in this review test.", rationale: "Exercise uncited matching window visibility.", sources: [] }];
+    return { answer: JSON.stringify(p) };
+  });
+  assert(neglected.output.includes("Uncited focus excerpt: src/lib.rs:81-96"));
+  const applied = run(f, ["--json", "local-onboarding-apply", "--packet", join(saved, "packet.json"), "--proposal", join(saved, "proposal.json"), "--approved-preview-id", draft.preview.preview_id]);
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(run(f, ["validate"]).status, 0);
+  const packet = run(f, ["--json", "librarian-prepare", "lease duration seconds"]);
+  assert.equal(packet.status, 0, packet.stderr);
+  assert(JSON.parse(packet.stdout).evidence.some(s => s.excerpt.includes("37 seconds")));
+  assert.deepEqual(snapshot(f.repository), repoBefore);
+});
+
+test("focus failures refuse before inference with no stdout or canonical writes", async t => {
+  const f = fixture(t), before = snapshot(f.root);
+  for (const focus of [[], "lease", [null], [""], ["x\ny"], ["x".repeat(81)], Array(9).fill("lease"), ["absent-subsystem"]]) {
+    await assert.rejects(draftLocalOnboarding({ ...optionsForDiscovery(f), focus }, () => assert.fail("invalid focus must refuse before inference")));
+  }
+  const plain = run(f, ["local-onboarding-discover", "--directory", ".", "--focus", "absent-subsystem"]);
+  assert.equal(plain.status, 4); assert.equal(plain.stdout, ""); assert(plain.stderr.includes("no focus matches"));
+  const saved = join(f.directory, "focus-drift");
+  await assert.rejects(draftLocalOnboarding({ ...options(f), focus: ["FlightPath"], saveInputs: saved }, async input => {
+    writeFileSync(join(f.repository, "src/lib.rs"), "pub struct Changed;\n");
+    return { answer: JSON.stringify(plan(input)) };
+  }), error => error.code === 5);
+  assert(existsSync(join(saved, "completion-1.json")) && !existsSync(join(saved, "proposal.json")));
+  assert.deepEqual(snapshot(f.root), before);
+});
+
 test("automatic Rust planning fixes unique slots and remaps source handles through reviewed publication", async t => {
   const f = fixture(t), before = snapshot(f.root), repoBefore = snapshot(f.repository);
   const saved = join(f.directory, "planned-review");

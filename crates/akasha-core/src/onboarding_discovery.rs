@@ -7,9 +7,10 @@ use serde::Serialize;
 
 use crate::onboarding::{OnboardingBatchError, validate_normalized_relative_path};
 use crate::onboarding_local::{
-    LocalOnboardingPacket, MAX_LOCAL_ONBOARDING_FILE_BYTES, MAX_LOCAL_ONBOARDING_FILES,
-    MAX_LOCAL_ONBOARDING_SAMPLED_FILE_BYTES, bounded_json, invalid, local_onboarding_base,
-    read_local_onboarding_source, rebuild_local_onboarding,
+    LocalOnboardingFocus, LocalOnboardingPacket, MAX_LOCAL_ONBOARDING_FILE_BYTES,
+    MAX_LOCAL_ONBOARDING_FILES, MAX_LOCAL_ONBOARDING_SAMPLED_FILE_BYTES, bounded_json,
+    checked_focus, focus_matches, invalid, local_onboarding_base, read_local_onboarding_source,
+    rebuild_local_onboarding,
 };
 use crate::resolution::ResolveRequest;
 
@@ -33,12 +34,16 @@ pub struct LocalSourceCoverage {
     pub omitted: Vec<LocalSourceOmission>,
     pub excluded_entries: usize,
     pub excluded_examples: Vec<LocalSourceOmission>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focus_scan_bytes: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct LocalSourceSelection {
     pub path: String,
     pub role: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub matched_terms: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -163,7 +168,7 @@ pub fn discover_local_onboarding(
     request: &ResolveRequest,
     directories: &[String],
 ) -> Result<LocalOnboardingDiscovery, OnboardingBatchError> {
-    discover_local_onboarding_mode(request, directories, false)
+    discover_local_onboarding_mode(request, directories, false, &[])
 }
 
 /// Same scoped discovery, with explicit partial coverage for larger eligible sources.
@@ -171,13 +176,29 @@ pub fn discover_local_onboarding_sampled(
     request: &ResolveRequest,
     directories: &[String],
 ) -> Result<LocalOnboardingDiscovery, OnboardingBatchError> {
-    discover_local_onboarding_mode(request, directories, true)
+    discover_local_onboarding_mode(request, directories, true, &[])
+}
+
+/// Prioritize literal focus matches within each role, keeping overview/manifest context.
+pub fn discover_local_onboarding_focused(
+    request: &ResolveRequest,
+    directories: &[String],
+    terms: &[String],
+    sample_large_files: bool,
+) -> Result<LocalOnboardingDiscovery, OnboardingBatchError> {
+    discover_local_onboarding_mode(
+        request,
+        directories,
+        sample_large_files,
+        &checked_focus(terms)?,
+    )
 }
 
 fn discover_local_onboarding_mode(
     request: &ResolveRequest,
     directories: &[String],
     sample_large_files: bool,
+    terms: &[String],
 ) -> Result<LocalOnboardingDiscovery, OnboardingBatchError> {
     if directories.is_empty() || directories.len() > 8 {
         return Err(invalid(
@@ -187,6 +208,13 @@ fn discover_local_onboarding_mode(
     let (mut packet, repository) = local_onboarding_base(request)?;
     if sample_large_files {
         packet.schema_version = 3;
+    }
+    if !terms.is_empty() {
+        packet.schema_version = 4;
+        packet.focus = Some(LocalOnboardingFocus {
+            terms: terms.to_vec(),
+            sample_large_files,
+        });
     }
     let file_limit = if sample_large_files {
         MAX_LOCAL_ONBOARDING_SAMPLED_FILE_BYTES
@@ -212,6 +240,7 @@ fn discover_local_onboarding_mode(
         omitted: Vec::new(),
         excluded_entries: 0,
         excluded_examples: Vec::new(),
+        focus_scan_bytes: (!terms.is_empty()).then_some(0),
     };
     let mut pending: VecDeque<_> = scopes.into_iter().map(|scope| (scope, 0)).collect();
     let mut candidates: BTreeMap<&str, Vec<String>> = BTreeMap::new();
@@ -285,8 +314,76 @@ fn discover_local_onboarding_mode(
             }
         }
     }
+    // Only explicit focus inspects unselected eligible content. The full bounded inventory is
+    // checked first; excluded paths are never opened. Cache packed sources, at most 128 x 8 KiB.
+    let mut focused_sources = BTreeMap::new();
+    if !terms.is_empty() {
+        for (role, paths) in &mut candidates {
+            let mut eligible = Vec::new();
+            for path in paths.drain(..) {
+                let target = repository.join(&path);
+                let metadata = fs::symlink_metadata(&target).map_err(|e| io_error(&target, e))?;
+                if metadata.len() > file_limit as u64 {
+                    coverage.omitted.push(LocalSourceOmission {
+                        path,
+                        reason: "file_too_large".into(),
+                    });
+                    continue;
+                }
+                let source = match read_local_onboarding_source(
+                    &repository,
+                    &path,
+                    sample_large_files,
+                    terms,
+                ) {
+                    Ok(source) => source,
+                    Err(OnboardingBatchError::Validation { .. }) => {
+                        coverage.omitted.push(LocalSourceOmission {
+                            path,
+                            reason: "invalid_source".into(),
+                        });
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+                *coverage.focus_scan_bytes.as_mut().expect("focused scan") += source
+                    .sampling
+                    .as_ref()
+                    .map_or(source.text.len(), |sampling| sampling.total_bytes);
+                let matches = focus_matches(terms, &path, &source.text);
+                let reason = if source.excerpts.is_empty() || source.text.trim().is_empty() {
+                    Some("empty_or_overlong_line")
+                } else if matches.is_empty() && !matches!(*role, "overview" | "manifest") {
+                    Some("focus_no_match")
+                } else {
+                    None
+                };
+                if let Some(reason) = reason {
+                    coverage.omitted.push(LocalSourceOmission {
+                        path,
+                        reason: reason.into(),
+                    });
+                } else {
+                    focused_sources.insert(path.clone(), (source, matches));
+                    eligible.push(path);
+                }
+            }
+            *paths = eligible;
+        }
+    }
+    let score = |path: &String| {
+        focused_sources
+            .get(path)
+            .map_or(0, |(_, matches)| matches.len())
+    };
     for paths in candidates.values_mut() {
-        paths.sort_by_key(|path| (path.matches('/').count(), path.clone()));
+        paths.sort_by_key(|path| {
+            (
+                std::cmp::Reverse(score(path)),
+                path.matches('/').count(),
+                path.clone(),
+            )
+        });
     }
     let mut selected_parents = BTreeSet::new();
     // Round-robin keeps a large source subtree from consuming every available slot.
@@ -306,8 +403,9 @@ fn discover_local_onboarding_mode(
                 paths
                     .iter()
                     .position(|p| {
-                        !selected_parents
-                            .contains(p.rsplit_once('/').map_or("", |(parent, _)| parent))
+                        score(p) == score(&paths[0])
+                            && !selected_parents
+                                .contains(p.rsplit_once('/').map_or("", |(parent, _)| parent))
                     })
                     .unwrap_or(0)
             } else {
@@ -330,8 +428,12 @@ fn discover_local_onboarding_mode(
                 });
                 continue;
             }
-            let source = match read_local_onboarding_source(&repository, &path, sample_large_files)
-            {
+            let source = match focused_sources
+                .get(&path)
+                .map(|(source, _)| Ok(source.clone()))
+                .unwrap_or_else(|| {
+                    read_local_onboarding_source(&repository, &path, sample_large_files, terms)
+                }) {
                 Ok(source) => source,
                 Err(OnboardingBatchError::Validation { .. }) => {
                     coverage.omitted.push(LocalSourceOmission {
@@ -363,6 +465,9 @@ fn discover_local_onboarding_mode(
                         .to_owned(),
                 );
                 coverage.selected.push(LocalSourceSelection {
+                    matched_terms: focused_sources
+                        .get(&path)
+                        .map_or_else(Vec::new, |(_, matches)| matches.clone()),
                     path,
                     role: role.into(),
                 });
@@ -372,6 +477,16 @@ fn discover_local_onboarding_mode(
     if packet.sources.is_empty() {
         return Err(invalid(
             "no eligible sources fit; choose different directories or explicit files",
+        ));
+    }
+    if !terms.is_empty()
+        && coverage
+            .selected
+            .iter()
+            .all(|source| source.matched_terms.is_empty())
+    {
+        return Err(invalid(
+            "no focus matches fit in the selected sources; choose different terms or narrower directories",
         ));
     }
     packet.sources.sort_by(|a, b| a.path.cmp(&b.path));

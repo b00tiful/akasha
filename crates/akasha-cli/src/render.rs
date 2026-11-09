@@ -70,6 +70,14 @@ pub(crate) fn render_local_onboarding_discovery(
         coverage.selected.len(),
         coverage.excluded_entries
     );
+    if let Some(focus) = &discovery.packet.focus {
+        let _ = writeln!(
+            text,
+            "Literal focus: {}\nEligible source bytes inspected successfully: {}",
+            librarian_display(&focus.terms.join(", ")),
+            coverage.focus_scan_bytes.unwrap_or(0)
+        );
+    }
     for source in &coverage.selected {
         let _ = writeln!(
             text,
@@ -77,6 +85,13 @@ pub(crate) fn render_local_onboarding_discovery(
             source.role,
             librarian_display(&source.path)
         );
+        if !source.matched_terms.is_empty() {
+            let _ = writeln!(
+                text,
+                "  Matched focus terms: {}",
+                librarian_display(&source.matched_terms.join(", "))
+            );
+        }
     }
     for source in &discovery.packet.sources {
         if let Some(sampling) = &source.sampling {
@@ -123,6 +138,13 @@ pub(crate) fn render_local_onboarding_packet(
             "complete files"
         }
     );
+    if let Some(focus) = &packet.focus {
+        let _ = writeln!(
+            text,
+            "Literal focus: {} (partial windows remain unknown outside selected lines)",
+            librarian_display(&focus.terms.join(", "))
+        );
+    }
     for source in &packet.sources {
         if let Some(sampling) = &source.sampling {
             append_local_sampling(&mut text, &source.path, source.lines, sampling);
@@ -207,6 +229,16 @@ pub(crate) fn render_local_onboarding_draft(
         draft.preview.proposal_id,
         draft.preview.preview_id
     );
+    for gap in &draft.review.uncited_focus_excerpts {
+        let _ = writeln!(
+            text,
+            "Uncited focus excerpt: {}:{}-{} ({}); inspect before approval",
+            librarian_display(&gap.path),
+            gap.line_start,
+            gap.line_end,
+            librarian_display(&gap.matched_terms.join(", "))
+        );
+    }
     for source in &draft.review.sampled_sources {
         append_local_sampling(
             &mut text,

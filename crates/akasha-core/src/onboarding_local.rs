@@ -91,10 +91,56 @@ fn source_excerpts(text: &str) -> Vec<LocalOnboardingExcerpt> {
 #[serde(deny_unknown_fields)]
 pub struct LocalOnboardingPacket {
     pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus: Option<LocalOnboardingFocus>,
     pub preparation: serde_json::Value,
     pub sources: Vec<LocalOnboardingSource>,
     pub index: String,
     pub roadmap: String,
+}
+
+/// Literal, operator-owned targeting. Stored in the packet so rebuilding cannot lose it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalOnboardingFocus {
+    pub terms: Vec<String>,
+    pub sample_large_files: bool,
+}
+
+pub(crate) fn checked_focus(terms: &[String]) -> Result<Vec<String>, OnboardingBatchError> {
+    if terms.is_empty()
+        || terms.len() > 8
+        || terms.iter().any(|term| {
+            term.len() > 80 || term.trim().is_empty() || term.chars().any(char::is_control)
+        })
+    {
+        return Err(invalid(
+            "focus requires 1..=8 nonblank literal terms, at most 80 UTF-8 bytes each, without control characters",
+        ));
+    }
+    let normalized: Vec<_> = terms
+        .iter()
+        .map(|term| term.trim().to_lowercase())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if normalized.iter().any(|term| term.len() > 80) {
+        return Err(invalid("normalized focus terms exceed 80 UTF-8 bytes"));
+    }
+    Ok(normalized)
+}
+
+pub(crate) fn focus_matches(terms: &[String], path: &str, text: &str) -> Vec<String> {
+    if terms.is_empty() {
+        return Vec::new();
+    }
+    let path = path.to_lowercase();
+    let text = text.to_lowercase();
+    terms
+        .iter()
+        .filter(|term| path.contains(term.as_str()) || text.contains(term.as_str()))
+        .cloned()
+        .collect()
 }
 
 /// Same proposal shape accepted by the existing onboarding MCP.
@@ -170,6 +216,17 @@ pub struct LocalOnboardingReview {
     pub notes: Vec<LocalNoteReview>,
     pub uncited_sources: Vec<String>,
     pub sampled_sources: Vec<LocalOnboardingSampleReview>,
+    /// Matching text windows with no overlapping claim citation, not a semantic coverage score.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub uncited_focus_excerpts: Vec<LocalFocusExcerptGap>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LocalFocusExcerptGap {
+    pub path: String,
+    pub line_start: usize,
+    pub line_end: usize,
+    pub matched_terms: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -710,8 +767,38 @@ fn review_local_proposal(
             claims: reviewed_claims,
         });
     }
+    let mut uncited_focus_excerpts = Vec::new();
+    if let Some(focus) = &packet.focus {
+        for source in &packet.sources {
+            for excerpt in &source.excerpts {
+                let matched_terms = focus_matches(
+                    &focus.terms,
+                    "",
+                    &source.text[excerpt.byte_start..excerpt.byte_end],
+                );
+                let cited = notes
+                    .iter()
+                    .flat_map(|note| &note.claims)
+                    .flat_map(|claim| &claim.sources)
+                    .any(|reference| {
+                        reference.path == source.path
+                            && reference.line_start <= excerpt.line_end
+                            && reference.line_end >= excerpt.line_start
+                    });
+                if !matched_terms.is_empty() && !cited {
+                    uncited_focus_excerpts.push(LocalFocusExcerptGap {
+                        path: source.path.clone(),
+                        line_start: excerpt.line_start,
+                        line_end: excerpt.line_end,
+                        matched_terms,
+                    });
+                }
+            }
+        }
+    }
     let review = LocalOnboardingReview {
         requires_review: true,
+        uncited_focus_excerpts,
         notes,
         uncited_sources: packet
             .sources
@@ -863,7 +950,7 @@ pub fn prepare_local_onboarding(
     request: &ResolveRequest,
     paths: &[String],
 ) -> Result<LocalOnboardingPacket, OnboardingBatchError> {
-    prepare_local_onboarding_mode(request, paths, false)
+    prepare_local_onboarding_mode(request, paths, false, &[])
 }
 
 /// Opt-in deterministic first/middle/last windows from files up to 256 KiB.
@@ -872,13 +959,24 @@ pub fn prepare_local_onboarding_sampled(
     request: &ResolveRequest,
     paths: &[String],
 ) -> Result<LocalOnboardingPacket, OnboardingBatchError> {
-    prepare_local_onboarding_mode(request, paths, true)
+    prepare_local_onboarding_mode(request, paths, true, &[])
+}
+
+/// Target large-file windows with explicit literal terms, retaining the ordinary read bounds.
+pub fn prepare_local_onboarding_focused(
+    request: &ResolveRequest,
+    paths: &[String],
+    terms: &[String],
+    sample_large_files: bool,
+) -> Result<LocalOnboardingPacket, OnboardingBatchError> {
+    prepare_local_onboarding_mode(request, paths, sample_large_files, &checked_focus(terms)?)
 }
 
 fn prepare_local_onboarding_mode(
     request: &ResolveRequest,
     paths: &[String],
     sample_large_files: bool,
+    terms: &[String],
 ) -> Result<LocalOnboardingPacket, OnboardingBatchError> {
     if paths.is_empty() || paths.len() > MAX_LOCAL_ONBOARDING_FILES {
         return Err(invalid(
@@ -893,11 +991,19 @@ fn prepare_local_onboarding_mode(
     if sample_large_files {
         packet.schema_version = 3;
     }
+    if !terms.is_empty() {
+        packet.schema_version = 4;
+        packet.focus = Some(LocalOnboardingFocus {
+            terms: terms.to_vec(),
+            sample_large_files,
+        });
+    }
     for path in unique {
         packet.sources.push(read_local_onboarding_source(
             &repository,
             path,
             sample_large_files,
+            terms,
         )?);
     }
     bounded_json(&packet)?;
@@ -908,6 +1014,7 @@ pub(crate) fn read_local_onboarding_source(
     repository: &Path,
     path: &str,
     sample_large_files: bool,
+    terms: &[String],
 ) -> Result<LocalOnboardingSource, OnboardingBatchError> {
     let limit = if sample_large_files {
         MAX_LOCAL_ONBOARDING_SAMPLED_FILE_BYTES
@@ -930,9 +1037,37 @@ pub(crate) fn read_local_onboarding_source(
             ));
         }
         let total_bytes = source.text.len();
-        let indices = [0, source.excerpts.len() / 2, source.excerpts.len() - 1]
-            .into_iter()
-            .collect::<BTreeSet<_>>();
+        // Keep the opening context, then prefer the two most relevant complete-line windows.
+        // Distinct terms beat repetition; stable original order breaks ties.
+        let mut ranked: Vec<_> = source
+            .excerpts
+            .iter()
+            .enumerate()
+            .map(|(index, excerpt)| {
+                let matches = focus_matches(
+                    terms,
+                    "",
+                    &source.text[excerpt.byte_start..excerpt.byte_end],
+                )
+                .len();
+                (index, matches)
+            })
+            .filter(|(_, matches)| *matches > 0)
+            .collect();
+        ranked.sort_by_key(|(index, matches)| (std::cmp::Reverse(*matches), *index));
+        let mut indices = BTreeSet::from([0]);
+        for (index, _) in ranked {
+            indices.insert(index);
+            if indices.len() == 3 {
+                break;
+            }
+        }
+        for index in [source.excerpts.len() / 2, source.excerpts.len() - 1] {
+            if indices.len() == 3 {
+                break;
+            }
+            indices.insert(index);
+        }
         let mut text = String::new();
         let mut excerpts = Vec::new();
         let mut omitted_lines = Vec::new();
@@ -975,9 +1110,10 @@ pub(crate) fn rebuild_local_onboarding(
     request: &ResolveRequest,
     packet: &LocalOnboardingPacket,
 ) -> Result<LocalOnboardingPacket, OnboardingBatchError> {
-    let sample_large_files = match packet.schema_version {
-        2 => false,
-        3 => true,
+    let (sample_large_files, terms) = match (packet.schema_version, &packet.focus) {
+        (2, None) => (false, Vec::new()),
+        (3, None) => (true, Vec::new()),
+        (4, Some(focus)) => (focus.sample_large_files, checked_focus(&focus.terms)?),
         _ => return Err(invalid("unsupported local onboarding packet version")),
     };
     let paths = packet
@@ -985,7 +1121,7 @@ pub(crate) fn rebuild_local_onboarding(
         .iter()
         .map(|source| source.path.clone())
         .collect::<Vec<_>>();
-    prepare_local_onboarding_mode(request, &paths, sample_large_files)
+    prepare_local_onboarding_mode(request, &paths, sample_large_files, &terms)
 }
 
 pub(crate) fn local_onboarding_base(
@@ -1004,6 +1140,7 @@ pub(crate) fn local_onboarding_base(
     };
     let packet = LocalOnboardingPacket {
         schema_version: 2,
+        focus: None,
         index: projection(&config.project.index)?,
         roadmap: projection(&config.project.roadmap)?,
         preparation: serde_json::to_value(preparation)

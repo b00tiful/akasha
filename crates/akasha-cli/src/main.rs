@@ -77,6 +77,9 @@ enum Command {
         /// Select first/middle/last excerpts from files over 8 KiB (up to 256 KiB).
         #[arg(long)]
         sample_large_files: bool,
+        /// Rank eligible files and sampled windows by repeated literal focus terms.
+        #[arg(long)]
+        focus: Vec<String>,
     },
     /// Collect explicit repository files for an experimental local onboarding draft.
     LocalOnboardingPrepare {
@@ -85,6 +88,9 @@ enum Command {
         /// Select first/middle/last excerpts from files over 8 KiB (up to 256 KiB).
         #[arg(long)]
         sample_large_files: bool,
+        /// Prefer matching windows when large-file sampling is enabled.
+        #[arg(long)]
+        focus: Vec<String>,
     },
     /// Plan unique configured entity notes and source groups from a fresh packet (no writes).
     LocalOnboardingPlan {
@@ -516,6 +522,7 @@ fn run(cli: Cli) -> Result<(), u8> {
         Command::LocalOnboardingDiscover {
             directories,
             sample_large_files,
+            focus,
         } => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
             let discover = if sample_large_files {
@@ -523,7 +530,17 @@ fn run(cli: Cli) -> Result<(), u8> {
             } else {
                 akasha_core::onboarding_discovery::discover_local_onboarding
             };
-            let discovery = discover(&request, &directories).map_err(report_onboarding)?;
+            let discovery = if focus.is_empty() {
+                discover(&request, &directories)
+            } else {
+                akasha_core::onboarding_discovery::discover_local_onboarding_focused(
+                    &request,
+                    &directories,
+                    &focus,
+                    sample_large_files,
+                )
+            }
+            .map_err(report_onboarding)?;
             finish_output(render::render_local_onboarding_discovery(
                 &discovery, output,
             ))?;
@@ -531,6 +548,7 @@ fn run(cli: Cli) -> Result<(), u8> {
         Command::LocalOnboardingPrepare {
             sources,
             sample_large_files,
+            focus,
         } => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
             let prepare = if sample_large_files {
@@ -538,7 +556,17 @@ fn run(cli: Cli) -> Result<(), u8> {
             } else {
                 akasha_core::onboarding_local::prepare_local_onboarding
             };
-            let packet = prepare(&request, &sources).map_err(report_onboarding)?;
+            let packet = if focus.is_empty() {
+                prepare(&request, &sources)
+            } else {
+                akasha_core::onboarding_local::prepare_local_onboarding_focused(
+                    &request,
+                    &sources,
+                    &focus,
+                    sample_large_files,
+                )
+            }
+            .map_err(report_onboarding)?;
             finish_output(render::render_local_onboarding_packet(&packet, output))?;
         }
         Command::LocalOnboardingPreview { packet, proposal } => {

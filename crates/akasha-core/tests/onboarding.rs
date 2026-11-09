@@ -13,6 +13,254 @@ use sha2::{Digest, Sha256};
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
+fn focused_source_text() -> String {
+    (1..=400)
+        .map(|line| match line {
+            82 => "pub const LEASE_SECONDS: u64 = 37; // lease deadline\r\n".into(),
+            83 => "pub const CLOCK_KIND: &str = \"monotonic\"; // lease deadline\r\n".into(),
+            146 => "pub const RETRIES: usize = 2; // lease deadline\r\n".into(),
+            _ => format!("// Привет 世界 ordinary source line {line:04}\r\n"),
+        })
+        .collect()
+}
+
+#[test]
+fn focused_sampling_finds_off_position_behavior_with_original_coordinates_and_drift_checks() {
+    use akasha_core::onboarding_local::{
+        compile_local_onboarding, prepare_local_onboarding_focused,
+        prepare_local_onboarding_sampled,
+    };
+    let f = Fixture::new("focus-windows");
+    let text = focused_source_text();
+    fs::write(f.resolution.cwd.join("input.rs"), &text).unwrap();
+    let paths = &["input.rs".into()];
+    let baseline = prepare_local_onboarding_sampled(&f.resolution, paths).unwrap();
+    assert!(!baseline.sources[0].text.contains("LEASE_SECONDS"));
+    let packet = prepare_local_onboarding_focused(
+        &f.resolution,
+        paths,
+        &[" Deadline ".into(), "LEASE".into(), "lease".into()],
+        true,
+    )
+    .unwrap();
+    assert_eq!(packet.schema_version, 4);
+    assert_eq!(packet.focus.as_ref().unwrap().terms, ["deadline", "lease"]);
+    assert!(serde_json::to_vec(&packet).unwrap().len() <= 16_000);
+    let source = &packet.sources[0];
+    assert!(source.text.contains("LEASE_SECONDS") && source.text.contains("RETRIES"));
+    assert!(!source.text.contains("source line 0400"));
+    assert_eq!(source.excerpts.len(), 3);
+    let original = text.split_inclusive('\n').collect::<Vec<_>>();
+    let mut coverage = vec![0; 400];
+    for excerpt in &source.excerpts {
+        assert_eq!(
+            &source.text[excerpt.byte_start..excerpt.byte_end],
+            original[excerpt.line_start - 1..excerpt.line_end].concat()
+        );
+        for count in &mut coverage[excerpt.line_start - 1..excerpt.line_end] {
+            *count += 1;
+        }
+    }
+    for range in &source.sampling.as_ref().unwrap().omitted_lines {
+        for count in &mut coverage[range.line_start - 1..range.line_end] {
+            *count += 1;
+        }
+    }
+    assert!(coverage.iter().all(|count| *count == 1));
+    let mut plan = sampled_claim_plan();
+    plan["notes"][0]["evidence"][0]["claim"] = "The lease duration constant is 37 seconds.".into();
+    plan["notes"][0]["evidence"][0]["sources"][0]["excerpt"] = 2.into();
+    let before = f.project_snapshot();
+    let draft = compile_local_onboarding(&f.resolution, &packet, &plan.to_string()).unwrap();
+    assert!(
+        serde_json::to_string(&draft.review)
+            .unwrap()
+            .contains("LEASE_SECONDS")
+    );
+    assert_eq!(draft.review.uncited_focus_excerpts.len(), 1);
+    assert_eq!(draft.review.uncited_focus_excerpts[0].line_start, 145);
+    let mut opening_only = plan.clone();
+    opening_only["notes"][0]["evidence"][0]["sources"][0]["excerpt"] = 1.into();
+    let neglected =
+        compile_local_onboarding(&f.resolution, &packet, &opening_only.to_string()).unwrap();
+    assert_eq!(neglected.review.uncited_focus_excerpts.len(), 2);
+    for mutate in [0, 1, 2, 3] {
+        let mut altered = packet.clone();
+        match mutate {
+            0 => altered.focus.as_mut().unwrap().terms = vec!["ordinary".into()],
+            1 => altered.focus = None,
+            2 => altered.schema_version = 3,
+            _ => altered.focus.as_mut().unwrap().sample_large_files = false,
+        }
+        assert!(compile_local_onboarding(&f.resolution, &altered, &plan.to_string()).is_err());
+    }
+    // Omitted content changes also invalidate a saved focused packet.
+    fs::write(
+        f.resolution.cwd.join("input.rs"),
+        text.replace("source line 0300", "changed line 0300"),
+    )
+    .unwrap();
+    assert!(compile_local_onboarding(&f.resolution, &packet, &plan.to_string()).is_err());
+    assert_eq!(f.project_snapshot(), before);
+}
+
+#[test]
+fn focused_discovery_prioritizes_content_matches_preserves_context_and_reports_gaps() {
+    use akasha_core::onboarding_discovery::{
+        discover_local_onboarding, discover_local_onboarding_focused,
+    };
+    let f = Fixture::new("focus-discovery");
+    let repo = &f.resolution.cwd;
+    fs::create_dir_all(repo.join("src/zz")).unwrap();
+    fs::create_dir_all(repo.join("tests")).unwrap();
+    fs::write(
+        repo.join("README.md"),
+        "# Context\nThis project provides local services.\n",
+    )
+    .unwrap();
+    for index in 0..12 {
+        fs::write(
+            repo.join(format!("src/a{index:02}.rs")),
+            "pub const UNRELATED: usize = 1;\n",
+        )
+        .unwrap();
+    }
+    let target = "pub const LEASE_SECONDS: usize = 37; // deadline\n";
+    fs::write(repo.join("src/zz/target.rs"), target).unwrap();
+    fs::write(repo.join("src/zz/repeated.rs"), "// lease\n".repeat(30)).unwrap();
+    fs::write(
+        repo.join("tests/lease_test.rs"),
+        "// lease deadline checks\n",
+    )
+    .unwrap();
+    fs::write(repo.join("src/zz/secret_lease.rs"), "must never read\n").unwrap();
+    let before = f.project_snapshot();
+    let baseline = discover_local_onboarding(&f.resolution, &[".".into()]).unwrap();
+    assert!(
+        !baseline
+            .packet
+            .sources
+            .iter()
+            .any(|s| s.path == "src/zz/target.rs")
+    );
+    let discovered = discover_local_onboarding_focused(
+        &f.resolution,
+        &[".".into()],
+        &["lease".into(), "deadline".into()],
+        false,
+    )
+    .unwrap();
+    assert_eq!(discovered.packet.schema_version, 4);
+    let selected = &discovered.coverage.selected;
+    assert!(
+        selected
+            .iter()
+            .any(|s| s.path == "README.md" && s.matched_terms.is_empty())
+    );
+    assert!(selected.iter().any(|s| s.path == "Cargo.toml"));
+    assert!(
+        selected
+            .iter()
+            .any(|s| s.path == "src/zz/target.rs" && s.matched_terms == ["deadline", "lease"])
+    );
+    assert!(selected.iter().any(|s| s.path == "tests/lease_test.rs"));
+    assert!(
+        discovered
+            .coverage
+            .omitted
+            .iter()
+            .any(|s| s.path == "src/a00.rs" && s.reason == "focus_no_match")
+    );
+    assert!(
+        discovered
+            .coverage
+            .excluded_examples
+            .iter()
+            .any(|s| s.path.ends_with("secret_lease.rs"))
+    );
+    let expected_bytes: usize = std::iter::once("README.md")
+        .chain(std::iter::once("Cargo.toml"))
+        .map(|p| fs::metadata(repo.join(p)).unwrap().len() as usize)
+        .sum::<usize>()
+        + 12 * "pub const UNRELATED: usize = 1;\n".len()
+        + target.len()
+        + "// lease\n".len() * 30
+        + "// lease deadline checks\n".len();
+    assert_eq!(discovered.coverage.focus_scan_bytes, Some(expected_bytes));
+    assert!(
+        discover_local_onboarding_focused(
+            &f.resolution,
+            &[".".into()],
+            &["no-such-subsystem".into()],
+            true
+        )
+        .is_err()
+    );
+    for index in 0..10 {
+        fs::write(repo.join(format!("src/shallow{index:02}.rs")), "// lease\n").unwrap();
+    }
+    let ranked = discover_local_onboarding_focused(
+        &f.resolution,
+        &["src".into()],
+        &["lease".into(), "deadline".into()],
+        false,
+    )
+    .unwrap();
+    assert_eq!(ranked.packet.sources.len(), 8);
+    assert!(
+        ranked
+            .coverage
+            .selected
+            .iter()
+            .any(|s| s.path == "src/zz/target.rs")
+    );
+    assert!(
+        ranked
+            .coverage
+            .omitted
+            .iter()
+            .any(|s| s.reason == "file_limit")
+    );
+    assert_eq!(f.project_snapshot(), before);
+}
+
+#[test]
+fn focused_selection_validates_raw_bounds_unicode_and_legacy_packet_compatibility() {
+    use akasha_core::onboarding_local::{
+        plan_local_onboarding, prepare_local_onboarding, prepare_local_onboarding_focused,
+    };
+    let f = Fixture::new("focus-validation");
+    let paths = &["Cargo.toml".into()];
+    for terms in [
+        vec![],
+        vec![" ".into()],
+        vec!["x\ny".into()],
+        vec!["x".repeat(81)],
+        vec!["a".into(); 9],
+        vec!["İ".repeat(40)],
+    ] {
+        assert!(prepare_local_onboarding_focused(&f.resolution, paths, &terms, false).is_err());
+    }
+    let legacy = prepare_local_onboarding(&f.resolution, paths).unwrap();
+    assert!(
+        serde_json::to_value(&legacy)
+            .unwrap()
+            .get("focus")
+            .is_none()
+    );
+    let restored = serde_json::from_str(&serde_json::to_string(&legacy).unwrap()).unwrap();
+    plan_local_onboarding(&f.resolution, &restored).unwrap();
+    fs::write(f.resolution.cwd.join("Cargo.toml"), "# ПРИВЕТ 世界\n").unwrap();
+    let unicode = prepare_local_onboarding_focused(
+        &f.resolution,
+        paths,
+        &["ПРИВЕТ".into(), "世界".into()],
+        false,
+    )
+    .unwrap();
+    assert_eq!(unicode.focus.unwrap().terms, ["привет", "世界"]);
+}
+
 fn identity_fixture(
     label: &str,
 ) -> (
