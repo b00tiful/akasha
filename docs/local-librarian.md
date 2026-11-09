@@ -12,7 +12,7 @@ node scripts/local-librarian.mjs --root /path/to/memory --project example \
   --server "$inference_dir/runtimes/llama-b12110-vulkan/llama-server" \
   --model "$inference_dir/models/Qwen3.5-9B-UD-Q4_K_XL.gguf" \
   --model-sha256 6f5d30666c2d8ae16a306e616d95341dcf3cc46810df84d7e6f5a7d1e4c1b293 \
-  --gpu-layers 99 --threads 4
+  --gpu-layers auto --threads 4
 ```
 
 This opt-in development mode returns up to eight **exact supporting quotations**. One question-only
@@ -132,8 +132,22 @@ At most 20 distinct links per passage are shown; scoped/capped omissions are cou
 link is not proof of ownership or causality. The compact checked object is capped at 65,536 bytes.
 JSON preserves quote bytes; terminal output sanitizes controls and prefixes source lines.
 
-CPU is default, using up to four threads. `--gpu-layers 99` requests offload with a compatible
-GPU package; `--threads N` is explicit. The runner applies the model's chat template, disables
+CPU is default, using up to four threads. With a compatible GPU package, use `--gpu-layers auto`
+to fit offload to currently available device memory. `--fit-target-mib N` optionally changes the
+target free margin (default 1536 MiB; integer 256–16384, valid only with `auto`). This uses the
+pinned runtime's fitter before loading; every context-growth restart fits again. The host still
+requires its exact requested context and slot count before sending project evidence. The margin
+is a runtime estimate, not a reservation against other programs; startup can still refuse.
+There is no automatic retry or model substitution. Integer settings such as `--gpu-layers 24`
+explicitly disable fitting and preserve fixed offload. `--threads N` is explicit.
+
+Stderr completion metrics include `resources`: requested layers, fit target and observed
+`offloaded_layers` / `total_layers`. Missing observations are `null`, never an invented count.
+Automatic mode enables startup trace logging to observe the actual layer count; only bounded
+pre-evidence logs are inspected, numeric summaries survive success, and subsequent logs are
+drained without capture. Existing bounded/redacted failure diagnostics remain.
+
+The runner applies the model's chat template, disables
 thinking and tokenizes the user packet as literal data with special-token parsing disabled.
 Trusted template controls retain special-token parsing. A random placeholder identifies the
 payload boundary; exact template substitution and harmless-template token equality must hold,

@@ -67,6 +67,79 @@ test("later growth restarts once, never shrinks and reaps both workers", async t
   assert.equal(f.session.metrics.context_restarts, 1); await f.session.close(); await cleaned(f);
   assert.equal((await f.events()).filter(event => event.start).length, 2);
 });
+test("automatic fitting keeps exact context across growth and reports numeric startup offload", async t => {
+  const f = await fixture(t, "session-grow");
+  const session = createInferenceSession({ ...f.options, gpuLayers: "auto", fitTargetMiB: 2048 });
+  t.after(() => session.close());
+  for (const question of ["short", "grow-context", "short again"]) {
+    const result = await session.complete({ question }, schema, "policy");
+    assert.deepEqual(result.metrics.resources, { gpu_layers_requested: "auto", fit_target_mib: 2048,
+      offloaded_layers: 12, total_layers: 33 });
+  }
+  assert.equal(session.metrics.context_restarts, 1);
+  await session.close(); await cleaned(f);
+  const starts = (await f.events()).filter(event => event.start);
+  assert.equal(starts.length, 2);
+  for (const { args } of starts) {
+    for (const [flag, value] of [["--gpu-layers", "auto"], ["--fit", "on"], ["--fit-target", "2048"], ["--log-verbosity", "4"]]) {
+      assert.equal(args[args.indexOf(flag) + 1], value);
+    }
+  }
+});
+test("automatic fit defaults to 1536 MiB margin and cancellation cleans the owned worker", async t => {
+  const f = await fixture(t, "hang"), controller = new AbortController();
+  const session = createInferenceSession({ ...f.options, gpuLayers: "auto", signal: controller.signal });
+  t.after(() => session.close());
+  const work = assert.rejects(session.complete({}, schema, "policy"), /abort/i);
+  const events = await until(f, events => events.some(event => event.path === "/completion"));
+  const args = events.find(event => event.start).args;
+  assert.equal(args[args.indexOf("--fit-target") + 1], "1536");
+  controller.abort(); await work; await session.close(); await cleaned(f);
+});
+test("automatic fit refuses context shrink before transmitting project evidence and never retries", async t => {
+  const f = await fixture(t, "fit-context-shrink");
+  const session = createInferenceSession({ ...f.options, gpuLayers: "auto" }); t.after(() => session.close());
+  await assert.rejects(session.complete({ private: "project evidence" }, schema, "policy"), /configuration mismatch/);
+  await session.close(); await cleaned(f);
+  const events = await f.events(); assert.equal(events.filter(event => event.start).length, 1);
+  assert(!events.some(event => ["/apply-template", "/tokenize", "/completion"].includes(event.path)));
+});
+test("fixed resource controls explicitly disable fitting and keep observed layers distinct", async t => {
+  const f = await fixture(t);
+  const session = createInferenceSession({ ...f.options, gpuLayers: 24 }); t.after(() => session.close());
+  const result = await session.complete({}, schema, "policy");
+  assert.deepEqual(result.metrics.resources, { gpu_layers_requested: 24, fit_target_mib: null,
+    offloaded_layers: null, total_layers: null });
+  await session.close(); await cleaned(f);
+  const args = (await f.events()).find(event => event.start).args;
+  assert.equal(args[args.indexOf("--gpu-layers") + 1], "24");
+  assert.equal(args[args.indexOf("--fit") + 1], "off"); assert(!args.includes("--fit-target"));
+});
+test("invalid auto/fit settings refuse synchronously before model or process access", () => {
+  const options = { server: "/missing/server", model: "/missing/model", modelSha256: "0".repeat(64) };
+  for (const gpuLayers of ["all", "AUTO", "24", -1, 1000, NaN, 1.5]) {
+    assert.throws(() => createInferenceSession({ ...options, gpuLayers }), /resource settings/);
+  }
+  for (const fitTargetMiB of [0, 255, 16385, 1000.5, NaN, "1536"]) {
+    assert.throws(() => createInferenceSession({ ...options, gpuLayers: "auto", fitTargetMiB }), /fit-target-mib/);
+  }
+  assert.throws(() => createInferenceSession({ ...options, gpuLayers: 24, fitTargetMiB: 1536 }), /requires/);
+});
+test("automatic fitting preserves bounded redacted startup refusal without retry", async t => {
+  const f = await fixture(t, "startup-failure");
+  const session = createInferenceSession({ ...f.options, gpuLayers: "auto" }); t.after(() => session.close());
+  await assert.rejects(session.complete({ private: "never sent" }, schema, "policy"), error => {
+    assert.equal(error.workerDiagnostic.exit_code, 2);
+    assert.equal(error.workerDiagnostic.stderr_truncated, true);
+    assert(Buffer.byteLength(error.workerDiagnostic.stderr_tail) <= 8192);
+    assert(!error.workerDiagnostic.stderr_tail.includes(f.model));
+    assert(!error.workerDiagnostic.stderr_tail.includes("never sent"));
+    return true;
+  });
+  await session.close(); await cleaned(f);
+  const events = await f.events(); assert.equal(events.filter(event => event.start).length, 1);
+  assert(!events.some(event => event.path));
+});
 for (const target of ["model", "server"]) test(`idle ${target} drift refuses before second generation and closes`, async t => {
   const f = await fixture(t); await f.session.complete({}, schema, "policy");
   await writeFile(f[target], target === "model" ? "GGUFchanged" : "#!/usr/bin/env node\n");

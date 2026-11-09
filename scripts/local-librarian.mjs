@@ -114,12 +114,13 @@ async function unusedPort() {
   return port;
 }
 
-export function workerArgs({ model, port, keyFile, context, gpuLayers, threads }) {
+export function workerArgs({ model, port, keyFile, context, gpuLayers, fitTargetMiB = 1536, threads }) {
   return ["--model", model, "--host", "127.0.0.1", "--port", String(port), "--api-key-file", keyFile,
     "--offline", "--no-webui", "--no-agent", "--no-ui-mcp-proxy", "--parallel", "1",
     "--ctx-size", String(context), "--no-context-shift", "--cache-ram", "0", "--ctx-checkpoints", "0",
     "--cache-type-k", "f16", "--cache-type-v", "f16", "--batch-size", "256", "--ubatch-size", "128",
     "--gpu-layers", String(gpuLayers), "--threads", String(threads), "--threads-batch", String(threads),
+    ...(gpuLayers === "auto" ? ["--fit", "on", "--fit-target", String(fitTargetMiB), "--log-verbosity", "4"] : ["--fit", "off"]),
     "--jinja", "--chat-template-kwargs", '{"enable_thinking":false}', "--no-warmup"];
 }
 
@@ -130,10 +131,20 @@ async function startWorker(options) {
   });
   let failure; let ended = false; let exitCode = null; let exitSignal = null;
   let stderr = Buffer.alloc(0); let stderrBytes = 0; let phase = "health";
+  let resourceLine = "", offloadedLayers = null, totalLayers = null;
   // Startup only: stop collecting before any project evidence reaches the worker.
   const capture = chunk => {
     stderrBytes += chunk.length;
     stderr = Buffer.concat([stderr, chunk]).subarray(-8192);
+    // Parse only numeric startup observations; never retain logs after evidence is sent.
+    const lines = (resourceLine + chunk.toString("utf8")).split("\n");
+    resourceLine = lines.pop().slice(-512);
+    for (const line of lines) {
+      const match = line.match(/offloaded (\d{1,4})\/(\d{1,4}) layers to GPU/);
+      if (match && Number(match[1]) <= Number(match[2])) {
+        offloadedLayers = Number(match[1]); totalLayers = Number(match[2]);
+      }
+    }
   };
   child.stderr.on("data", capture);
   const closed = new Promise(accept => {
@@ -169,7 +180,10 @@ async function startWorker(options) {
     }
     child.stderr.removeListener("data", capture);
     stderr = Buffer.alloc(0);
-    return { call, stop };
+    resourceLine = "";
+    return { call, stop, resources: { gpu_layers_requested: options.gpuLayers,
+      fit_target_mib: options.gpuLayers === "auto" ? options.fitTargetMiB : null,
+      offloaded_layers: offloadedLayers, total_layers: totalLayers } };
   } catch (error) {
     const exitedBeforeCleanup = ended;
     await stop();
@@ -212,9 +226,14 @@ export async function localAnswer(packet, options, complete) {
 
 // Trusted adapters own the lifetime and supply complete, independent policy/schema inputs.
 export function createInferenceSession({ server, model, modelSha256, maxContext = 8192,
-  gpuLayers = 0, threads = Math.min(4, availableParallelism()), signal, timeoutMs = 120_000 }) {
-  if (![4096, 8192, 16384, 32768].includes(maxContext) || !Number.isInteger(gpuLayers)
-    || gpuLayers < 0 || gpuLayers > 999 || !Number.isInteger(threads) || threads < 1 || threads > 256
+  gpuLayers = 0, fitTargetMiB, threads = Math.min(4, availableParallelism()), signal, timeoutMs = 120_000 }) {
+  if (fitTargetMiB !== undefined && (gpuLayers !== "auto" || !Number.isInteger(fitTargetMiB) || fitTargetMiB < 256 || fitTargetMiB > 16384)) {
+    throw new Error("--fit-target-mib requires --gpu-layers auto and an integer from 256 to 16384");
+  }
+  fitTargetMiB ??= 1536;
+  if (![4096, 8192, 16384, 32768].includes(maxContext)
+    || !(gpuLayers === "auto" || Number.isInteger(gpuLayers) && gpuLayers >= 0 && gpuLayers <= 999)
+    || !Number.isInteger(threads) || threads < 1 || threads > 256
     || !/^[a-f0-9]{64}$/.test(modelSha256 ?? "") || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) {
     throw new Error("Explicit local model SHA-256 and valid resource settings are required");
   }
@@ -278,7 +297,7 @@ export function createInferenceSession({ server, model, modelSha256, maxContext 
         if (version.error || version.status !== 0 || !(version.stdout + version.stderr).includes(BUILD)) throw new Error(`Use the pinned llama.cpp ${BUILD}`);
         const key = randomBytes(32).toString("hex"), keyFile = join(directory, "api-key");
         await writeFile(keyFile, key + "\n", { mode: 0o600, flag: "wx" });
-        workerOptions = { server, model, directory, env, key, keyFile, gpuLayers, threads, signal: combined, timeoutMs };
+        workerOptions = { server, model, directory, env, key, keyFile, gpuLayers, fitTargetMiB, threads, signal: combined, timeoutMs };
         mark("runtime_verify");
       }
       const inferenceStarted = performance.now();
@@ -301,6 +320,7 @@ export function createInferenceSession({ server, model, modelSha256, maxContext 
       await verify(); combined.throwIfAborted(); mark("drift_verify"); totals.completions++;
       return { answer: result.content, metrics: { runtime: "llama.cpp", build: BUILD, model_sha256: modelDigest, server_sha256: serverDigest,
         context, prompt_tokens: tokens.length, output_limit: OUTPUT_TOKENS, gpu_layers: gpuLayers, threads,
+        resources: { ...worker.resources },
         elapsed_ms: performance.now() - inferenceStarted, timings: result.timings, worker_starts: totals.worker_starts - startsBefore,
         session_completion: totals.completions, reused_worker: startsBefore > 0 && totals.worker_starts === startsBefore,
         phase_ms: phaseMs, total_ms: checkpoint - started } };
@@ -382,6 +402,7 @@ async function main() {
     root: { type: "string" }, project: { type: "string" }, question: { type: "string" },
     server: { type: "string" }, model: { type: "string" }, "model-sha256": { type: "string" },
     "max-context": { type: "string", default: "8192" }, "gpu-layers": { type: "string", default: "0" },
+    "fit-target-mib": { type: "string" },
     threads: { type: "string", default: String(Math.min(4, availableParallelism())) },
     note: { type: "string" }, term: { type: "string", multiple: true, default: [] }, json: { type: "boolean", default: false },
     answer: { type: "boolean", default: false },
@@ -394,7 +415,8 @@ async function main() {
   process.once("SIGINT", cancel); process.once("SIGTERM", cancel);
   try {
     const result = await askLibrarian({ ...values, terms: values.term, modelSha256: values["model-sha256"],
-      maxContext: Number(values["max-context"]), gpuLayers: Number(values["gpu-layers"]), threads: Number(values.threads), signal: controller.signal });
+      maxContext: Number(values["max-context"]), gpuLayers: values["gpu-layers"] === "auto" ? "auto" : Number(values["gpu-layers"]),
+      fitTargetMiB: values["fit-target-mib"] === undefined ? undefined : Number(values["fit-target-mib"]), threads: Number(values.threads), signal: controller.signal });
     process.stdout.write(result.output);
     process.stderr.write(`${JSON.stringify(result.metrics)}\n`);
   } finally {

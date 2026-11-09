@@ -222,6 +222,7 @@ async function main() {
     "auto-plan": { type: "boolean", default: false }, focus: { type: "string", multiple: true },
     server: { type: "string" }, model: { type: "string" }, "model-sha256": { type: "string" },
     "max-context": { type: "string", default: "8192" }, "gpu-layers": { type: "string", default: "0" },
+    "fit-target-mib": { type: "string" },
     threads: { type: "string", default: String(Math.min(4, availableParallelism())) }, json: { type: "boolean", default: false },
   } });
   for (const key of ["root", "project", "server", "model", "model-sha256"]) {
@@ -241,7 +242,8 @@ async function main() {
   try {
     const result = await draftLocalOnboarding({ root: values.root, project: values.project, sources: values.source, discover: values.discover, focus: values.focus, components, autoPlan: values["auto-plan"], saveInputs: values["save-inputs"], workerSession: values["worker-session"], sampleLargeFiles: values["sample-large-files"],
       server: values.server, model: values.model, modelSha256: values["model-sha256"], maxContext: Number(values["max-context"]),
-      gpuLayers: Number(values["gpu-layers"]), threads: Number(values.threads), json: values.json, signal: controller.signal });
+      gpuLayers: values["gpu-layers"] === "auto" ? "auto" : Number(values["gpu-layers"]),
+      fitTargetMiB: values["fit-target-mib"] === undefined ? undefined : Number(values["fit-target-mib"]), threads: Number(values.threads), json: values.json, signal: controller.signal });
     process.stdout.write(result.output);
     process.stderr.write(`${JSON.stringify(result.metrics)}\n`);
   } finally { process.removeListener("SIGINT", cancel); process.removeListener("SIGTERM", cancel); }

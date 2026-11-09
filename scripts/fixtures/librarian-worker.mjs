@@ -9,6 +9,11 @@ const model = value("--model");
 const scenario = readFileSync(model, "utf8").slice(4);
 const key = readFileSync(value("--api-key-file"), "utf8").trim();
 appendFileSync(model + ".events", JSON.stringify({ start: process.pid, args }) + "\n");
+if (value("--gpu-layers") === "auto" && value("--log-verbosity") === "4") {
+  process.stderr.write("load_tensors: offloaded 12/");
+  await new Promise(accept => setTimeout(accept, 10));
+  process.stderr.write("33 layers to GPU\n");
+}
 if (scenario === "startup-failure") {
   process.stderr.write("界".repeat(5000) + `\n\u001b[31mstartup failed ${key} ${model} ${value("--api-key-file")}\u0000\n`);
   process.exit(2);
@@ -22,7 +27,8 @@ const server = http.createServer(async (request, response) => {
   let result;
   if (request.url === "/health" && (scenario === "startup-hang" || scenario === "restart-hang" && value("--ctx-size") === "8192")) return;
   if (request.url === "/health") result = { status: "ok" };
-  if (request.url === "/props") result = { total_slots: 1, default_generation_settings: { n_ctx: Number(value("--ctx-size")) } };
+  if (request.url === "/props") result = { total_slots: 1, default_generation_settings: {
+    n_ctx: Number(value("--ctx-size")) - (scenario === "fit-context-shrink" ? 512 : 0) } };
   if (request.url === "/apply-template" && !body.messages[1].content.startsWith("AKASHA_PAYLOAD_")) grow = body.messages[1].content.includes("grow-context");
   if (request.url === "/apply-template") result = { prompt: body.messages.map(message =>
     `<|im_start|>${message.role}\n${scenario === "template-transform" ? message.content.replaceAll("<", "&lt;") : message.content}<|im_end|>\n`).join("") + "<|im_start|>assistant\n" };

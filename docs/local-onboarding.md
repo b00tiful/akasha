@@ -19,8 +19,16 @@ node scripts/local-onboarding.mjs \
   --server "$inference_dir/runtimes/llama-b12110-vulkan/llama-server" \
   --model "$inference_dir/models/Qwen3.5-9B-UD-Q4_K_XL.gguf" \
   --model-sha256 6f5d30666c2d8ae16a306e616d95341dcf3cc46810df84d7e6f5a7d1e4c1b293 \
-  --gpu-layers 99 --threads 4 --json > draft.json
+  --gpu-layers auto --threads 4 --json > draft.json
 ```
+
+`--gpu-layers auto` fits GPU offload to available memory using the pinned runtime and a
+1536 MiB target free margin. Optional `--fit-target-mib N` accepts integers 256–16384 only
+with automatic mode. Fixed integer offload remains available with fitting explicitly disabled;
+omitting GPU controls retains the CPU default. Context limits, deadlines, independent prompts,
+source checks and review requirements are unchanged. Component metrics report requested and
+observed offload; the margin does not reserve memory against other applications. See
+[runtime controls and lifecycle](local-librarian.md) for details. No automatic retry is added.
 
 For multi-component coverage, replace the repeated `--source` options with
 `--components components.json --worker-session`. The JSON file is an array of 1–3 groups:
