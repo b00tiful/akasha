@@ -74,11 +74,17 @@ enum Command {
     LocalOnboardingDiscover {
         #[arg(long = "directory", required = true)]
         directories: Vec<String>,
+        /// Select first/middle/last excerpts from files over 8 KiB (up to 256 KiB).
+        #[arg(long)]
+        sample_large_files: bool,
     },
     /// Collect explicit repository files for an experimental local onboarding draft.
     LocalOnboardingPrepare {
         #[arg(long = "source", required = true)]
         sources: Vec<String>,
+        /// Select first/middle/last excerpts from files over 8 KiB (up to 256 KiB).
+        #[arg(long)]
+        sample_large_files: bool,
     },
     /// Validate a local onboarding draft and return its exact proposal/preview (no writes).
     LocalOnboardingPreview {
@@ -491,22 +497,32 @@ fn run(cli: Cli) -> Result<(), u8> {
                     .map_err(report_onboarding)?;
             finish_output(render::render_local_onboarding_draft(&draft, output))?;
         }
-        Command::LocalOnboardingDiscover { directories } => {
+        Command::LocalOnboardingDiscover {
+            directories,
+            sample_large_files,
+        } => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
-            let discovery = akasha_core::onboarding_discovery::discover_local_onboarding(
-                &request,
-                &directories,
-            )
-            .map_err(report_onboarding)?;
+            let discover = if sample_large_files {
+                akasha_core::onboarding_discovery::discover_local_onboarding_sampled
+            } else {
+                akasha_core::onboarding_discovery::discover_local_onboarding
+            };
+            let discovery = discover(&request, &directories).map_err(report_onboarding)?;
             finish_output(render::render_local_onboarding_discovery(
                 &discovery, output,
             ))?;
         }
-        Command::LocalOnboardingPrepare { sources } => {
+        Command::LocalOnboardingPrepare {
+            sources,
+            sample_large_files,
+        } => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
-            let packet =
-                akasha_core::onboarding_local::prepare_local_onboarding(&request, &sources)
-                    .map_err(report_onboarding)?;
+            let prepare = if sample_large_files {
+                akasha_core::onboarding_local::prepare_local_onboarding_sampled
+            } else {
+                akasha_core::onboarding_local::prepare_local_onboarding
+            };
+            let packet = prepare(&request, &sources).map_err(report_onboarding)?;
             finish_output(render::render_local_onboarding_packet(&packet, output))?;
         }
         Command::LocalOnboardingPreview { packet, proposal } => {

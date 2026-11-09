@@ -14,6 +14,251 @@ use sha2::{Digest, Sha256};
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn sampled_sources_preserve_original_coordinates_unicode_and_complete_omission_coverage() {
+    use akasha_core::onboarding_local::{
+        prepare_local_onboarding, prepare_local_onboarding_sampled,
+    };
+    let fixture = Fixture::new("sampled-coordinates");
+    let text = (0..399)
+        .map(|i| format!("// Привет 世界 source line {i:04}\r\n"))
+        .collect::<String>()
+        + "pub const TAIL: usize = 37;";
+    fs::write(fixture.resolution.cwd.join("input.rs"), &text).unwrap();
+    let paths = &["input.rs".into()];
+    assert!(prepare_local_onboarding(&fixture.resolution, paths).is_err());
+    let before = fixture.project_snapshot();
+    let packet = prepare_local_onboarding_sampled(&fixture.resolution, paths).unwrap();
+    assert_eq!(packet.schema_version, 3);
+    assert!(serde_json::to_vec(&packet).unwrap().len() <= 16_000);
+    let source = &packet.sources[0];
+    assert_eq!(source.lines, 400);
+    assert_eq!(source.fingerprint, content_fingerprint(text.as_bytes()));
+    assert_eq!(source.sampling.as_ref().unwrap().total_bytes, text.len());
+    assert_eq!(source.excerpts.len(), 3);
+    assert!(source.text.len() <= 6144);
+    assert_eq!(source.excerpts.first().unwrap().line_start, 1);
+    assert_eq!(source.excerpts.last().unwrap().line_end, 400);
+    assert!(source.text.ends_with("pub const TAIL: usize = 37;"));
+    let original = text.split_inclusive('\n').collect::<Vec<_>>();
+    let mut coverage = vec![0; source.lines];
+    for excerpt in &source.excerpts {
+        assert!(excerpt.line_end - excerpt.line_start < 16);
+        assert!(excerpt.byte_end - excerpt.byte_start <= 2048);
+        assert_eq!(
+            &source.text[excerpt.byte_start..excerpt.byte_end],
+            original[excerpt.line_start - 1..excerpt.line_end].concat()
+        );
+        for count in &mut coverage[excerpt.line_start - 1..excerpt.line_end] {
+            *count += 1;
+        }
+    }
+    for range in &source.sampling.as_ref().unwrap().omitted_lines {
+        for count in &mut coverage[range.line_start - 1..range.line_end] {
+            *count += 1;
+        }
+    }
+    assert!(coverage.into_iter().all(|count| count == 1));
+    assert_eq!(fixture.project_snapshot(), before);
+}
+
+fn sampled_claim_plan() -> serde_json::Value {
+    serde_json::json!({ "schema_version": 3, "notes": [{ "note_type": "entity", "name": "sampled-core",
+        "fields": { "entity": "sampled-core", "kind": "subsystem", "status": "active", "reviewed": "2026-11-09" },
+        "evidence": [{ "kind": "fact", "claim": "The tail constant is 37.", "sources": [{ "source": 1, "excerpt": 3 }] }]
+    }] })
+}
+
+#[test]
+fn sampled_review_refuses_gap_citations_tampering_quotes_and_omitted_line_drift() {
+    use akasha_core::onboarding_local::{
+        compile_local_onboarding, prepare_local_onboarding_sampled, preview_local_onboarding,
+    };
+    let fixture = Fixture::new("sampled-review");
+    let text =
+        "// stable filler for sampled coverage\n".repeat(399) + "pub const TAIL: usize = 37;\n";
+    let path = fixture.resolution.cwd.join("input.rs");
+    fs::write(&path, &text).unwrap();
+    let packet =
+        prepare_local_onboarding_sampled(&fixture.resolution, &["input.rs".into()]).unwrap();
+    let plan = sampled_claim_plan().to_string();
+    let before = fixture.project_snapshot();
+    let draft = compile_local_onboarding(&fixture.resolution, &packet, &plan).unwrap();
+    let review = &draft.review.notes[0].claims[0].sources[0];
+    assert_eq!((review.line_start, review.line_end), (385, 400));
+    assert!(review.excerpt.ends_with("pub const TAIL: usize = 37;"));
+    assert_eq!(draft.review.sampled_sources[0].total_lines, 400);
+    for which in 0..5 {
+        let mut altered = packet.clone();
+        match which {
+            0 => altered.sources[0].sampling.as_mut().unwrap().total_bytes += 1,
+            1 => altered.sources[0]
+                .sampling
+                .as_mut()
+                .unwrap()
+                .omitted_lines
+                .clear(),
+            2 => altered.sources[0].excerpts[2].byte_start = usize::MAX,
+            3 => altered.sources[0].excerpts[2].line_start = 1,
+            _ => altered.schema_version = 2,
+        }
+        assert!(compile_local_onboarding(&fixture.resolution, &altered, &plan).is_err());
+    }
+    let mut quotes = sampled_claim_plan();
+    quotes["schema_version"] = 2.into();
+    quotes["notes"][0]["evidence"][0]["sources"][0] =
+        serde_json::json!({"source": 1, "quote": "pub const TAIL: usize = 37;"});
+    assert!(
+        compile_local_onboarding(&fixture.resolution, &packet, &quotes.to_string())
+            .unwrap_err()
+            .to_string()
+            .contains("excerpt-handle")
+    );
+    for (start, end) in [(17, 17), (16, 17), (16, 385), (384, 385)] {
+        let mut proposal = draft.proposal.clone();
+        let parsed = akasha_core::parse_leading_frontmatter(&proposal.notes[0].source).unwrap();
+        let body = parsed.body.to_owned();
+        let mut metadata: serde_json::Value =
+            serde_json::from_str(parsed.frontmatter_yaml).unwrap();
+        metadata["evidence"][0]["sources"][0]["line_start"] = start.into();
+        metadata["evidence"][0]["sources"][0]["line_end"] = end.into();
+        proposal.notes[0].source = format!(
+            "---\n{}\n---\n{body}",
+            serde_json::to_string_pretty(&metadata).unwrap()
+        );
+        assert!(
+            preview_local_onboarding(
+                &fixture.resolution,
+                &packet,
+                &serde_json::to_string(&proposal).unwrap()
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("omitted")
+        );
+    }
+    let mut lines = text
+        .split_inclusive('\n')
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    lines[99] = "// changed filler for sampled coverage\n".into();
+    fs::write(&path, lines.concat()).unwrap();
+    let fresh =
+        prepare_local_onboarding_sampled(&fixture.resolution, &["input.rs".into()]).unwrap();
+    assert_eq!(packet.sources[0].text, fresh.sources[0].text);
+    assert_ne!(packet.sources[0].fingerprint, fresh.sources[0].fingerprint);
+    assert_eq!(
+        compile_local_onboarding(&fixture.resolution, &packet, &plan)
+            .unwrap_err()
+            .exit_code(),
+        5
+    );
+    assert_eq!(fixture.project_snapshot(), before);
+}
+
+#[test]
+fn sampled_onboarding_publishes_original_tail_evidence_and_replays_with_fresh_review() {
+    use akasha_core::onboarding_local::{
+        apply_local_onboarding, compile_local_onboarding, prepare_local_onboarding_sampled,
+        preview_local_onboarding,
+    };
+    let fixture = Fixture::new("sampled-publication");
+    let text =
+        "// filler for a larger implementation\n".repeat(399) + "pub const TAIL: usize = 37;\n";
+    fs::write(fixture.resolution.cwd.join("input.rs"), &text).unwrap();
+    let paths = &["input.rs".into()];
+    let packet = prepare_local_onboarding_sampled(&fixture.resolution, paths).unwrap();
+    let draft = compile_local_onboarding(
+        &fixture.resolution,
+        &packet,
+        &sampled_claim_plan().to_string(),
+    )
+    .unwrap();
+    let proposal = serde_json::to_string(&draft.proposal).unwrap();
+    let result = apply_local_onboarding(
+        &fixture.resolution,
+        &packet,
+        &proposal,
+        &draft.preview.preview_id,
+    )
+    .unwrap();
+    assert_eq!(result.created_notes.len(), 1);
+    validate_project(&fixture.resolution).unwrap();
+    assert_eq!(
+        fs::read_to_string(fixture.resolution.cwd.join("input.rs")).unwrap(),
+        text
+    );
+    let fresh = prepare_local_onboarding_sampled(&fixture.resolution, paths).unwrap();
+    let preview = preview_local_onboarding(&fixture.resolution, &fresh, &proposal).unwrap();
+    let before = fixture.project_snapshot();
+    let replay = apply_local_onboarding(
+        &fixture.resolution,
+        &fresh,
+        &proposal,
+        &preview.preview.preview_id,
+    )
+    .unwrap();
+    assert!(replay.created_notes.is_empty());
+    assert_eq!(replay.unchanged_notes.len(), 1);
+    assert_eq!(fixture.project_snapshot(), before);
+}
+
+#[test]
+fn sampled_file_bounds_and_discovery_preserve_default_complete_file_behavior() {
+    use akasha_core::onboarding_discovery::{
+        discover_local_onboarding, discover_local_onboarding_sampled,
+    };
+    use akasha_core::onboarding_local::{
+        MAX_LOCAL_ONBOARDING_SAMPLED_FILE_BYTES, prepare_local_onboarding_sampled,
+    };
+    let fixture = Fixture::new("sampled-bounds");
+    let repo = &fixture.resolution.cwd;
+    fs::create_dir(repo.join("sources")).unwrap();
+    let path = repo.join("sources/large.rs");
+    let limit = MAX_LOCAL_ONBOARDING_SAMPLED_FILE_BYTES;
+    fs::write(&path, "abc\n".repeat(limit / 4)).unwrap();
+    let paths = &["sources/large.rs".into()];
+    let before = fixture.project_snapshot();
+    let packet = prepare_local_onboarding_sampled(&fixture.resolution, paths).unwrap();
+    assert_eq!(
+        packet.sources[0].sampling.as_ref().unwrap().total_bytes,
+        limit
+    );
+    assert!(discover_local_onboarding(&fixture.resolution, &["sources".into()]).is_err());
+    let discovered =
+        discover_local_onboarding_sampled(&fixture.resolution, &["sources".into()]).unwrap();
+    assert_eq!(discovered.packet, packet);
+    fs::write(repo.join("sources/oversize.rs"), "x".repeat(limit + 1)).unwrap();
+    let discovered =
+        discover_local_onboarding_sampled(&fixture.resolution, &["sources".into()]).unwrap();
+    assert!(
+        discovered
+            .coverage
+            .omitted
+            .iter()
+            .any(|item| item.path == "sources/oversize.rs" && item.reason == "file_too_large")
+    );
+    for bytes in [
+        vec![b'x'; limit + 1],
+        vec![0xff; 9000],
+        vec![0; 9000],
+        ("ok\n".repeat(3000) + &"x".repeat(2049)).into_bytes(),
+    ] {
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(
+            prepare_local_onboarding_sampled(&fixture.resolution, paths)
+                .unwrap_err()
+                .exit_code(),
+            4
+        );
+    }
+    fs::write(&path, "small complete source\n").unwrap();
+    let small = prepare_local_onboarding_sampled(&fixture.resolution, paths).unwrap();
+    assert!(small.sources[0].sampling.is_none());
+    assert_eq!(small.sources[0].text, "small complete source\n");
+    assert_eq!(fixture.project_snapshot(), before);
+}
+
+#[test]
 fn discovery_balances_roles_and_directories_and_is_read_only() {
     use akasha_core::onboarding_discovery::discover_local_onboarding;
     use akasha_core::onboarding_local::prepare_local_onboarding;
@@ -619,7 +864,7 @@ fn local_draft_refuses_altered_packets_and_changed_sources_without_writes() {
     for which in 0..7 {
         let mut altered = packet.clone();
         match which {
-            0 => altered.schema_version += 1,
+            0 => altered.schema_version = 99,
             1 => altered.sources[0].text.push('x'),
             2 => altered.sources[0].fingerprint.push('0'),
             3 => altered.sources[0].lines += 1,
@@ -631,7 +876,7 @@ fn local_draft_refuses_altered_packets_and_changed_sources_without_writes() {
             preview_local_onboarding(&fixture.resolution, &altered, &proposal)
                 .unwrap_err()
                 .exit_code(),
-            5
+            if which == 0 { 4 } else { 5 }
         );
     }
     fs::write(fixture.resolution.cwd.join("Cargo.toml"), "changed\n").unwrap();

@@ -18,6 +18,7 @@ use crate::validation::parse_leading_frontmatter_bytes;
 pub const MAX_LOCAL_ONBOARDING_BYTES: usize = 16_000;
 pub const MAX_LOCAL_ONBOARDING_FILES: usize = 8;
 pub const MAX_LOCAL_ONBOARDING_FILE_BYTES: usize = 8_192;
+pub const MAX_LOCAL_ONBOARDING_SAMPLED_FILE_BYTES: usize = 262_144;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -27,9 +28,26 @@ pub struct LocalOnboardingSource {
     pub text: String,
     pub lines: usize,
     pub excerpts: Vec<LocalOnboardingExcerpt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<LocalOnboardingSampling>,
 }
 
-/// One complete-line window. UTF-8 byte boundaries refer to the original source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalOnboardingLineRange {
+    pub line_start: usize,
+    pub line_end: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalOnboardingSampling {
+    pub total_bytes: usize,
+    pub omitted_lines: Vec<LocalOnboardingLineRange>,
+}
+
+/// One complete-line window. UTF-8 byte boundaries refer to the packet's source text;
+/// line ranges always refer to the original file, including in sampled packets.
 /// The adapter only formats these core-owned windows. Handles are 1-based.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -151,6 +169,16 @@ pub struct LocalOnboardingReview {
     pub requires_review: bool,
     pub notes: Vec<LocalNoteReview>,
     pub uncited_sources: Vec<String>,
+    pub sampled_sources: Vec<LocalOnboardingSampleReview>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LocalOnboardingSampleReview {
+    pub path: String,
+    pub total_lines: usize,
+    pub selected_lines: Vec<LocalOnboardingLineRange>,
+    #[serde(flatten)]
+    pub sampling: LocalOnboardingSampling,
 }
 
 #[derive(Debug, Serialize)]
@@ -231,12 +259,7 @@ pub fn compile_local_onboarding(
         return Err(invalid("local onboarding plan requires 1..=3 notes"));
     }
     bounded_json(packet)?;
-    let paths = packet
-        .sources
-        .iter()
-        .map(|source| source.path.clone())
-        .collect::<Vec<_>>();
-    if packet != &prepare_local_onboarding(request, &paths)? {
+    if packet != &rebuild_local_onboarding(request, packet)? {
         return Err(OnboardingBatchError::Conflict {
             path: PathBuf::from("<local-onboarding>"),
             message: "local onboarding packet is stale or altered; prepare again".into(),
@@ -364,6 +387,11 @@ fn quote_lines(
     source: &LocalOnboardingSource,
     quote: &str,
 ) -> Result<(usize, usize), OnboardingBatchError> {
+    if source.sampling.is_some() {
+        return Err(invalid(
+            "sampled sources require excerpt-handle plans, not quotes",
+        ));
+    }
     if quote.trim().is_empty() || quote.chars().count() > 1024 {
         return Err(invalid(
             "source quotes require 1..=1024 nonblank characters",
@@ -475,13 +503,7 @@ fn review_local_proposal(
                         "local draft evidence line bounds exceed the source",
                     ));
                 }
-                let excerpt = source
-                    .text
-                    .lines()
-                    .skip(start - 1)
-                    .take(end - start + 1)
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                let excerpt = selected_source_range(source, start, end)?;
                 if excerpt.len() > 2048 {
                     return Err(invalid(
                         "local draft review excerpt exceeds 2048 bytes; select a shorter range",
@@ -525,9 +547,73 @@ fn review_local_proposal(
             .filter(|s| !cited.contains(&s.path))
             .map(|s| s.path.clone())
             .collect(),
+        sampled_sources: packet
+            .sources
+            .iter()
+            .filter_map(|source| {
+                source
+                    .sampling
+                    .clone()
+                    .map(|sampling| LocalOnboardingSampleReview {
+                        path: source.path.clone(),
+                        total_lines: source.lines,
+                        selected_lines: source
+                            .excerpts
+                            .iter()
+                            .map(|excerpt| LocalOnboardingLineRange {
+                                line_start: excerpt.line_start,
+                                line_end: excerpt.line_end,
+                            })
+                            .collect(),
+                        sampling,
+                    })
+            })
+            .collect(),
     };
     bounded_json(&review)?;
     Ok(review)
+}
+
+// A raw proposal must not cite the gaps between sampled windows. Map original line ranges
+// back to the packed text without ever treating two nonadjacent windows as neighboring lines.
+fn selected_source_range(
+    source: &LocalOnboardingSource,
+    start: usize,
+    end: usize,
+) -> Result<String, OnboardingBatchError> {
+    if source.sampling.is_none() {
+        return Ok(source
+            .text
+            .lines()
+            .skip(start - 1)
+            .take(end - start + 1)
+            .collect::<Vec<_>>()
+            .join("\n"));
+    }
+    let mut next = start;
+    let mut lines = Vec::new();
+    for excerpt in &source.excerpts {
+        if excerpt.line_end < next {
+            continue;
+        }
+        if excerpt.line_start > next {
+            break;
+        }
+        let last = end.min(excerpt.line_end);
+        lines.extend(
+            source.text[excerpt.byte_start..excerpt.byte_end]
+                .lines()
+                .skip(next - excerpt.line_start)
+                .take(last - next + 1),
+        );
+        next = last + 1;
+        if next > end {
+            return Ok(lines.join("\n"));
+        }
+    }
+    Err(invalid(
+        "local evidence includes lines omitted from the sampled source",
+    ))
 }
 
 pub(crate) fn invalid(message: impl Into<String>) -> OnboardingBatchError {
@@ -605,6 +691,23 @@ pub fn prepare_local_onboarding(
     request: &ResolveRequest,
     paths: &[String],
 ) -> Result<LocalOnboardingPacket, OnboardingBatchError> {
+    prepare_local_onboarding_mode(request, paths, false)
+}
+
+/// Opt-in deterministic first/middle/last windows from files up to 256 KiB.
+/// Whole-file fingerprints and explicit omitted line ranges preserve honest partial coverage.
+pub fn prepare_local_onboarding_sampled(
+    request: &ResolveRequest,
+    paths: &[String],
+) -> Result<LocalOnboardingPacket, OnboardingBatchError> {
+    prepare_local_onboarding_mode(request, paths, true)
+}
+
+fn prepare_local_onboarding_mode(
+    request: &ResolveRequest,
+    paths: &[String],
+    sample_large_files: bool,
+) -> Result<LocalOnboardingPacket, OnboardingBatchError> {
     if paths.is_empty() || paths.len() > MAX_LOCAL_ONBOARDING_FILES {
         return Err(invalid(
             "local onboarding requires 1..=8 explicit source paths",
@@ -615,10 +718,15 @@ pub fn prepare_local_onboarding(
         return Err(invalid("duplicate local onboarding source path"));
     }
     let (mut packet, repository) = local_onboarding_base(request)?;
+    if sample_large_files {
+        packet.schema_version = 3;
+    }
     for path in unique {
-        packet
-            .sources
-            .push(read_local_onboarding_source(&repository, path)?);
+        packet.sources.push(read_local_onboarding_source(
+            &repository,
+            path,
+            sample_large_files,
+        )?);
     }
     bounded_json(&packet)?;
     Ok(packet)
@@ -627,15 +735,85 @@ pub fn prepare_local_onboarding(
 pub(crate) fn read_local_onboarding_source(
     repository: &Path,
     path: &str,
+    sample_large_files: bool,
 ) -> Result<LocalOnboardingSource, OnboardingBatchError> {
-    let text = read_relative(repository, path, MAX_LOCAL_ONBOARDING_FILE_BYTES)?;
-    Ok(LocalOnboardingSource {
+    let limit = if sample_large_files {
+        MAX_LOCAL_ONBOARDING_SAMPLED_FILE_BYTES
+    } else {
+        MAX_LOCAL_ONBOARDING_FILE_BYTES
+    };
+    let text = read_relative(repository, path, limit)?;
+    let mut source = LocalOnboardingSource {
         path: path.into(),
         fingerprint: content_fingerprint(text.as_bytes()),
         lines: text.lines().count().max(1),
         excerpts: source_excerpts(&text),
+        sampling: None,
         text,
-    })
+    };
+    if source.text.len() > MAX_LOCAL_ONBOARDING_FILE_BYTES {
+        if source.excerpts.is_empty() {
+            return Err(invalid(
+                "sampled source contains a line exceeding 2048 bytes",
+            ));
+        }
+        let total_bytes = source.text.len();
+        let indices = [0, source.excerpts.len() / 2, source.excerpts.len() - 1]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let mut text = String::new();
+        let mut excerpts = Vec::new();
+        let mut omitted_lines = Vec::new();
+        let mut next = 1;
+        for index in indices {
+            let original = &source.excerpts[index];
+            if next < original.line_start {
+                omitted_lines.push(LocalOnboardingLineRange {
+                    line_start: next,
+                    line_end: original.line_start - 1,
+                });
+            }
+            let byte_start = text.len();
+            text.push_str(&source.text[original.byte_start..original.byte_end]);
+            excerpts.push(LocalOnboardingExcerpt {
+                byte_start,
+                byte_end: text.len(),
+                line_start: original.line_start,
+                line_end: original.line_end,
+            });
+            next = original.line_end + 1;
+        }
+        if next <= source.lines {
+            omitted_lines.push(LocalOnboardingLineRange {
+                line_start: next,
+                line_end: source.lines,
+            });
+        }
+        source.text = text;
+        source.excerpts = excerpts;
+        source.sampling = Some(LocalOnboardingSampling {
+            total_bytes,
+            omitted_lines,
+        });
+    }
+    Ok(source)
+}
+
+pub(crate) fn rebuild_local_onboarding(
+    request: &ResolveRequest,
+    packet: &LocalOnboardingPacket,
+) -> Result<LocalOnboardingPacket, OnboardingBatchError> {
+    let sample_large_files = match packet.schema_version {
+        2 => false,
+        3 => true,
+        _ => return Err(invalid("unsupported local onboarding packet version")),
+    };
+    let paths = packet
+        .sources
+        .iter()
+        .map(|source| source.path.clone())
+        .collect::<Vec<_>>();
+    prepare_local_onboarding_mode(request, &paths, sample_large_files)
 }
 
 pub(crate) fn local_onboarding_base(
@@ -671,12 +849,7 @@ pub fn preview_local_onboarding(
     proposal_json: &str,
 ) -> Result<LocalOnboardingDraft, OnboardingBatchError> {
     bounded_json(packet)?;
-    let paths = packet
-        .sources
-        .iter()
-        .map(|source| source.path.clone())
-        .collect::<Vec<_>>();
-    let fresh = prepare_local_onboarding(request, &paths)?;
+    let fresh = rebuild_local_onboarding(request, packet)?;
     if packet != &fresh {
         return Err(OnboardingBatchError::Conflict {
             path: PathBuf::from("<local-onboarding>"),
@@ -775,7 +948,7 @@ pub fn preview_local_onboarding(
         &relative(&preview.project_dir.join(&config.project.roadmap))?,
     )?;
     // Shared validation may take time; observe drift once more before returning the draft.
-    if fresh != prepare_local_onboarding(request, &paths)? {
+    if fresh != rebuild_local_onboarding(request, packet)? {
         return Err(invalid("local onboarding input changed during preview"));
     }
     Ok(LocalOnboardingDraft {

@@ -40,7 +40,7 @@ pub(crate) fn render_local_onboarding_discovery(
     }
     let coverage = &discovery.coverage;
     let mut text = format!(
-        "Local onboarding source discovery (no writes/model)\nInspected: {} entries; {} candidates; {} selected; {} excluded entries\nCoverage is limited to the requested directories and eligible complete files.\n",
+        "Local onboarding source discovery (no writes/model)\nInspected: {} entries; {} candidates; {} selected; {} excluded entries\nCoverage is limited to the requested directories and selected source lines.\n",
         coverage.entries_inspected,
         coverage.candidates,
         coverage.selected.len(),
@@ -53,6 +53,11 @@ pub(crate) fn render_local_onboarding_discovery(
             source.role,
             librarian_display(&source.path)
         );
+    }
+    for source in &discovery.packet.sources {
+        if let Some(sampling) = &source.sampling {
+            append_local_sampling(&mut text, &source.path, source.lines, sampling);
+        }
     }
     for source in &coverage.omitted {
         let _ = writeln!(
@@ -81,11 +86,23 @@ pub(crate) fn render_local_onboarding_packet(
         return write_stdout(&json_line(serde_json::to_string_pretty(packet))?);
     }
     let mut text = format!(
-        "Local onboarding input — {}\nExplicit sources: {} (complete files; no writes)\n",
+        "Local onboarding input — {}\nExplicit sources: {} ({}; no writes)\n",
         librarian_display(packet.preparation["project"].as_str().unwrap_or("")),
-        packet.sources.len()
+        packet.sources.len(),
+        if packet
+            .sources
+            .iter()
+            .any(|source| source.sampling.is_some())
+        {
+            "coverage below"
+        } else {
+            "complete files"
+        }
     );
     for source in &packet.sources {
+        if let Some(sampling) = &source.sampling {
+            append_local_sampling(&mut text, &source.path, source.lines, sampling);
+        }
         let _ = writeln!(
             text,
             "{} — {} lines — {} excerpts — {}",
@@ -102,12 +119,55 @@ pub(crate) fn render_local_onboarding_packet(
                 excerpt.line_start,
                 excerpt.line_end
             );
+            if source.sampling.is_some() {
+                for (offset, line) in source.text[excerpt.byte_start..excerpt.byte_end]
+                    .lines()
+                    .enumerate()
+                {
+                    let _ = writeln!(
+                        text,
+                        "  {} | {}",
+                        excerpt.line_start + offset,
+                        librarian_display(line)
+                    );
+                }
+            }
         }
-        for line in source.text.lines() {
-            let _ = writeln!(text, "  | {}", librarian_display(line));
+        if source.sampling.is_none() {
+            for line in source.text.lines() {
+                let _ = writeln!(text, "  | {}", librarian_display(line));
+            }
         }
     }
     write_stdout(&text)
+}
+
+fn append_local_sampling(
+    text: &mut String,
+    path: &str,
+    lines: usize,
+    sampling: &akasha_core::onboarding_local::LocalOnboardingSampling,
+) {
+    let omitted: usize = sampling
+        .omitted_lines
+        .iter()
+        .map(|range| range.line_end - range.line_start + 1)
+        .sum();
+    let _ = writeln!(
+        text,
+        "Sampled: {} — {}/{} lines selected, {} whole-file bytes; partial coverage",
+        librarian_display(path),
+        lines - omitted,
+        lines,
+        sampling.total_bytes
+    );
+    for range in &sampling.omitted_lines {
+        let _ = writeln!(
+            text,
+            "  Omitted lines: {}-{}",
+            range.line_start, range.line_end
+        );
+    }
 }
 
 pub(crate) fn render_local_onboarding_draft(
@@ -123,6 +183,21 @@ pub(crate) fn render_local_onboarding_draft(
         draft.preview.proposal_id,
         draft.preview.preview_id
     );
+    for source in &draft.review.sampled_sources {
+        append_local_sampling(
+            &mut text,
+            &source.path,
+            source.total_lines,
+            &source.sampling,
+        );
+        for range in &source.selected_lines {
+            let _ = writeln!(
+                text,
+                "  Selected lines: {}-{}",
+                range.line_start, range.line_end
+            );
+        }
+    }
     for preview in &draft.preview.notes {
         let note = draft
             .proposal

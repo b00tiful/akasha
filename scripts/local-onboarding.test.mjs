@@ -26,6 +26,77 @@ function plan(packet) {
   }] };
 }
 
+test("large-file sampling supports sources, groups and discovery through reviewed apply and retrieval", async t => {
+  const f = fixture(t);
+  const text = "// multilingual filler 世界 for bounded coverage\r\n".repeat(399) + "pub const TAIL: usize = 37;";
+  writeFileSync(join(f.repository, "src/lib.rs"), text);
+  const before = snapshot(f.root), repoBefore = snapshot(f.repository);
+  const defaultFailure = run(f, ["--json", "local-onboarding-prepare", "--source", "src/lib.rs"]);
+  assert.notEqual(defaultFailure.status, 0); assert.equal(defaultFailure.stdout, "");
+  assert(defaultFailure.stderr.includes("8192"));
+  const plain = run(f, ["local-onboarding-prepare", "--sample-large-files", "--source", "src/lib.rs"]);
+  assert.equal(plain.status, 0, plain.stderr);
+  assert(plain.stdout.includes("partial coverage") && plain.stdout.includes("Omitted lines:") && plain.stdout.includes("400 | pub const TAIL"));
+  let draft, saved;
+  for (const selection of [
+    { sources: ["src/lib.rs"] },
+    { components: [{ name: "sampled-core", note_type: "entity", sources: ["src/lib.rs"] }] },
+    { discover: ["src"] },
+  ]) {
+    saved = join(f.directory, `sampled-review-${Object.keys(selection)[0]}`);
+    const result = await draftLocalOnboarding({ root: f.root, project: "first-run", ...selection, sampleLargeFiles: true, saveInputs: saved, json: true }, async (input, schema, policy) => {
+      assert(policy.includes("omitted lines are unknown"));
+      const source = input.sources[0];
+      assert.equal(source.path, "src/lib.rs");
+      assert.equal(source.sampling.total_lines, 400);
+      assert.equal(source.sampling.total_bytes, Buffer.byteLength(text));
+      assert(source.sampling.omitted_lines.length > 0);
+      assert.equal(source.excerpts.length, 3);
+      assert.equal(source.excerpts[2].line_end, 400);
+      assert(source.excerpts[2].text.endsWith("pub const TAIL: usize = 37;"));
+      assert.deepEqual(schema.properties.notes.items.oneOf[0].properties.evidence.items.oneOf[0].properties.sources.items.oneOf[0].properties.excerpt.enum, [1, 2, 3]);
+      return { answer: JSON.stringify({ schema_version: 3, notes: [{ note_type: "entity", name: "sampled-core",
+        fields: { entity: "sampled-core", kind: "subsystem", status: "active", reviewed: "2026-11-09" },
+        evidence: [{ kind: "fact", claim: "The tail constant is 37.", sources: [{ source: 1, excerpt: 3 }] }],
+      }] }) };
+    });
+    draft = JSON.parse(result.output);
+    assert.equal(draft.review.sampled_sources[0].total_lines, 400);
+    assert.equal(result.metrics.source_sampling[0].total_lines, 400);
+    assert.equal(JSON.parse(readFileSync(join(saved, "packet.json"))).schema_version, 3);
+    const review = run(f, ["local-onboarding-preview", "--packet", join(saved, "packet.json"), "--proposal", join(saved, "proposal.json")]);
+    assert.equal(review.status, 0, review.stderr);
+    assert(review.stdout.includes("partial coverage") && review.stdout.includes("Selected lines:") && review.stdout.includes("Omitted lines:"));
+    assert.deepEqual(snapshot(f.root), before);
+    assert.deepEqual(snapshot(f.repository), repoBefore);
+  }
+  const discovery = run(f, ["local-onboarding-discover", "--directory", "src", "--sample-large-files"]);
+  assert.equal(discovery.status, 0, discovery.stderr);
+  assert(discovery.stdout.includes("partial coverage") && discovery.stdout.includes("Omitted lines:"));
+  const applied = run(f, ["--json", "local-onboarding-apply", "--packet", join(saved, "packet.json"), "--proposal", join(saved, "proposal.json"), "--approved-preview-id", draft.preview.preview_id]);
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(run(f, ["validate"]).status, 0);
+  const librarian = run(f, ["--json", "librarian-prepare", "tail constant 37"]);
+  assert.equal(librarian.status, 0, librarian.stderr);
+  assert(JSON.parse(librarian.stdout).evidence.some(source => source.excerpt.includes("tail constant is 37")));
+  assert.deepEqual(snapshot(f.repository), repoBefore);
+});
+
+test("omitted-line edits invalidate sampled drafts and invalid controls fail before inference", async t => {
+  const f = fixture(t), before = snapshot(f.root);
+  const text = "// stable filler for sampled coverage\n".repeat(399) + "pub const TAIL: usize = 37;\n";
+  writeFileSync(join(f.repository, "src/lib.rs"), text);
+  const options = { root: f.root, project: "first-run", discover: ["src"], sampleLargeFiles: true, json: true };
+  await assert.rejects(draftLocalOnboarding({ ...options, sampleLargeFiles: "yes" }, () => assert.fail("inference must not run")));
+  await assert.rejects(draftLocalOnboarding(options, async input => {
+    const lines = text.split("\n");
+    lines[99] = "// edited filler for sampled coverage";
+    writeFileSync(join(f.repository, "src/lib.rs"), lines.join("\n"));
+    return { answer: JSON.stringify(plan(input)) };
+  }), error => error.code === 5);
+  assert.deepEqual(snapshot(f.root), before);
+});
+
 test("directory discovery feeds a fresh core packet, saves coverage and publishes searchable facts", async t => {
   const f = fixture(t), before = snapshot(f.root), repoBefore = snapshot(f.repository);
   const saved = join(f.directory, "discovered-review");

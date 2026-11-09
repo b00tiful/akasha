@@ -210,6 +210,39 @@ an approval. Keep originals, edit a copy of `plan.json`, then use `local-onboard
 with the saved packet to obtain a fresh review. If source/configuration/project bytes changed,
 prepare and review again. This opt-in writes private review artifacts; it never publishes notes.
 
+## Large-file sampling
+
+Add `--sample-large-files` to the development adapter or either core input command when useful
+implementation files exceed 8 KiB. It works with `--source`, `--components` and `--discover`:
+
+```sh
+target/debug/akasha --root /path/to/akasha-root --project example \
+  local-onboarding-discover --directory src --sample-large-files
+target/debug/akasha --root /path/to/akasha-root --project example --json \
+  local-onboarding-prepare --source src/parser.rs --sample-large-files
+```
+
+Sampling reads regular UTF-8 files up to 256 KiB. Files over 8 KiB supply their first, middle
+and last catalog excerpts, each at most 16 complete lines/2,048 bytes. Smaller files retain
+their complete text. The original eight-file/16,000-byte packet bounds still apply; selecting
+many windows can still exceed the packet budget. A line over 2,048 bytes anywhere in a larger
+file refuses explicit preparation and is an explicit discovery omission. No line is clipped.
+
+The opt-in version-3 packet records whole-file SHA-256 and total line count, plus `sampling`
+with total bytes and every omitted line interval. Its `text` packs selected windows only;
+excerpt byte offsets address that packed text, while line ranges always name the original
+file. The model receives separate numbered excerpts and partial-coverage metadata. Plain
+preparation/discovery and final source review show omitted ranges; draft JSON adds
+`review.sampled_sources`. Stderr metrics include `source_sampling`, and private packet/draft
+artifacts preserve the same coverage. Inspect it alongside claims and metadata before apply.
+
+Positional sampling may split a function or omit important behavior. Omitted lines are unknown;
+absence from a window cannot establish absence from the file. Evidence references use excerpt
+handles; quote plans are accepted only for complete sources. Raw proposals cannot cite a gap
+or bridge nonadjacent windows. Edits anywhere in the original file, including omitted lines,
+invalidate a saved packet. Reprepare using the same opt-in when refreshing inputs after apply.
+Default version-2 complete-file packets, persisted evidence and external MCP remain compatible.
+
 ## Direct local review and application
 
 After generation, review all metadata, claims, exact source excerpts, uncited sources and both

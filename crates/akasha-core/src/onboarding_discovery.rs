@@ -8,8 +8,8 @@ use serde::Serialize;
 use crate::onboarding::{OnboardingBatchError, validate_normalized_relative_path};
 use crate::onboarding_local::{
     LocalOnboardingPacket, MAX_LOCAL_ONBOARDING_FILE_BYTES, MAX_LOCAL_ONBOARDING_FILES,
-    bounded_json, invalid, local_onboarding_base, prepare_local_onboarding,
-    read_local_onboarding_source,
+    MAX_LOCAL_ONBOARDING_SAMPLED_FILE_BYTES, bounded_json, invalid, local_onboarding_base,
+    read_local_onboarding_source, rebuild_local_onboarding,
 };
 use crate::resolution::ResolveRequest;
 
@@ -163,12 +163,36 @@ pub fn discover_local_onboarding(
     request: &ResolveRequest,
     directories: &[String],
 ) -> Result<LocalOnboardingDiscovery, OnboardingBatchError> {
+    discover_local_onboarding_mode(request, directories, false)
+}
+
+/// Same scoped discovery, with explicit partial coverage for larger eligible sources.
+pub fn discover_local_onboarding_sampled(
+    request: &ResolveRequest,
+    directories: &[String],
+) -> Result<LocalOnboardingDiscovery, OnboardingBatchError> {
+    discover_local_onboarding_mode(request, directories, true)
+}
+
+fn discover_local_onboarding_mode(
+    request: &ResolveRequest,
+    directories: &[String],
+    sample_large_files: bool,
+) -> Result<LocalOnboardingDiscovery, OnboardingBatchError> {
     if directories.is_empty() || directories.len() > 8 {
         return Err(invalid(
             "discovery requires 1..=8 explicit directories (use . for the repository)",
         ));
     }
     let (mut packet, repository) = local_onboarding_base(request)?;
+    if sample_large_files {
+        packet.schema_version = 3;
+    }
+    let file_limit = if sample_large_files {
+        MAX_LOCAL_ONBOARDING_SAMPLED_FILE_BYTES
+    } else {
+        MAX_LOCAL_ONBOARDING_FILE_BYTES
+    };
     let mut scopes = directories.to_vec();
     scopes.sort();
     for (i, scope) in scopes.iter().enumerate() {
@@ -294,7 +318,7 @@ pub fn discover_local_onboarding(
                 .map_err(|e| io_error(&repository.join(&path), e))?;
             let reason = if packet.sources.len() == MAX_LOCAL_ONBOARDING_FILES {
                 Some("file_limit")
-            } else if metadata.len() > MAX_LOCAL_ONBOARDING_FILE_BYTES as u64 {
+            } else if metadata.len() > file_limit as u64 {
                 Some("file_too_large")
             } else {
                 None
@@ -306,7 +330,8 @@ pub fn discover_local_onboarding(
                 });
                 continue;
             }
-            let source = match read_local_onboarding_source(&repository, &path) {
+            let source = match read_local_onboarding_source(&repository, &path, sample_large_files)
+            {
                 Ok(source) => source,
                 Err(OnboardingBatchError::Validation { .. }) => {
                     coverage.omitted.push(LocalSourceOmission {
@@ -346,18 +371,13 @@ pub fn discover_local_onboarding(
     }
     if packet.sources.is_empty() {
         return Err(invalid(
-            "no eligible complete sources fit; choose different directories or explicit files",
+            "no eligible sources fit; choose different directories or explicit files",
         ));
     }
     packet.sources.sort_by(|a, b| a.path.cmp(&b.path));
     coverage.selected.sort_by(|a, b| a.path.cmp(&b.path));
     coverage.omitted.sort_by(|a, b| a.path.cmp(&b.path));
-    let paths = packet
-        .sources
-        .iter()
-        .map(|s| s.path.clone())
-        .collect::<Vec<_>>();
-    if packet != prepare_local_onboarding(request, &paths)? {
+    if packet != rebuild_local_onboarding(request, &packet)? {
         return Err(invalid(
             "discovered inputs changed during selection; discover again",
         ));
