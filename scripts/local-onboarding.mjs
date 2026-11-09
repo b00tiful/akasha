@@ -8,6 +8,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { fileURLToPath } from "node:url";
 import { parseArgs, promisify } from "node:util";
 import { localCompletion, createInferenceSession } from "./local-librarian.mjs";
+import { renderOnboardingReview } from "./onboarding-review.mjs";
 
 const execute = promisify(execFile);
 const workspace = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -201,6 +202,7 @@ export async function draftLocalOnboarding(options, complete = localCompletion) 
       await save("draft.json", output);
       const proposal = JSON.stringify(draft.proposal);
       await save("proposal.json", proposal);
+      await save("review.html", renderOnboardingReview({ packet, plan: JSON.parse(completion.answer), draft, identityPlan, discovery }));
       if (!options.json) {
         const reviewPath = join(temporary, "proposal.json");
         await writeFile(reviewPath, proposal, { mode: 0o600, flag: "wx" });

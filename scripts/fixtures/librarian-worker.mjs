@@ -7,9 +7,12 @@ if (args.includes("--version")) { process.stderr.write("build 12110, commit cd95
 const value = name => args[args.indexOf(name) + 1];
 const model = value("--model");
 const scenario = readFileSync(model, "utf8").slice(4);
-if (scenario === "startup-failure") process.exit(2);
 const key = readFileSync(value("--api-key-file"), "utf8").trim();
 appendFileSync(model + ".events", JSON.stringify({ start: process.pid, args }) + "\n");
+if (scenario === "startup-failure") {
+  process.stderr.write("界".repeat(5000) + `\n\u001b[31mstartup failed ${key} ${model} ${value("--api-key-file")}\u0000\n`);
+  process.exit(2);
+}
 let grow = false;
 const server = http.createServer(async (request, response) => {
   if (request.headers.authorization !== `Bearer ${key}`) { response.writeHead(401); response.end("{}"); return; }
@@ -40,7 +43,10 @@ const server = http.createServer(async (request, response) => {
     result = { stop: true, truncated: scenario === "truncated", stop_type: scenario === "limit" ? "limit" : "eos",
       content: scenario === "investigator-invalid" ? '{"action":"invalid"}' : scenario === "investigator"
         ? JSON.stringify(body.json_schema.properties?.terms ? { terms: [] } : { action: "finish", handles: [] })
-        : scenario === "answer" ? '{"insufficient_evidence":false,"selections":[{"statement":3}]}'
+        : scenario === "answer" ? JSON.stringify(body.json_schema.properties.parts?.items.type === "string"
+          ? { parts: ["How does FlightPath store waypoints?"] }
+          : { uncovered_question: false, parts: [{ part: 1, sufficient: true,
+            quotes: ["FlightPath stores waypoints in a vector."] }] })
         : '{"selections":[]}', timings: { predicted_n: 8 } };
   }
   response.end(JSON.stringify(result));

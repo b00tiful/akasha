@@ -128,6 +128,20 @@ test("unused and pre-cancelled sessions never access model files", async () => {
   assert.equal(session.metrics.worker_starts, 0);
 });
 
+test("startup refusal preserves bounded redacted stderr and exit status after cleanup", async t => {
+  const f = await fixture(t, "startup-failure");
+  await assert.rejects(f.session.complete({}, schema, "policy"), error => {
+    const d = error.workerDiagnostic;
+    assert.equal(d.phase, "health"); assert.equal(d.exit_code, 2);
+    assert(d.stderr_bytes > 8192); assert(Buffer.byteLength(d.stderr_tail) <= 8192);
+    assert.equal(d.stderr_truncated, true); assert(!d.stderr_tail.includes("\ufffd"));
+    assert(d.stderr_tail.includes("startup failed [redacted] [redacted] [redacted]"));
+    assert(!d.stderr_tail.includes(f.model)); assert(!/[\u0000\u001b]/u.test(d.stderr_tail));
+    assert(error.message.includes("exit=2")); return true;
+  });
+  await f.session.close(); await cleaned(f);
+});
+
 for (const workerSession of [false, true]) test(`actual investigator closes ${workerSession ? "session" : "cold"} worker ownership before return`, async t => {
   const f = await fixture(t, "investigator");
   const corpus = JSON.parse(await readFile(new URL("../tests/fixtures/librarian-benchmark/multilingual.json", import.meta.url)));

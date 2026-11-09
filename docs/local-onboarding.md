@@ -262,7 +262,8 @@ Its parent must exist; the directory must be new and outside both the configured
 and registered repository, including symlinked parent aliases. The adapter creates it with
 mode `0700`, saving the core `packet.json`, each raw `completion-N.json`, and the combined
 `plan.json` with mode `0600` and no overwrite. Successful compilation also saves `draft.json`
-(proposal, review and preview) and `proposal.json` (the exact applicable proposal), in both plain
+(proposal, review and preview), `proposal.json` (the exact applicable proposal) and offline
+`review.html`, in both plain
 and JSON generation modes. Failed compilation leaves the original inputs
 available; later-component failure may leave only the completed raw replies. No saved input is
 an approval. Keep originals, edit a copy of `plan.json`, then use `local-onboarding-compile`
@@ -362,6 +363,34 @@ or bridge nonadjacent windows. Edits anywhere in the original file, including om
 invalidate a saved packet. Reprepare using the same opt-in when refreshing inputs after apply.
 Default version-2 complete-file packets, persisted evidence and external MCP remain compatible.
 
+## Offline claim and source review
+
+`--save-inputs /private/path/new-review` now also creates **`review.html`** after successful Rust
+compilation. Open that file in a browser; it needs no server or network connection. Each claim
+appears beside its exact source excerpts with physical line numbers. You can edit claim wording,
+change fact/inference/unknown type and rationale, and choose different excerpt handles. Core-planned
+source groups constrain the available choices. Metadata stays visible and read-only.
+
+The original core coverage report highlights uncited sources, sampled omissions and uncited focus
+windows. It remains labeled as original while you edit: compile your export to obtain fresh checks.
+Click **Export correction plan** to download `reviewed-plan.json`. Changes stay in the page until
+exported; closing with unsaved corrections prompts you to keep them. The page edits existing
+claims and preserves note identities, fields and recorded draft/unreviewed status.
+
+Compile the downloaded plan using the same root/project and saved packet:
+
+```sh
+target/debug/akasha --root /path/to/memory --project example --json \
+  local-onboarding-compile --packet /private/path/new-review/packet.json \
+  --plan /private/path/reviewed-plan.json > /private/path/reviewed-draft.json
+```
+
+Use the resulting proposal and **new** full preview ID with the ordinary reviewed-application
+flow below. Exporting does not publish anything, update review dates or authorize an old preview
+for changed content. Changed source/project/configuration state still requires fresh preparation.
+The original private artifacts refuse overwrite and cannot be saved into the configured memory
+root or repository. This is development review tooling, separate from the installed desktop UI.
+
 ## Direct local review and application
 
 After generation, review all metadata, claims, exact source excerpts, uncited sources and both
@@ -401,7 +430,7 @@ changed content; editing an identifier is not a substitute for reviewing again.
 
 After success or an uncertain/interrupted apply, inspect current state and run `validate`.
 After a successful reviewed publication, the [local librarian's optional `--answer` mode](local-librarian.md)
-can select exact recorded statements with citations and status. Its answer-utility gate remains
+can extract exact supporting quotations by question part with host-derived citations and status. Its answer-utility gate remains
 unaccepted; source-only navigation remains the default. Use the same explicit
 root/project and main-model options; questions use saved canonical knowledge, not a fresh scan
 of the repository. Selection and uncertainty still need review. A published draft retains its

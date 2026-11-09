@@ -1,8 +1,9 @@
 # Local librarian: source passages and cited answers
 
-Experimental `--answer` asks the selected main Qwen3.5-9B model to locate exact recorded statements.
-Its current usefulness gate fails: it can miss answers, select headings and drop supported parts.
-Keep the source-only default for normal navigation while this experiment is evaluated:
+Experimental `--answer` uses the selected main Qwen3.5-9B model in two steps: split the
+question into independent parts, then copy exact supporting quotations for each part. The
+source-only default remains the normal navigation path: the frozen acceptance still fails database
+abstention and explicit proposal recognition. This experiment is not accepted for dependable answers:
 
 ```sh
 inference_dir="$HOME/.local/share/akasha/local-inference"
@@ -14,36 +15,39 @@ node scripts/local-librarian.mjs --root /path/to/memory --project example \
   --gpu-layers 99 --threads 4
 ```
 
-This opt-in development mode returns up to four **exact recorded statements** with citations.
-The adapter catalogs nonblank complete excerpt lines up to 600 Unicode characters, excluding
-terminal controls and uncertain clipped ending lines. These are text spans, not a new Markdown
-parser or inferred facts. The model selects numeric statement handles and an insufficient-evidence
-flag; it cannot supply displayed prose, paths, quotes or citation values. The host derives each
-statement and citation from the prepared packet and rejects extra fields, unknown/duplicate
-handles, oversized output and empty selections claiming sufficient evidence.
+This opt-in development mode returns up to eight **exact supporting quotations**. One question-only
+completion plans one to four parts; a second independent completion reads the original question,
+all parts and bounded sources. Each part must return an explicit sufficiency decision and at most
+two single-line quotes up to 600 Unicode characters. Useful known parts survive alongside unknown
+parts. Any insufficient part or uncovered detail of the original question marks the complete answer
+as insufficient. Model judgments about support and completeness still need evaluation.
 
-Rust's existing `librarian-check` then rebuilds the packet and checks observed source drift and
-citation/claim bounds. Plain output shows selected statements plus every cited exact passage,
-canonical ID, physical lines, recorded status and partial-body flag. These checks establish exact
-saved text and citation integrity; saved statements may still be wrong or irrelevant. Drafts stay
-drafts and proposals stay proposals. Free-form generation failed the scoped support/partial-answer
-checks and is preserved only as research evidence.
+The host derives citations from unique exact quote membership across the prepared sources. The
+model cannot assign displayed citation identities or factual prose. Altered, ambiguous, duplicated
+within a part, control-bearing, heading-only or clipped-ending quotes refuse. Identical support
+across question parts is displayed once. Rust's existing `librarian-check` rebuilds the packet,
+rejects observed source drift and checks citation/claim bounds. Plain output shows exact quotes,
+canonical IDs, source passages, physical lines, recorded status and partial-body flags. Saved
+statements may still be wrong or irrelevant; drafts stay drafts and proposals stay proposals.
 
-`Insufficient evidence for a complete answer` also permits selected supported statements; no
-statements means none was selected to answer. This does not establish that the repository lacks
-an answer. Empty retrieval or a packet with no eligible complete lines skips model access.
-`--json` keeps the existing checked-answer shape
-`{project, answer: {insufficient_evidence, claims}, evidence}`. Claim text is exact recorded text,
-including existing Markdown notation. Evidence includes all prepared candidates; each claim's
-`citations` identifies its source. No persisted schema or onboarding approval changes. Omit
-`--answer` for the source-passage behavior below.
+`Insufficient evidence for a complete answer` permits useful supported quotes; no claims means
+none was selected. It does not establish that the repository lacks an answer. Empty retrieval skips
+all model access. `--json` keeps the checked-answer shape
+`{project, answer: {insufficient_evidence, claims}, evidence}`. Stderr metrics include the protocol,
+planning/reading timings, per-part sufficiency/quote counts and closed inference-session metrics.
+No persisted schema or onboarding approval changes. Omit `--answer` for source-passage behavior.
 
-The command has one absolute 120-second deadline. Preparation and checking use cancellable
-subprocesses, verify CLI identity across the request and hold successful stdout until source
-revalidation and private scratch cleanup finish. Ctrl-C cancels. Main-model evaluation is scoped
-to a fictional multi-component onboarding round trip: source/lifecycle checks pass, while answer
-utility and worker-start acceptance fail. Broader quality/retrieval/desktop gates remain open.
-[Evidence](../akasha/Research/local_cited_answers.md).
+Both completions reuse one request-owned worker with independent literal prompts, disabled prompt
+cache and full before/after identity checks on each completion. The command's absolute 120-second
+deadline includes cancellable core preparation/checking. Ctrl-C cancels, and no successful output
+is returned until source revalidation, worker reap and private scratch cleanup finish. A startup
+failure now includes a bounded, redacted pre-evidence stderr tail plus phase/exit status, without
+automatic retries. Successful startup discards that buffer before sending any project evidence.
+
+The previous generated-prose and line-handle protocols failed support/usefulness and are stopped.
+[Current evidence](../akasha/Research/local_answer_support.md) preserves their replacement's
+known/unknown/multipart results separately from broad retrieval, desktop and device readiness.
+It reaches 10/12 expected outcomes; the two failures remain visible and this tuning line is stopped.
 
 The separate [bounded investigator experiment](local-investigator.md) can request scoped follow-up
 reads. This source-selector command retains its existing one-packet behavior and policy.
@@ -52,7 +56,7 @@ By default the development runner uses llama.cpp to select useful **source IDs**
 quoted passages, recorded status, physical line ranges and scoped wikilinks. The model cannot
 supply an explanation, rewrite a quote or invent a displayed relationship through this interface.
 Relevance still needs review: a passage can be real without answering the question. This is a
-source-navigation prototype; the desktop panel, final name, model installer, local onboarding
+source-navigation prototype; the desktop panel, final name, model installer, complete autonomous onboarding
 and privacy mode remain later work. Ordinary core/CLI use does not require Node or a model.
 
 Use Node 22 and the official llama.cpp **b12110 / commit cd959bae9** build from the
@@ -149,14 +153,15 @@ Trusted packages remain necessary; this is not OS egress isolation or the deferr
 No chat history or canonical writes are performed. Weights remain installed between calls.
 
 `librarian-check --packet FILE --answer FILE` also remains directly usable for saved draft
-checking; `--answer` invokes that same checker after host compilation of selected exact statements. Valid citations do not prove factual support. The prior
+checking; `--answer` invokes that same checker after host compilation of exact supporting quotations. Valid citations do not prove factual support. The prior
 Qwen3 4B free-form trial failed (8/16 expanded cases, 0/8 missing-information cases); source
 selection does not overturn that result or establish answerability. The runner now uses the
 source-passage checker by default.
 
-External/cloud onboarding remains available. Local onboarding, changeable route preference and
-local-only privacy mode are accepted later work. Run `node --test scripts/local-librarian.test.mjs`
-plus `node --test scripts/librarian-answer.test.mjs` for the onboarding/answer integration and
+External/cloud onboarding remains available alongside the bounded [local draft/review/publication
+workflow](local-onboarding.md). Changeable route preference, complete autonomous onboarding and
+local-only privacy mode remain later work. Run `node --test scripts/local-librarian.test.mjs`
+plus `node --test scripts/librarian-answer.test.mjs scripts/librarian-support.test.mjs` for the onboarding/answer integration and
 `cargo test --workspace` for Rust verification. Live model
 checks must distinguish quote integrity, topical relevance and actual answer support.
 
@@ -177,8 +182,8 @@ authentication, token-budget or cleanup checks.
 Trusted development adapters can use `createInferenceSession(options)` to own several sequential
 completions in one bounded request, always closing it in `finally`. The original `localCompletion`
 function remains the one-completion owner. The investigator exposes optional request reuse as
-[`--worker-session`](local-investigator.md); this one-packet source-selector command keeps its
-original lifetime. Every completion independently renders/tokenizes its full policy/input,
+[`--worker-session`](local-investigator.md); the source-only command keeps its original lifetime, while `--answer` owns one
+session for its planning/reading pair. Every completion independently renders/tokenizes its full policy/input,
 disables prompt caching and checks complete model/binary fingerprints before and after inference.
 Session lifetime is absolute (at most 120 seconds), including idle tool reads. Failed/closed
 sessions refuse further calls; idle cancellation also reaps the worker. Context can grow but

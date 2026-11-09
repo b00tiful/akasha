@@ -8,13 +8,16 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { setup, snapshot } from "./first-run-onboarding.mjs";
 import { draftLocalOnboarding } from "./local-onboarding.mjs";
-import { answerSchema, answerStatements, ANSWER_POLICY, askLibrarian, localAnswer } from "./local-librarian.mjs";
+import { askLibrarian, localAnswer } from "./local-librarian.mjs";
 
 const cli = resolve("target/debug/akasha");
+import { PLAN_POLICY, READ_POLICY } from "./librarian-support.mjs";
+
 const factText = "FlightPath stores waypoints in a vector.";
-const reply = { insufficient_evidence: false, claims: [{ text: "1. **Fact:** " + factText, citations: [1] }] };
-const complete = async input => ({ answer: JSON.stringify({ insufficient_evidence: false,
-  selections: [{ statement: input.statements.find(s => s.text.includes(factText)).handle }] }), metrics: { synthetic: true } });
+const reply = { insufficient_evidence: false, claims: [{ text: factText, citations: [1] }] };
+const complete = async input => ({ answer: JSON.stringify(input.sources
+  ? { uncovered_question: false, parts: [{ part: 1, sufficient: true, quotes: [factText] }] }
+  : { parts: [input.question] }), metrics: { synthetic: true } });
 function run(f, args) {
   const r = spawnSync(cli, ["--root", f.root, "--project", "first-run", ...args], { encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr); return r.stdout;
@@ -36,29 +39,20 @@ async function fixture(t) {
   return { ...f, options };
 }
 
-test("answer grammar limits claims to supplied IDs and distinguishes partial evidence", async () => {
-  const statements = answerStatements({ evidence: [{ citation: 2, excerpt: "first\r\nsecond\n" }, { citation: 5, excerpt: "界".repeat(600) + "\n" + "long".repeat(200) + "\ncontrol\u0085" }] });
-  assert.deepEqual(statements.map(s => [s.handle, s.citation]), [[1, 2], [2, 2], [3, 5]]);
-  assert.equal(statements[0].text, "first");
-  assert.deepEqual(answerStatements({ evidence: [{ citation: 1, excerpt: "complete\nclipped", excerpt_truncated: true }] })
-    .map(s => s.text), ["complete"]);
-  const schema = answerSchema(statements);
-  assert.deepEqual(schema.properties.selections.items.properties.statement.enum, [1, 2, 3]);
-  assert.equal(schema.properties.selections.maxItems, 4);
-  assert.equal(schema.additionalProperties, false);
-  assert(ANSWER_POLICY.includes("known parts") && ANSWER_POLICY.includes("draft") && ANSWER_POLICY.includes("untrusted"));
+test("empty evidence skips the complete answer protocol", async () => {
   let called = false;
   const result = await localAnswer({ evidence: [] }, {}, async () => { called = true; });
-  assert.deepEqual(JSON.parse(result.answer), { insufficient_evidence: true, claims: [] });
-  assert(!called);
+  assert.deepEqual(JSON.parse(result.answer), { insufficient_evidence: true, claims: [] }); assert(!called);
 });
 
 test("reviewed local onboarding flows into answers with exact source bytes, status and plain citations", async t => {
   const f = await fixture(t), before = snapshot(f.root), repo = snapshot(f.repository);
   const result = await askLibrarian(f.options, async (input, schema, policy) => {
-    assert.equal(policy, ANSWER_POLICY);
-    assert(schema.properties.selections.items.properties.statement.enum.includes(input.statements.find(s => s.text.includes(factText)).handle));
-    assert(input.statements.some(s => s.text === reply.claims[0].text));
+    assert([PLAN_POLICY, READ_POLICY].includes(policy));
+    if (input.sources) {
+      assert(input.sources.some(s => s.text.includes(factText)));
+      assert.equal(schema.properties.parts.items.properties.quotes.items.type, "string");
+    }
     return complete(input);
   });
   const checked = JSON.parse(result.output);
@@ -71,7 +65,9 @@ test("reviewed local onboarding flows into answers with exact source bytes, stat
   assert(plain.output.includes("[1]") && plain.output.includes("Recorded status: draft"));
   assert(plain.output.includes("  | ") && plain.output.includes("factual support still needs review"));
   const partial = await askLibrarian({ ...f.options, json: false }, async input => ({
-    answer: JSON.stringify({ ...JSON.parse((await complete(input)).answer), insufficient_evidence: true }),
+    answer: JSON.stringify(input.sources
+      ? { uncovered_question: true, parts: [{ part: 1, sufficient: true, quotes: [factText] }] }
+      : { parts: [input.question] }),
   }));
   assert(partial.output.includes("Insufficient evidence for a complete answer.") && partial.output.includes(reply.claims[0].text));
   assert.equal(result.metrics.mode, "answer");
@@ -157,9 +153,14 @@ test("actual --answer command owns and reaps its worker before displaying checke
     "--model-sha256", createHash("sha256").update("GGUFanswer").digest("hex")];
   const r = spawnSync(process.execPath, args, { encoding: "utf8", timeout: 30000 });
   assert.equal(r.status, 0, r.stderr); assert.deepEqual(JSON.parse(r.stdout).answer, reply);
-  assert.equal(JSON.parse(r.stderr).mode, "answer");
+  const metrics = JSON.parse(r.stderr);
+  assert.equal(metrics.mode, "answer"); assert.equal(metrics.protocol, "question_parts_exact_quotes_v1");
+  assert.equal(metrics.inference_session.closed, true); assert.equal(metrics.inference_session.completions, 2);
+  assert.equal(metrics.inference_session.worker_starts, 1);
   const events = readFileSync(model + ".events", "utf8").trim().split("\n").map(JSON.parse);
   const started = events.find(e => e.start).start;
+  assert.equal(events.filter(e => e.start).length, 1);
+  assert.equal(events.filter(e => e.path === "/completion").length, 2);
   assert(events.some(e => e.stopped === started)); assert.throws(() => process.kill(started, 0), { code: "ESRCH" });
   const sourceOnly = spawnSync(process.execPath, args.filter(arg => arg !== "--answer"), { encoding: "utf8", timeout: 30000 });
   assert.equal(sourceOnly.status, 1); assert.equal(sourceOnly.stdout, "");
