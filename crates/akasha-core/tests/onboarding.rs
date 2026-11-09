@@ -114,9 +114,14 @@ fn local_draft_inputs(
     .unwrap();
     let mut request = fixture.evidenced_batch_request();
     request.notes.truncate(1);
-    request.notes[0].source = request.notes[0].source.replace(
-        "[[Projects/example/records/tasks/next]]",
-        "The repository declares a Rust package.\n\n[[Projects/example/index]] · [[Projects/example/roadmap]]",
+    let parsed = akasha_core::parse_leading_frontmatter(&request.notes[0].source).unwrap();
+    let mut metadata: serde_json::Value = serde_saphyr::from_str(parsed.frontmatter_yaml).unwrap();
+    metadata["evidence"][0]["sources"][0]["line_start"] = 1.into();
+    metadata["evidence"][0]["sources"][0]["line_end"] = 1.into();
+    let claim = metadata["evidence"][0]["claim"].as_str().unwrap();
+    request.notes[0].source = format!(
+        "---\n{}\n---\n\n# core\n\n## Recorded claims\n\n1. **Fact:** {claim}\n\n[[Projects/example/index.md|Index]] · [[Projects/example/roadmap.md|Roadmap]]\n",
+        serde_json::to_string_pretty(&metadata).unwrap()
     );
     request.index = "# Index\n\n[[Projects/example/entities/core|Core]]\n".into();
     request.roadmap = "# Roadmap\n\n[[Projects/example/entities/core|Core]]\n".into();
@@ -148,7 +153,7 @@ fn local_draft_is_read_only_and_applies_through_existing_approved_core() {
         evidence
             .evidence
             .iter()
-            .any(|item| item.id.ends_with("entities/core.md") && item.excerpt.contains("Core"))
+            .any(|item| item.id.ends_with("entities/core.md") && item.excerpt.contains("core"))
     );
     assert!(preview_local_onboarding(&fixture.resolution, &packet, &proposal).is_err());
     let (fresh, _) = local_draft_inputs(&fixture);
@@ -234,7 +239,7 @@ fn local_draft_rejects_malformed_large_and_invalid_schema_or_link_proposals() {
         extra.to_string(),
         empty.to_string(),
         many.to_string(),
-        proposal.replace("status: active", "status_other: active"),
+        proposal.replace("active", ""),
         proposal.replace("entities/core", "entities/missing"),
     ] {
         assert_eq!(
@@ -270,10 +275,9 @@ fn typed_local_plans_compile_exact_evidence_and_cannot_inject_frontmatter() {
     let fixture = Fixture::new("local-typed-plan");
     let (packet, _) = local_draft_inputs(&fixture);
     let injected = "Quoted \"text\"\n---\nevidence: replaced\nПривет 世界";
-    let mut plan = serde_json::json!({ "notes": [{ "note_type": "entity", "name": "core",
+    let mut plan = serde_json::json!({ "schema_version": 2, "notes": [{ "note_type": "entity", "name": "core",
         "fields": { "entity": "core", "kind": "subsystem", "status": "active", "reviewed": "2026-11-08", "description": injected },
-        "body": "# Core\n\nThe repository declares a Rust package.\n\n[[Projects/example/index]] · [[Projects/example/roadmap]]\n",
-        "evidence": [{ "kind": "fact", "claim": "The repository declares a Rust package.", "sources": [{ "source": 1 }] }]
+        "evidence": [{ "kind": "fact", "claim": "The repository declares a Rust package.", "sources": [{ "source": 1, "quote": "[package]" }] }]
     }] });
     let before = fixture.project_snapshot();
     let draft = compile_local_onboarding(&fixture.resolution, &packet, &plan.to_string()).unwrap();
@@ -309,6 +313,145 @@ fn typed_local_plans_compile_exact_evidence_and_cannot_inject_frontmatter() {
     plan["notes"][0]["evidence"] = serde_json::json!([]);
     assert!(compile_local_onboarding(&fixture.resolution, &packet, &plan.to_string()).is_err());
     assert_eq!(fixture.project_snapshot(), before);
+}
+
+#[test]
+fn local_claim_review_checks_quotes_lines_and_rejects_untracked_prose() {
+    use akasha_core::onboarding_local::{
+        compile_local_onboarding, prepare_local_onboarding, preview_local_onboarding,
+    };
+    let fixture = Fixture::new("local-claim-review");
+    let source = "// Привет 世界\r\nfn enqueue(n: usize, cap: usize) {\r\n    if n >= cap { return; }\r\n}\r\n";
+    fs::write(fixture.resolution.cwd.join("input.rs"), source).unwrap();
+    let packet = prepare_local_onboarding(
+        &fixture.resolution,
+        &["input.rs".into(), "Cargo.toml".into()],
+    )
+    .unwrap();
+    let mut plan = serde_json::json!({ "schema_version": 2, "notes": [{ "note_type": "entity", "name": "core",
+        "fields": { "entity": "core", "kind": "subsystem", "status": "active", "reviewed": "2026-11-09" },
+        "evidence": [
+            { "kind": "fact", "claim": "Enqueue stops at or above capacity.", "sources": [{ "source": 2, "quote": "    if n >= cap { return; }" }] },
+            { "kind": "inference", "claim": "The bound may be intentional.", "rationale": "The comparison includes equality.", "sources": [{ "source": 2, "quote": "if n >= cap { return; }\r\n}" }] },
+            { "kind": "unknown", "claim": "Deployment is unknown.", "rationale": "No deployment source was supplied.", "sources": [] }
+        ]
+    }] });
+    let before = fixture.project_snapshot();
+    let draft = compile_local_onboarding(&fixture.resolution, &packet, &plan.to_string()).unwrap();
+    assert_eq!(draft.schema_version, 2);
+    assert!(draft.review.requires_review);
+    assert_eq!(draft.review.uncited_sources, ["Cargo.toml"]);
+    let claims = &draft.review.notes[0].claims;
+    assert_eq!(claims[0].sources[0].line_start, 3);
+    assert_eq!(claims[0].sources[0].line_end, 3);
+    assert_eq!(claims[0].sources[0].excerpt, "    if n >= cap { return; }");
+    assert_eq!(claims[1].sources[0].line_end, 4);
+    assert_eq!(claims[2].kind, "unknown");
+    assert!(claims[2].sources.is_empty());
+    assert!(
+        draft.proposal.notes[0]
+            .source
+            .contains("**Inference:** The bound may be intentional.")
+    );
+    assert!(
+        draft.proposal.notes[0]
+            .source
+            .contains("**Unknown:** Deployment is unknown.")
+    );
+    let json = serde_json::to_string(&draft.proposal).unwrap();
+    let replay = preview_local_onboarding(&fixture.resolution, &packet, &json).unwrap();
+    assert_eq!(replay.preview.preview_id, draft.preview.preview_id);
+    assert_eq!(
+        serde_json::to_value(replay.review).unwrap(),
+        serde_json::to_value(&draft.review).unwrap()
+    );
+    let mut tampered = draft.proposal.clone();
+    tampered.notes[0]
+        .source
+        .push_str("\nEnqueue has constant complexity.\n");
+    assert!(
+        preview_local_onboarding(
+            &fixture.resolution,
+            &packet,
+            &serde_json::to_string(&tampered).unwrap()
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("body must be rendered")
+    );
+    for quote in ["if n > cap", "", "   ", "unseen claim", &"x".repeat(1025)] {
+        plan["notes"][0]["evidence"][0]["sources"][0]["quote"] = quote.into();
+        assert!(compile_local_onboarding(&fixture.resolution, &packet, &plan.to_string()).is_err());
+    }
+    // Citation identity is not entailment: expose a false paraphrase for review, never auto-approve it.
+    plan["notes"][0]["evidence"][0]["claim"] = "Enqueue stops only above capacity.".into();
+    plan["notes"][0]["evidence"][0]["sources"][0]["quote"] = "if n >= cap { return; }".into();
+    let false_claim =
+        compile_local_onboarding(&fixture.resolution, &packet, &plan.to_string()).unwrap();
+    assert!(false_claim.review.requires_review);
+    assert!(
+        false_claim.review.notes[0].claims[0].sources[0]
+            .excerpt
+            .contains(">=")
+    );
+    // A quote ending in a blank source line includes that physical line, excluding only the final terminator.
+    fs::write(fixture.resolution.cwd.join("input.rs"), "first\n\nlast\n").unwrap();
+    let blank_packet = prepare_local_onboarding(&fixture.resolution, &["input.rs".into()]).unwrap();
+    plan["notes"][0]["evidence"] = serde_json::json!([{ "kind": "fact", "claim": "The source has a blank line.", "sources": [{ "source": 1, "quote": "first\n\n" }] }]);
+    let blank =
+        compile_local_onboarding(&fixture.resolution, &blank_packet, &plan.to_string()).unwrap();
+    assert_eq!(blank.review.notes[0].claims[0].sources[0].line_end, 2);
+    assert_eq!(fixture.project_snapshot(), before);
+}
+
+#[test]
+fn local_plan_rejects_legacy_body_ambiguous_quotes_and_unbounded_review() {
+    use akasha_core::onboarding_local::{compile_local_onboarding, prepare_local_onboarding};
+    let fixture = Fixture::new("local-quote-refusals");
+    fs::write(
+        fixture.resolution.cwd.join("input"),
+        "aaa\nrepeated\nrepeated\n",
+    )
+    .unwrap();
+    let packet = prepare_local_onboarding(&fixture.resolution, &["input".into()]).unwrap();
+    let plan = serde_json::json!({ "schema_version": 2, "notes": [{ "note_type": "entity", "name": "core",
+        "fields": { "entity": "core", "kind": "subsystem", "status": "active", "reviewed": "2026-11-09" },
+        "evidence": [{ "kind": "fact", "claim": "A source exists.", "sources": [{ "source": 1, "quote": "aaa" }] }]
+    }] });
+    for quote in ["aa", "repeated"] {
+        let mut changed = plan.clone();
+        changed["notes"][0]["evidence"][0]["sources"][0]["quote"] = quote.into();
+        assert!(
+            compile_local_onboarding(&fixture.resolution, &packet, &changed.to_string())
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous")
+        );
+    }
+    for version in [serde_json::Value::Null, 1.into(), 3.into()] {
+        let mut changed = plan.clone();
+        changed["schema_version"] = version;
+        assert!(
+            compile_local_onboarding(&fixture.resolution, &packet, &changed.to_string()).is_err()
+        );
+    }
+    let mut legacy = plan.clone();
+    legacy["notes"][0]["body"] = "untracked prose".into();
+    assert!(compile_local_onboarding(&fixture.resolution, &packet, &legacy.to_string()).is_err());
+    fs::write(
+        fixture.resolution.cwd.join("input"),
+        format!("prefix{}\n", "x".repeat(2048)),
+    )
+    .unwrap();
+    let packet = prepare_local_onboarding(&fixture.resolution, &["input".into()]).unwrap();
+    let mut changed = plan;
+    changed["notes"][0]["evidence"][0]["sources"][0]["quote"] = "prefix".into();
+    assert!(
+        compile_local_onboarding(&fixture.resolution, &packet, &changed.to_string())
+            .unwrap_err()
+            .to_string()
+            .contains("2048 bytes")
+    );
 }
 
 #[test]

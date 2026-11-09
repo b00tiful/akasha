@@ -57,12 +57,22 @@ Without `--json`, the command displays the note bodies, projections, proposal ID
 as bounded plain text. Metrics go to stderr. Failure returns nonzero with no normal stdout.
 The draft contains private repository material; keep saved artifacts private.
 
-The model returns a typed content plan: a short name, configured string metadata, Markdown body,
-claims and numeric handles for complete source files. Rust supplies exact source paths/hashes,
-JSON-compatible YAML frontmatter, configured destination paths and canonical navigation. It
-preserves the original projection bytes and appends links for every new note. The model does not
-generate storage paths, projection text or line ranges. Absolute filesystem identities are kept
-out of the model input.
+The model returns a version-2 typed claim plan: a short name, configured string metadata,
+claims and numeric source handles with exact quotes. There is no separate Markdown body field.
+Rust renders the entire body from those same labeled facts, inferences and unknowns, so prose
+cannot silently add an unrecorded claim. It supplies exact source paths/hashes and derives
+one-based inclusive line ranges from each quote, along with configured destinations and canonical
+navigation. Original projection bytes are preserved and links appended for every new note.
+Absolute filesystem identities stay out of inference input.
+
+Each fact/inference source must contain a nonblank exact quote of at most 1,024 characters,
+occurring exactly once in that source (including overlapping matches). Preserve the source's
+actual whitespace and escapes; a normalized or invented quote refuses. Use enough surrounding
+code to make repeated fragments unique. Rust shows the complete source lines touched by the
+quote, up to 2,048 bytes per excerpt. The bounded `review` report contains all metadata, every
+claim, its rationale and fresh exact source excerpts, plus selected-but-uncited paths. It always
+sets `requires_review: true`. Plain text displays the excerpts with physical line numbers.
+Review output is limited to 16,000 serialized bytes; overflow refuses.
 
 This command performs no canonical writes. Review every generated metadata value and claim against its supplied
 source, including labeled inferences and unknowns. Required string fields do not enforce every
@@ -90,11 +100,20 @@ and complete Markdown `source`), `index`, and `roadmap`. Types, required fields,
 templates come from the selected configuration. Local drafts additionally require both
 projections to link every proposed note and reject broken projection links.
 
-`plan.json` has `notes`, each with `note_type`, `name` (1–80 lowercase ASCII letters, digits or
-hyphens), `fields` (string-valued metadata), `body` and `evidence`. Claims contain `kind`, `claim`,
-`sources: [{"source": 1}]` (one-based packet source handles), and `rationale` for inferences or
-unknowns. Unknowns have an empty source list. `schema_version` and `evidence` cannot be replaced
-through metadata fields. Compiled Markdown is then checked through the same preview path.
+`plan.json` has `schema_version: 2` and `notes`, each with `note_type`, `name` (1–80 lowercase
+ASCII letters, digits or hyphens), `fields` (string-valued metadata) and `evidence`. Claims contain
+`kind`, `claim`, `sources: [{"source": 1, "quote": "exact unique source text"}]` (one-based packet
+handles), and `rationale` for inferences or unknowns. Unknowns have no sources. `schema_version`
+and `evidence` cannot be replaced through metadata fields. Legacy body plans must be regenerated;
+unknown fields and other plan versions refuse. Experimental draft JSON is now version 2 and adds
+`review`; preparation packets and the general external/MCP proposal format remain version 1.
+
+The local raw-proposal preview also requires claim-rendered bodies and positive bounded source
+ranges; editing only a body refuses. Correct a version-2 plan's claims/quotes/metadata, recompile,
+and review its fresh proposal/preview IDs. Older arbitrary-body local drafts must be regenerated.
+External onboarding retains its existing format and general validation behavior. Quotes and
+body coverage establish traceability, never semantic entailment: a false paraphrase of a real
+comparison can still pass source checks and must be corrected during review.
 
 The pilot accepts 1–8 complete regular UTF-8 source files, at most 8 KiB each, and a 16,000-byte
 serialized packet including templates, inventory and projections. Oversized inputs refuse;
@@ -126,3 +145,13 @@ cargo test -p akasha-core --test onboarding
 The model-free adapter tests explicitly apply only inside disposable synthetic fixtures and
 verify state, unchanged repository files, and librarian retrieval. They do not attest a human
 approval interaction or production model quality.
+
+To retain inputs for source review or correction, pass `--save-inputs /path/to/new-review-dir`.
+Its parent must exist; the directory must be new and outside both the configured memory root
+and registered repository, including symlinked parent aliases. The adapter creates it with
+mode `0700`, saving the core `packet.json`, each raw `completion-N.json`, and the combined
+`plan.json` with mode `0600` and no overwrite. Failed compilation leaves the original inputs
+available; later-component failure may leave only the completed raw replies. No saved input is
+an approval. Keep originals, edit a copy of `plan.json`, then use `local-onboarding-compile`
+with the saved packet to obtain a fresh review. If source/configuration/project bytes changed,
+prepare and review again. This opt-in writes private review artifacts; it never publishes notes.

@@ -88,6 +88,59 @@ pub(crate) fn render_local_onboarding_draft(
         for line in note.source.lines() {
             let _ = writeln!(text, "  | {}", librarian_display(line));
         }
+        let review = draft
+            .review
+            .notes
+            .iter()
+            .find(|review| review.note_type == note.note_type && review.path == note.path)
+            .expect("core review names one exact note");
+        let _ = writeln!(
+            text,
+            "  Source review (exact excerpts; meaning and metadata need approval):"
+        );
+        for (index, claim) in review.claims.iter().enumerate() {
+            let _ = writeln!(
+                text,
+                "  Claim {} [{}]: {}",
+                index + 1,
+                librarian_display(&claim.kind),
+                librarian_display(&claim.claim)
+            );
+            if claim.sources.is_empty() {
+                let _ = writeln!(text, "    No supporting source (unknown).");
+            }
+            for source in &claim.sources {
+                let _ = writeln!(
+                    text,
+                    "    {}:{}-{} — {}",
+                    librarian_display(&source.path),
+                    source.line_start,
+                    source.line_end,
+                    source.fingerprint
+                );
+                for (offset, line) in source.excerpt.lines().enumerate() {
+                    let _ = writeln!(
+                        text,
+                        "    {} | {}",
+                        source.line_start + offset,
+                        librarian_display(line)
+                    );
+                }
+            }
+        }
+    }
+    if !draft.review.uncited_sources.is_empty() {
+        let _ = writeln!(
+            text,
+            "\nSelected but uncited: {}",
+            draft
+                .review
+                .uncited_sources
+                .iter()
+                .map(|s| librarian_display(s))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
     for (label, source) in [
         ("Index", &draft.proposal.index),

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -19,11 +19,10 @@ function run(f, args) {
 }
 function options(f) { return { root: f.root, project: "first-run", sources: ["README.md", "Cargo.toml", "src/lib.rs"], json: true }; }
 function plan(packet) {
-  return { notes: [{ note_type: "entity", name: "flight-path",
+  return { schema_version: 2, notes: [{ note_type: "entity", name: "flight-path",
     fields: { entity: "flight-path", kind: "library", status: "active", reviewed: "2026-11-08" },
-    body: "# Flight Path\n\nFlightPath stores waypoints in a vector.\n\n[[Projects/first-run/index|Index]] · [[Projects/first-run/roadmap|Roadmap]]\n",
     evidence: [{ kind: "fact", claim: "FlightPath stores waypoints in a vector.",
-      sources: [{ source: packet.sources.findIndex(source => source.path === "src/lib.rs") + 1 }] }],
+      sources: [{ source: Math.max(0, packet.sources.findIndex(source => source.path === "src/lib.rs")) + 1, quote: "pub struct FlightPath {" }] }],
   }] };
 }
 
@@ -41,6 +40,10 @@ test("local draft uses exact core input and preview; disposable MCP apply makes 
   assert.equal(calls, 1);
   const draft = JSON.parse(result.output);
   assert.equal(draft.preview.notes[0].evidence_claims, 1);
+  assert.equal(draft.schema_version, 2);
+  assert.equal(draft.review.requires_review, true);
+  assert(draft.review.notes[0].claims[0].sources[0].excerpt.includes("pub struct FlightPath"));
+  assert.deepEqual(draft.review.uncited_sources, ["Cargo.toml", "README.md"]);
   assert.deepEqual(snapshot(f.root), before);
   assert.deepEqual(snapshot(f.repository), repoBefore);
   await withServer(f, async ({ tool }) => {
@@ -65,6 +68,8 @@ test("plain and JSON core commands expose complete input and reviewable exact dr
   const result = await draftLocalOnboarding({ ...options(f), json: false }, async input => ({ answer: JSON.stringify(plan(input)) }));
   assert(result.output.includes("No writes. Factual support needs review."));
   assert(result.output.includes("stores waypoints in a vector") && result.output.includes("Preview: sha256:"));
+  assert(result.output.includes("Source review (exact excerpts") && result.output.includes("pub struct FlightPath"));
+  assert(result.output.includes("Selected but uncited: Cargo.toml, README.md"));
   assert(!result.output.includes("\x1b"));
 });
 
@@ -81,11 +86,11 @@ test("plain multi-note review binds sorted preview paths to the correct original
   const f = fixture(t);
   const result = await draftLocalOnboarding({ ...options(f), json: false }, async input => {
     const value = plan(input);
-    const zeta = { ...value.notes[0], name: "zeta", fields: { ...value.notes[0].fields, entity: "zeta" }, body: "# Zeta\n\nFlightPath stores waypoints.\n" };
-    const alpha = { ...zeta, name: "alpha", fields: { ...zeta.fields, entity: "alpha" }, body: "# Alpha\n\nFlightPath stores waypoints.\n" };
-    return { answer: JSON.stringify({ notes: [zeta, alpha] }) };
+    const zeta = { ...value.notes[0], name: "zeta", fields: { ...value.notes[0].fields, entity: "zeta" } };
+    const alpha = { ...zeta, name: "alpha", fields: { ...zeta.fields, entity: "alpha" } };
+    return { answer: JSON.stringify({ schema_version: 2, notes: [zeta, alpha] }) };
   });
-  const positions = ["alpha.md (", "# Alpha", "zeta.md (", "# Zeta"].map(text => result.output.indexOf(text));
+  const positions = ["alpha.md (", "# alpha", "zeta.md (", "# zeta"].map(text => result.output.indexOf(text));
   assert(positions.every(position => position >= 0));
   assert.deepEqual([...positions].sort((a, b) => a - b), positions);
 });
@@ -129,10 +134,9 @@ test("component drafts remap local handles, preview together and retrieve each a
     calls++;
     const note = plan(input).notes[0];
     note.name = input.component; note.fields.entity = input.component;
-    note.evidence[0].sources = [{ source: 1 }];
-    note.body = input.component === "library" ? "# Library\n\nFlightPath stores waypoints." : "# Manifest\n\nThe manifest declares a Rust package.";
-    note.evidence[0].claim = note.body.split("\n\n")[1];
-    return { answer: JSON.stringify({ notes: [note] }), metrics: { fake: true } };
+    note.evidence[0].sources = [{ source: 1, quote: input.sources[0].text.split("\n")[0] }];
+    note.evidence[0].claim = input.component === "library" ? "FlightPath stores waypoints." : "The manifest declares a Rust package.";
+    return { answer: JSON.stringify({ schema_version: 2, notes: [note] }), metrics: { fake: true } };
   });
   assert.equal(calls, 2);
   const draft = JSON.parse(result.output);
@@ -171,7 +175,7 @@ test("later component failure, out-of-group handles and drift never publish a pa
     await assert.rejects(draftLocalOnboarding({ root: f.root, project: "first-run", components, signal: controller.signal }, async input => {
       calls++;
       const note = plan(input).notes[0]; note.name = input.component;
-      note.evidence[0].sources = [{ source: 1 }];
+      note.evidence[0].sources = [{ source: 1, quote: input.sources[0].text.split("\n")[0] }];
       if (calls === 2) {
         if (mode === "failure") throw new Error("later failure");
         if (mode === "handle") note.evidence[0].sources[0].source = 2;
@@ -179,7 +183,7 @@ test("later component failure, out-of-group handles and drift never publish a pa
         if (mode === "drift") writeFileSync(join(f.repository, "Cargo.toml"), readFileSync(join(f.repository, "Cargo.toml"), "utf8") + "\n");
         if (mode === "cancel") controller.abort(new Error("cancelled"));
       }
-      return { answer: JSON.stringify({ notes: [note] }) };
+      return { answer: JSON.stringify({ schema_version: 2, notes: [note] }) };
     }));
     assert.equal(calls, 2);
     assert.deepEqual(snapshot(f.root), before);
@@ -190,4 +194,49 @@ test("later component failure, out-of-group handles and drift never publish a pa
 test("configured reviewed fields are constrained to the supplied draft date", () => {
   const schema = planSchema({ sources: [{path:"one"}], preparation: { project:"test", note_types: { entity: { required_fields: ["reviewed", "entity"] } } } }, "2026-11-08");
   assert.deepEqual(schema.properties.notes.items.oneOf[0].properties.fields.properties.reviewed, { const: "2026-11-08" });
+});
+
+
+test("quote failures and legacy body plans fail through the actual adapter without writes", async t => {
+  const f = fixture(t), before = snapshot(f.root);
+  for (const mode of ["quote", "body", "version"]) {
+    await assert.rejects(draftLocalOnboarding(options(f), async input => {
+      const value = plan(input);
+      if (mode === "quote") value.notes[0].evidence[0].sources[0].quote = "invented source code";
+      if (mode === "body") value.notes[0].body = "Unsupported complexity prose";
+      if (mode === "version") value.schema_version = 1;
+      return { answer: JSON.stringify(value) };
+    }), error => error.code === 4);
+    assert.deepEqual(snapshot(f.root), before);
+  }
+});
+
+
+test("saved inputs preserve rejected plans privately and refuse overwrite or memory/repository destinations", async t => {
+  const f = fixture(t), before = snapshot(f.root), repoBefore = snapshot(f.repository);
+  const saved = join(f.directory, "review-inputs");
+  await assert.rejects(draftLocalOnboarding({ ...options(f), saveInputs: saved }, async input => {
+    const value = plan(input); value.notes[0].evidence[0].sources[0].quote = "invented quote";
+    return { answer: JSON.stringify(value) };
+  }), error => error.code === 4);
+  assert.equal(JSON.parse(readFileSync(join(saved, "plan.json"))).schema_version, 2);
+  assert.equal(readFileSync(join(saved, "completion-1.json"), "utf8"), readFileSync(join(saved, "plan.json"), "utf8"));
+  assert.equal(JSON.parse(readFileSync(join(saved, "packet.json"))).sources.length, 3);
+  if (process.platform !== "win32") {
+    assert.equal(statSync(saved).mode & 0o777, 0o700);
+    assert.equal(statSync(join(saved, "plan.json")).mode & 0o777, 0o600);
+  }
+  for (const saveInputs of [saved, join(f.root, "private-inputs"), join(f.repository, "private-inputs")]) {
+    await assert.rejects(draftLocalOnboarding({ ...options(f), saveInputs }, () => assert.fail("must refuse before inference")));
+  }
+  if (process.platform !== "win32") {
+    symlinkSync(f.root, join(f.directory, "memory-alias"));
+    await assert.rejects(draftLocalOnboarding({ ...options(f), saveInputs: join(f.directory, "memory-alias", "private-inputs") }, () => assert.fail("must refuse symlink parent")), /outside/);
+  }
+  const successful = join(f.directory, "successful-inputs");
+  const result = await draftLocalOnboarding({ ...options(f), saveInputs: successful }, async input => ({ answer: JSON.stringify(plan(input)) }));
+  assert(JSON.parse(result.output).review.requires_review);
+  assert(existsSync(join(successful, "plan.json")));
+  assert.deepEqual(snapshot(f.root), before);
+  assert.deepEqual(snapshot(f.repository), repoBefore);
 });

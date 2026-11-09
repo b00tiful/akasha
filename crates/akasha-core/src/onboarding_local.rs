@@ -80,11 +80,46 @@ pub struct LocalOnboardingDraft {
     pub schema_version: u32,
     pub proposal: LocalOnboardingProposal,
     pub preview: OnboardingBatchPreview,
+    pub review: LocalOnboardingReview,
+}
+
+/// A review aid, never a semantic approval. All excerpts come from the fresh core packet.
+#[derive(Debug, Serialize)]
+pub struct LocalOnboardingReview {
+    pub requires_review: bool,
+    pub notes: Vec<LocalNoteReview>,
+    pub uncited_sources: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LocalNoteReview {
+    pub note_type: String,
+    pub path: PathBuf,
+    pub fields: serde_json::Map<String, serde_json::Value>,
+    pub claims: Vec<LocalClaimReview>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LocalClaimReview {
+    pub kind: String,
+    pub claim: String,
+    pub rationale: Option<String>,
+    pub sources: Vec<LocalSourceReview>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LocalSourceReview {
+    pub path: String,
+    pub fingerprint: String,
+    pub line_start: usize,
+    pub line_end: usize,
+    pub excerpt: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LocalPlan {
+    schema_version: u32,
     notes: Vec<PlannedNote>,
 }
 
@@ -94,7 +129,6 @@ struct PlannedNote {
     note_type: String,
     name: String,
     fields: BTreeMap<String, String>,
-    body: String,
     evidence: Vec<PlannedClaim>,
 }
 
@@ -111,6 +145,7 @@ struct PlannedClaim {
 #[serde(deny_unknown_fields)]
 struct PlannedSource {
     source: usize,
+    quote: String,
 }
 
 /// Compile typed model plans to ordinary onboarding proposals. JSON frontmatter is valid YAML;
@@ -125,6 +160,11 @@ pub fn compile_local_onboarding(
     }
     let plan: LocalPlan = serde_json::from_str(plan_json)
         .map_err(|error| invalid(format!("invalid local onboarding plan: {error}")))?;
+    if plan.schema_version != 2 {
+        return Err(invalid(
+            "local onboarding plans require schema_version 2; regenerate legacy body plans",
+        ));
+    }
     if plan.notes.is_empty() || plan.notes.len() > 3 {
         return Err(invalid("local onboarding plan requires 1..=3 notes"));
     }
@@ -200,20 +240,22 @@ pub fn compile_local_onboarding(
                     .checked_sub(1)
                     .and_then(|index| packet.sources.get(index))
                     .ok_or_else(|| invalid("unknown local onboarding source handle"))?;
-                let entry =
-                    serde_json::json!({ "path": source.path, "fingerprint": source.fingerprint });
+                let (start, end) = quote_lines(source, &reference.quote)?;
+                let entry = serde_json::json!({ "path": source.path, "fingerprint": source.fingerprint,
+                    "line_start": start, "line_end": end });
                 sources.push(entry);
             }
             evidence["sources"] = sources.into();
             claims.push(evidence);
         }
+        let body = claim_body(&note.name, &claims, &index_link, &roadmap_link);
         metadata.insert("evidence".into(), claims.into());
         let frontmatter =
             serde_json::to_string_pretty(&metadata).map_err(|error| invalid(error.to_string()))?;
         notes.push(LocalOnboardingNote {
             note_type: note.note_type,
             path,
-            source: format!("---\n{frontmatter}\n---\n\n{}\n\n[[{index_link}|Index]] · [[{roadmap_link}|Roadmap]]\n", note.body),
+            source: format!("---\n{frontmatter}\n---\n{body}"),
         });
         let link = format!("\n[[{target}]]\n");
         index.push_str(&link);
@@ -226,6 +268,171 @@ pub fn compile_local_onboarding(
     };
     let json = serde_json::to_string(&proposal).map_err(|error| invalid(error.to_string()))?;
     preview_local_onboarding(request, packet, &json)
+}
+
+fn quote_lines(
+    source: &LocalOnboardingSource,
+    quote: &str,
+) -> Result<(usize, usize), OnboardingBatchError> {
+    if quote.trim().is_empty() || quote.chars().count() > 1024 {
+        return Err(invalid(
+            "source quotes require 1..=1024 nonblank characters",
+        ));
+    }
+    let mut matches = source.text.match_indices(quote);
+    let (offset, _) = matches
+        .next()
+        .ok_or_else(|| invalid("source quote does not match exact source text"))?;
+    // Look for overlapping occurrences too (e.g. `aa` within `aaa`).
+    let next = offset
+        + source.text[offset..]
+            .chars()
+            .next()
+            .expect("nonempty quote")
+            .len_utf8();
+    if source.text[next..].contains(quote) {
+        return Err(invalid(
+            "source quote is ambiguous; supply a unique longer excerpt",
+        ));
+    }
+    let start = source.text[..offset]
+        .bytes()
+        .filter(|&b| b == b'\n')
+        .count()
+        + 1;
+    let end = start
+        + quote
+            .strip_suffix('\n')
+            .unwrap_or(quote)
+            .bytes()
+            .filter(|&b| b == b'\n')
+            .count();
+    Ok((start, end))
+}
+
+fn claim_body(name: &str, claims: &[serde_json::Value], index: &str, roadmap: &str) -> String {
+    use std::fmt::Write as _;
+    let mut body = format!("\n# {name}\n\n## Recorded claims\n");
+    for (index, claim) in claims.iter().enumerate() {
+        let kind = match claim["kind"].as_str() {
+            Some("fact") => "Fact",
+            Some("inference") => "Inference",
+            _ => "Unknown",
+        };
+        let _ = write!(
+            body,
+            "\n{}. **{kind}:** {}\n",
+            index + 1,
+            claim["claim"].as_str().unwrap_or("")
+        );
+        if let Some(rationale) = claim["rationale"].as_str() {
+            let _ = writeln!(body, "   Rationale: {rationale}");
+        }
+    }
+    let _ = write!(body, "\n[[{index}|Index]] · [[{roadmap}|Roadmap]]\n");
+    body
+}
+
+fn review_local_proposal(
+    packet: &LocalOnboardingPacket,
+    proposal: &LocalOnboardingProposal,
+    index: &str,
+    roadmap: &str,
+) -> Result<LocalOnboardingReview, OnboardingBatchError> {
+    let mut notes = Vec::new();
+    let mut cited = BTreeSet::new();
+    for note in &proposal.notes {
+        let parsed = parse_leading_frontmatter_bytes(note.source.as_bytes())
+            .map_err(|e| invalid(e.to_string()))?;
+        let claims = parsed.metadata["evidence"]
+            .as_array()
+            .ok_or_else(|| invalid("missing claims"))?;
+        let name = note
+            .path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| invalid("invalid note name"))?;
+        if parsed.body != claim_body(name, claims, index, roadmap) {
+            return Err(invalid(
+                "local draft body must be rendered from its evidence claims; regenerate with a version-2 plan",
+            ));
+        }
+        let mut reviewed_claims = Vec::new();
+        for claim in claims {
+            let mut sources = Vec::new();
+            for reference in claim["sources"]
+                .as_array()
+                .ok_or_else(|| invalid("missing claim sources"))?
+            {
+                let source = packet
+                    .sources
+                    .iter()
+                    .find(|s| reference["path"].as_str() == Some(&s.path))
+                    .ok_or_else(|| invalid("unknown review source"))?;
+                let line = |key| {
+                    reference[key].as_u64().and_then(|v| usize::try_from(v).ok()).filter(|&v| v > 0)
+                    .ok_or_else(|| invalid("local draft evidence requires positive line bounds from exact quotes"))
+                };
+                let start = line("line_start")?;
+                let end = line("line_end")?;
+                if end < start || end > source.lines {
+                    return Err(invalid(
+                        "local draft evidence line bounds exceed the source",
+                    ));
+                }
+                let excerpt = source
+                    .text
+                    .lines()
+                    .skip(start - 1)
+                    .take(end - start + 1)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if excerpt.len() > 2048 {
+                    return Err(invalid(
+                        "local draft review excerpt exceeds 2048 bytes; select a shorter range",
+                    ));
+                }
+                cited.insert(source.path.clone());
+                sources.push(LocalSourceReview {
+                    path: source.path.clone(),
+                    fingerprint: source.fingerprint.clone(),
+                    line_start: start,
+                    line_end: end,
+                    excerpt,
+                });
+            }
+            reviewed_claims.push(LocalClaimReview {
+                kind: claim["kind"].as_str().unwrap_or("").into(),
+                claim: claim["claim"].as_str().unwrap_or("").into(),
+                rationale: claim["rationale"].as_str().map(str::to_owned),
+                sources,
+            });
+        }
+        let mut fields = parsed
+            .metadata
+            .as_object()
+            .expect("validated metadata mapping")
+            .clone();
+        fields.remove("evidence");
+        notes.push(LocalNoteReview {
+            note_type: note.note_type.clone(),
+            path: note.path.clone(),
+            fields,
+            claims: reviewed_claims,
+        });
+    }
+    let review = LocalOnboardingReview {
+        requires_review: true,
+        notes,
+        uncited_sources: packet
+            .sources
+            .iter()
+            .filter(|s| !cited.contains(&s.path))
+            .map(|s| s.path.clone())
+            .collect(),
+    };
+    bounded_json(&review)?;
+    Ok(review)
 }
 
 fn invalid(message: impl Into<String>) -> OnboardingBatchError {
@@ -445,13 +652,27 @@ pub fn preview_local_onboarding(
             ));
         }
     }
+    let relative = |path: &Path| {
+        path.strip_prefix(&preview.root)
+            .ok()
+            .and_then(Path::to_str)
+            .map(str::to_owned)
+            .ok_or_else(|| invalid("review navigation is not root-relative UTF-8"))
+    };
+    let review = review_local_proposal(
+        &fresh,
+        &proposal,
+        &relative(&preview.project_dir.join(&config.project.index))?,
+        &relative(&preview.project_dir.join(&config.project.roadmap))?,
+    )?;
     // Shared validation may take time; observe drift once more before returning the draft.
     if fresh != prepare_local_onboarding(request, &paths)? {
         return Err(invalid("local onboarding input changed during preview"));
     }
     Ok(LocalOnboardingDraft {
-        schema_version: 1,
+        schema_version: 2,
         proposal,
         preview,
+        review,
     })
 }
