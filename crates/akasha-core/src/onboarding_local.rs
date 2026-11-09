@@ -1,4 +1,4 @@
-//! Read-only local onboarding input and draft checks. Inference remains in an optional adapter.
+//! Local onboarding input, draft review and approved application. Inference stays in an adapter.
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Read;
@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::onboarding::{
-    OnboardingBatchError, OnboardingBatchPreview, OnboardingBatchRequest, ProposedNote,
-    prepare_onboarding, preview_onboarding_batch, validate_normalized_relative_path,
+    OnboardingBatchError, OnboardingBatchPreview, OnboardingBatchRequest, OnboardingBatchResult,
+    ProposedNote, apply_approved_onboarding_batch, prepare_onboarding, preview_onboarding_batch,
+    validate_normalized_relative_path,
 };
 use crate::resolution::{ResolveRequest, load_root_config};
 use crate::state::content_fingerprint;
@@ -121,6 +122,27 @@ pub struct LocalOnboardingDraft {
     pub proposal: LocalOnboardingProposal,
     pub preview: OnboardingBatchPreview,
     pub review: LocalOnboardingReview,
+}
+
+/// Apply only the exact reviewed proposal, after rebuilding its bounded local inputs.
+/// The shared writer rechecks the preview under its project lock and owns recovery/publication.
+pub fn apply_local_onboarding(
+    request: &ResolveRequest,
+    packet: &LocalOnboardingPacket,
+    proposal_json: &str,
+    approved_preview_id: &str,
+) -> Result<OnboardingBatchResult, OnboardingBatchError> {
+    let draft = preview_local_onboarding(request, packet, proposal_json)?;
+    // Refuse an incorrect confirmation before entering the recovering writer.
+    if draft.preview.preview_id != approved_preview_id {
+        return Err(OnboardingBatchError::Conflict {
+            path: PathBuf::from("<local-onboarding>"),
+            message:
+                "approved preview does not match the local proposal and project state; review again"
+                    .into(),
+        });
+    }
+    apply_approved_onboarding_batch(&draft.proposal.request(request), approved_preview_id)
 }
 
 /// A review aid, never a semantic approval. All excerpts come from the fresh core packet.

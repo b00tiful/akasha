@@ -89,6 +89,15 @@ enum Command {
         #[arg(long)]
         plan: PathBuf,
     },
+    /// Apply the exact source-reviewed local proposal using its full approved preview ID.
+    LocalOnboardingApply {
+        #[arg(long)]
+        packet: PathBuf,
+        #[arg(long)]
+        proposal: PathBuf,
+        #[arg(long)]
+        approved_preview_id: String,
+    },
     /// Prepare bounded selected-project evidence for the experimental librarian (no model).
     LibrarianPrepare {
         question: String,
@@ -408,6 +417,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             | Command::LocalOnboardingPrepare { .. }
             | Command::LocalOnboardingPreview { .. }
             | Command::LocalOnboardingCompile { .. }
+            | Command::LocalOnboardingApply { .. }
             | Command::LibrarianCheck { .. }
             | Command::LibrarianCheckSources { .. }
             | Command::RecoverInit { .. }
@@ -443,6 +453,26 @@ fn run(cli: Cli) -> Result<(), u8> {
     }
 
     match command {
+        Command::LocalOnboardingApply {
+            packet,
+            proposal,
+            approved_preview_id,
+        } => {
+            let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
+            let packet = serde_json::from_str(&read_librarian_input(&packet)?).map_err(|_| {
+                eprintln!("akasha: invalid local onboarding packet JSON");
+                4
+            })?;
+            let proposal = read_librarian_input(&proposal)?;
+            let result = akasha_core::onboarding_local::apply_local_onboarding(
+                &request,
+                &packet,
+                &proposal,
+                &approved_preview_id,
+            )
+            .map_err(report_onboarding)?;
+            finish_output(render::render_local_onboarding_result(&result, output))?;
+        }
         Command::LocalOnboardingCompile { packet, plan } => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
             let packet = serde_json::from_str(&read_librarian_input(&packet)?).map_err(|_| {

@@ -164,6 +164,38 @@ pub(crate) fn render_local_onboarding_draft(
     write_stdout(&text)
 }
 
+pub(crate) fn render_local_onboarding_result(
+    result: &akasha_core::OnboardingBatchResult,
+    output: OutputMode,
+) -> io::Result<()> {
+    if output.json {
+        return write_stdout(&json_line(serde_json::to_string_pretty(result))?);
+    }
+    let mut text = format!(
+        "Local onboarding applied — {}\n",
+        librarian_display(&result.project)
+    );
+    for (action, paths) in [
+        ("Created", &result.created_notes),
+        ("Unchanged", &result.unchanged_notes),
+        ("Updated projection", &result.updated_projections),
+    ] {
+        for path in paths {
+            let _ = writeln!(
+                text,
+                "{action}: {}",
+                librarian_display(&path.display().to_string())
+            );
+        }
+    }
+    let _ = writeln!(
+        text,
+        "Project state: {}",
+        librarian_display(&result.state.display().to_string())
+    );
+    write_stdout(&text)
+}
+
 pub(crate) fn render_librarian_packet(
     packet: &akasha_core::librarian::LibrarianPacket,
     output: OutputMode,

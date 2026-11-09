@@ -290,6 +290,115 @@ fn local_draft_is_read_only_and_applies_through_existing_approved_core() {
 }
 
 #[test]
+fn local_approved_apply_binds_review_and_replays_only_after_fresh_review() {
+    use akasha_core::onboarding_local::{apply_local_onboarding, preview_local_onboarding};
+    let fixture = Fixture::new("local-approved-apply");
+    let (packet, proposal) = local_draft_inputs(&fixture);
+    let draft = preview_local_onboarding(&fixture.resolution, &packet, &proposal).unwrap();
+    let before = fixture.project_snapshot();
+    for id in ["", "yes", "sha256:unapproved"] {
+        assert_eq!(
+            apply_local_onboarding(&fixture.resolution, &packet, &proposal, id)
+                .unwrap_err()
+                .exit_code(),
+            5
+        );
+        assert_eq!(fixture.project_snapshot(), before);
+    }
+    let mut changed: serde_json::Value = serde_json::from_str(&proposal).unwrap();
+    changed["index"] = format!(
+        "{}\nReviewed addition\n",
+        changed["index"].as_str().unwrap()
+    )
+    .into();
+    assert_eq!(
+        apply_local_onboarding(
+            &fixture.resolution,
+            &packet,
+            &changed.to_string(),
+            &draft.preview.preview_id
+        )
+        .unwrap_err()
+        .exit_code(),
+        5
+    );
+    assert_eq!(fixture.project_snapshot(), before);
+    let result = apply_local_onboarding(
+        &fixture.resolution,
+        &packet,
+        &proposal,
+        &draft.preview.preview_id,
+    )
+    .unwrap();
+    assert_eq!(result.created_notes.len(), 1);
+    validate_project(&fixture.resolution).unwrap();
+    let applied = fixture.project_snapshot();
+    assert!(
+        apply_local_onboarding(
+            &fixture.resolution,
+            &packet,
+            &proposal,
+            &draft.preview.preview_id
+        )
+        .is_err()
+    );
+    assert_eq!(fixture.project_snapshot(), applied);
+    let (fresh, _) = local_draft_inputs(&fixture);
+    let rerun = preview_local_onboarding(&fixture.resolution, &fresh, &proposal).unwrap();
+    assert_ne!(rerun.preview.preview_id, draft.preview.preview_id);
+    let result = apply_local_onboarding(
+        &fixture.resolution,
+        &fresh,
+        &proposal,
+        &rerun.preview.preview_id,
+    )
+    .unwrap();
+    assert!(result.created_notes.is_empty());
+    assert_eq!(result.unchanged_notes.len(), 1);
+    assert_eq!(fixture.project_snapshot(), applied);
+}
+
+#[test]
+fn local_approved_apply_refuses_source_and_review_packet_drift_without_writes() {
+    use akasha_core::onboarding_local::{apply_local_onboarding, preview_local_onboarding};
+    for mode in ["source", "template", "projection", "packet"] {
+        let fixture = Fixture::new(&format!("local-apply-drift-{mode}"));
+        let (mut packet, proposal) = local_draft_inputs(&fixture);
+        let draft = preview_local_onboarding(&fixture.resolution, &packet, &proposal).unwrap();
+        match mode {
+            "source" => fs::write(
+                fixture.resolution.cwd.join("Cargo.toml"),
+                "[package]\nname = \"changed\"\n",
+            )
+            .unwrap(),
+            "template" => fs::write(
+                fixture.project.join("templates/entity.md"),
+                "human template change\n",
+            )
+            .unwrap(),
+            "projection" => {
+                fs::write(fixture.project.join("index.md"), "# Human index change\n").unwrap()
+            }
+            _ => packet.sources[0].text.push_str("altered"),
+        }
+        let before = fixture.project_snapshot();
+        assert_eq!(
+            apply_local_onboarding(
+                &fixture.resolution,
+                &packet,
+                &proposal,
+                &draft.preview.preview_id
+            )
+            .unwrap_err()
+            .exit_code(),
+            if mode == "projection" { 4 } else { 5 },
+            "{mode}"
+        );
+        assert_eq!(fixture.project_snapshot(), before, "{mode}");
+    }
+}
+
+#[test]
 fn local_draft_refuses_altered_packets_and_changed_sources_without_writes() {
     use akasha_core::onboarding_local::preview_local_onboarding;
     let fixture = Fixture::new("local-drift");

@@ -154,7 +154,18 @@ export async function draftLocalOnboarding(options, complete = localCompletion) 
     const packetPath = join(temporary, "packet.json"), proposalPath = join(temporary, "plan.json");
     await writeFile(packetPath, JSON.stringify(packet), { mode: 0o600, flag: "wx" });
     await writeFile(proposalPath, completion.answer, { mode: 0o600, flag: "wx" });
-    const output = await run([...(options.json ? ["--json"] : []), "local-onboarding-compile", "--packet", packetPath, "--plan", proposalPath]);
+    let output = await run([...((options.json || saved) ? ["--json"] : []), "local-onboarding-compile", "--packet", packetPath, "--plan", proposalPath]);
+    if (saved) {
+      const draft = JSON.parse(output);
+      await save("draft.json", output);
+      const proposal = JSON.stringify(draft.proposal);
+      await save("proposal.json", proposal);
+      if (!options.json) {
+        const reviewPath = join(temporary, "proposal.json");
+        await writeFile(reviewPath, proposal, { mode: 0o600, flag: "wx" });
+        output = await run(["local-onboarding-preview", "--packet", packetPath, "--proposal", reviewPath]);
+      }
+    }
     return { output, metrics: { ...completion.metrics, ...(options.components ? { components: steps } : {}), ...(session ? { inference_session: session.metrics } : {}), command_ms: performance.now() - started } };
   } finally { await rm(temporary, { recursive: true, force: true }); }
 }

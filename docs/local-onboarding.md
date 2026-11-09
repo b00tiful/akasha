@@ -15,6 +15,7 @@ inference_dir="$HOME/.local/share/akasha/local-inference"
 node scripts/local-onboarding.mjs \
   --root /path/to/akasha-root --project example \
   --source README.md --source Cargo.toml --source src/lib.rs \
+  --save-inputs /private/path/onboarding-review \
   --server "$inference_dir/runtimes/llama-b12110-vulkan/llama-server" \
   --model "$inference_dir/models/Qwen3.5-9B-UD-Q4_K_XL.gguf" \
   --model-sha256 6f5d30666c2d8ae16a306e616d95341dcf3cc46810df84d7e6f5a7d1e4c1b293 \
@@ -77,11 +78,12 @@ source excerpts, plus selected-but-uncited paths. It always sets `requires_revie
 Plain text displays excerpts with physical line numbers. Review output is limited to 16,000
 serialized bytes; overflow refuses.
 
-This command performs no canonical writes. Review every generated metadata value and claim against its supplied
+Generation performs no canonical writes. Review every generated metadata value and claim against its supplied
 source, including labeled inferences and unknowns. Required string fields do not enforce every
 custom field's meaning; earlier live acceptance needed reviewed-date corrections. Configured `reviewed` fields are now
 grammar-constrained to the supplied draft date; a generated date still does not attest human review. Source fingerprints and valid citations do not
-establish factual entailment. To publish, pass `draft.json`'s `proposal` field to the existing
+establish factual entailment. The direct local workflow below uses the same shared-core
+transaction. Alternatively, pass `draft.json`'s `proposal` field to the existing
 onboarding MCP `akasha_onboarding_validate`, request `akasha_onboarding_preview`, review that
 summary, and approve `akasha_onboarding_apply` through the connected agent's normal approval
 flow. Validation, preview and apply must use one MCP server lifetime; the development command's
@@ -156,8 +158,60 @@ To retain inputs for source review or correction, pass `--save-inputs /path/to/n
 Its parent must exist; the directory must be new and outside both the configured memory root
 and registered repository, including symlinked parent aliases. The adapter creates it with
 mode `0700`, saving the core `packet.json`, each raw `completion-N.json`, and the combined
-`plan.json` with mode `0600` and no overwrite. Failed compilation leaves the original inputs
+`plan.json` with mode `0600` and no overwrite. Successful compilation also saves `draft.json`
+(proposal, review and preview) and `proposal.json` (the exact applicable proposal), in both plain
+and JSON generation modes. Failed compilation leaves the original inputs
 available; later-component failure may leave only the completed raw replies. No saved input is
 an approval. Keep originals, edit a copy of `plan.json`, then use `local-onboarding-compile`
 with the saved packet to obtain a fresh review. If source/configuration/project bytes changed,
 prepare and review again. This opt-in writes private review artifacts; it never publishes notes.
+
+## Direct local review and application
+
+After generation, review all metadata, claims, exact source excerpts, uncited sources and both
+projection outputs. This model-free command displays them again without running inference:
+
+```sh
+target/debug/akasha --root /path/to/akasha-root --project example \
+  local-onboarding-preview --packet /private/path/onboarding-review/packet.json \
+  --proposal /private/path/onboarding-review/proposal.json
+```
+
+Stopping here cancels publication: the saved artifacts grant no write authority. To approve,
+supply the **full `Preview: sha256:...` identifier** from the reviewed output:
+
+```sh
+target/debug/akasha --root /path/to/akasha-root --project example \
+  local-onboarding-apply --packet /private/path/onboarding-review/packet.json \
+  --proposal /private/path/onboarding-review/proposal.json \
+  --approved-preview-id sha256:THE_FULL_REVIEWED_IDENTIFIER
+```
+
+This explicit command is the approval action; it has no model or automatic confirmation.
+It rebuilds local inputs, repeats proposal/source review checks and checks the exact approved
+preview before entering the shared writer. The writer acquires the project lock, revalidates
+the proposal and snapshot, and uses the existing recoverable batch transaction. It creates
+canonical notes, updates the index and roadmap, and publishes project state. Existing differing
+notes refuse; no force/overwrite flag exists. Plain output lists created/unchanged notes,
+updated projections and state; `--json` returns the shared-core batch result. Errors have nonzero
+exit status, diagnostics on stderr and no normal stdout. A validation error may precede a stale
+conflict when a concurrent edit leaves the project invalid.
+
+For corrections, preserve the raw inputs, edit a copy of `plan.json`, then compile it with
+`local-onboarding-compile --packet ... --plan reviewed-plan.json --json > reviewed-draft.json`.
+Save its `proposal` object as a separate private `reviewed-proposal.json` and preview that file.
+Use that proposal and its new full preview ID for application. The earlier ID cannot approve
+changed content; editing an identifier is not a substitute for reviewing again.
+
+After success or an uncertain/interrupted apply, inspect current state and run `validate`.
+If a pending note journal leaves the project invalid, use the existing desktop load/retry or
+F5 in a clean TUI session for recovery, following [the recovery runbook](recovery.md).
+Local preview/apply first validates its packet and cannot recover an invalid partial project;
+the named CLI still has no standalone note-journal recovery command. Preserve unexpected bytes
+and the journal rather than deleting them or retrying inference.
+The old packet/preview is normally stale. Prepare a fresh packet with the same `--source` paths
+and preview the **exact saved proposal** against it. Exact already-published notes/projections
+are shown as unchanged; approving that fresh preview is a no-op. Do not regenerate a model draft
+just to retry publication. Human changes, new source bytes or conflicting notes require a fresh
+plan and source review. Interruption during publication follows the existing core recovery
+contract; a signal after commit does not guarantee that the batch was cancelled.

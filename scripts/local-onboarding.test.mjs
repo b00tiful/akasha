@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -14,8 +14,8 @@ function fixture(t) {
   const f = setup(join(directory, "run 世界 '$`"));
   return JSON.parse(readFileSync(join(f.directory, "run.json"), "utf8"));
 }
-function run(f, args) {
-  return spawnSync(cli, ["--root", f.root, "--project", "first-run", ...args], { encoding: "utf8" });
+function run(f, args, project = "first-run") {
+  return spawnSync(cli, ["--root", f.root, "--project", project, ...args], { encoding: "utf8" });
 }
 function options(f) { return { root: f.root, project: "first-run", sources: ["README.md", "Cargo.toml", "src/lib.rs"], json: true }; }
 function plan(packet) {
@@ -296,6 +296,94 @@ test("saved inputs preserve rejected plans privately and refuse overwrite or mem
   const result = await draftLocalOnboarding({ ...options(f), saveInputs: successful }, async input => ({ answer: JSON.stringify(plan(input)) }));
   assert(JSON.parse(result.output).review.requires_review);
   assert(existsSync(join(successful, "plan.json")));
+  assert.deepEqual(JSON.parse(readFileSync(join(successful, "proposal.json"))), JSON.parse(result.output).proposal);
+  assert.equal(readFileSync(join(successful, "draft.json"), "utf8"), result.output);
+  if (process.platform !== "win32") {
+    for (const name of ["packet.json", "completion-1.json", "plan.json", "draft.json", "proposal.json"]) {
+      assert.equal(statSync(join(successful, name)).mode & 0o777, 0o600);
+    }
+  }
   assert.deepEqual(snapshot(f.root), before);
   assert.deepEqual(snapshot(f.repository), repoBefore);
+});
+
+test("saved plain drafts support source review, corrected approval, CLI publication and fresh no-op review", async t => {
+  const f = fixture(t), before = snapshot(f.root), repoBefore = snapshot(f.repository);
+  const saved = join(f.directory, "local-review");
+  const result = await draftLocalOnboarding({ ...options(f), json: false, saveInputs: saved }, async input => ({ answer: JSON.stringify(plan(input)) }));
+  const original = JSON.parse(readFileSync(join(saved, "draft.json")));
+  assert(result.output.includes(original.preview.preview_id));
+  assert(result.output.includes("pub struct FlightPath"));
+  assert.deepEqual(snapshot(f.root), before); // Stopping here is cancellation: no publication.
+  const packet = join(saved, "packet.json"), proposal = join(saved, "proposal.json");
+  const apply = ["local-onboarding-apply", "--packet", packet, "--proposal", proposal];
+  const missing = run(f, apply);
+  assert.equal(missing.status, 2); assert.equal(missing.stdout, "");
+  const wrong = run(f, [...apply, "--approved-preview-id", "yes"]);
+  assert.equal(wrong.status, 5); assert.equal(wrong.stdout, "");
+  assert.deepEqual(snapshot(f.root), before);
+  // Review an explicit correction against the same sources, without a second model run.
+  const corrected = JSON.parse(readFileSync(join(saved, "plan.json")));
+  corrected.notes[0].evidence[0].claim = "FlightPath stores waypoints in a Vec<[f64; 3]>.";
+  const correctedPlan = join(saved, "reviewed-plan.json");
+  writeFileSync(correctedPlan, JSON.stringify(corrected), { mode: 0o600, flag: "wx" });
+  const compiled = run(f, ["--json", "local-onboarding-compile", "--packet", packet, "--plan", correctedPlan]);
+  assert.equal(compiled.status, 0, compiled.stderr);
+  const reviewed = JSON.parse(compiled.stdout), reviewedProposal = join(saved, "reviewed-proposal.json");
+  writeFileSync(reviewedProposal, JSON.stringify(reviewed.proposal), { mode: 0o600, flag: "wx" });
+  const correctedApply = ["local-onboarding-apply", "--packet", packet, "--proposal", reviewedProposal, "--approved-preview-id"];
+  const obsolete = run(f, [...correctedApply, original.preview.preview_id]);
+  assert.equal(obsolete.status, 5); assert.equal(obsolete.stdout, "");
+  assert.deepEqual(snapshot(f.root), before);
+  const applied = run(f, [...correctedApply, reviewed.preview.preview_id]);
+  assert.equal(applied.status, 0, applied.stderr); assert.equal(applied.stderr, "");
+  assert(applied.stdout.includes("Local onboarding applied") && applied.stdout.includes("Created:"));
+  assert(!applied.stdout.includes("\x1b"));
+  assert.equal(run(f, ["validate"]).status, 0);
+  const found = run(f, ["--json", "librarian-prepare", "FlightPath waypoints"]);
+  assert.equal(found.status, 0, found.stderr);
+  assert(JSON.parse(found.stdout).evidence.some(e => e.excerpt.includes("Vec<[f64; 3]>")));
+  const after = snapshot(f.root);
+  const replay = run(f, [...correctedApply, reviewed.preview.preview_id]);
+  assert.equal(replay.status, 5); assert.equal(replay.stdout, "");
+  assert.deepEqual(snapshot(f.root), after);
+  // Fresh preparation/review of the exact saved proposal is an explicit no-op rerun.
+  const freshPacket = join(saved, "rerun-packet.json");
+  const prepare = run(f, ["--json", "local-onboarding-prepare", ...options(f).sources.flatMap(s => ["--source", s])]);
+  assert.equal(prepare.status, 0, prepare.stderr);
+  writeFileSync(freshPacket, prepare.stdout, { mode: 0o600, flag: "wx" });
+  const preview = run(f, ["--json", "local-onboarding-preview", "--packet", freshPacket, "--proposal", reviewedProposal]);
+  assert.equal(preview.status, 0, preview.stderr);
+  const rerun = run(f, ["--json", "local-onboarding-apply", "--packet", freshPacket, "--proposal", reviewedProposal,
+    "--approved-preview-id", JSON.parse(preview.stdout).preview.preview_id]);
+  assert.equal(rerun.status, 0, rerun.stderr); assert.equal(rerun.stderr, "");
+  const outcome = JSON.parse(rerun.stdout);
+  assert.equal(outcome.created_notes.length, 0); assert.equal(outcome.unchanged_notes.length, 1);
+  assert.equal(outcome.updated_projections.length, 0);
+  assert.deepEqual(snapshot(f.root), after);
+  assert.deepEqual(snapshot(f.repository), repoBefore);
+});
+
+test("CLI local apply preserves concurrent source, projection and canonical changes", async t => {
+  for (const mode of ["source", "projection", "note", "project"]) {
+    const f = fixture(t), saved = join(f.directory, `review-${mode}`);
+    const result = await draftLocalOnboarding({ ...options(f), saveInputs: saved }, async input => ({ answer: JSON.stringify(plan(input)) }));
+    const draft = JSON.parse(result.output);
+    if (mode === "source") writeFileSync(join(f.repository, "src/lib.rs"), "human code change\n");
+    if (mode === "projection") writeFileSync(join(f.root, "Projects/first-run/index.md"), "# Human index change\n");
+    if (mode === "note") writeFileSync(join(f.root, "Projects/first-run/entities/flight-path.md"), "human note bytes\n");
+    if (mode === "project") {
+      const repository = join(f.directory, "other-repo");
+      mkdirSync(repository);
+      const init = spawnSync(cli, ["--root", f.root, "init", "other"], { cwd: repository, encoding: "utf8" });
+      assert.equal(init.status, 0, init.stderr);
+    }
+    const before = snapshot(f.root), repoBefore = snapshot(f.repository);
+    const rejected = run(f, ["--json", "local-onboarding-apply",
+      "--packet", join(saved, "packet.json"), "--proposal", join(saved, "proposal.json"), "--approved-preview-id", draft.preview.preview_id], mode === "project" ? "other" : "first-run");
+    assert.notEqual(rejected.status, 0, mode); assert.equal(rejected.stdout, "", mode);
+    assert(rejected.stderr.length > 0);
+    assert.deepEqual(snapshot(f.root), before, mode);
+    assert.deepEqual(snapshot(f.repository), repoBefore, mode);
+  }
 });
