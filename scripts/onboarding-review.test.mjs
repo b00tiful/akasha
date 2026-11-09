@@ -83,10 +83,16 @@ test("untrusted source/claim text cannot break out of the page or change executa
     excerpts: [{ byte_start: 0, byte_end: Buffer.byteLength(hostile), line_start: 1, line_end: 1 }] }] };
   const plan = { schema_version: 3, notes: [{ name: hostile, evidence: [claim] }] };
   const draft = { review: { requires_review: true, notes: [{ path: hostile, fields: { reviewed: "unreviewed" } }], uncited_sources: [] } };
-  const html = renderOnboardingReview({ packet, plan, draft });
+  const discovery = { coverage: { omitted: [], excluded_entries: 0, implementation_groups: [
+    { directory: "packages/api", candidates: 2, selected: 1 },
+    { directory: hostile, candidates: 1, selected: 0 },
+  ] } };
+  const html = renderOnboardingReview({ packet, plan, draft, discovery });
   assert(!html.includes(hostile)); assert(html.includes("connect-src 'none'"));
   assert.equal((html.match(/<script>/gu) ?? []).length, 1);
   const page = openPage(html);
+  assert(page.all.some(node => node.tagName === "p" && node.textContent.includes("represented: 1/2")));
+  assert(page.all.some(node => node.tagName === "p" && node.textContent.includes(`No implementation file selected: ${hostile}`)));
   assert.equal(page.document.getElementById("project").textContent, hostile);
   assert(page.all.some(node => node.tagName === "pre" && node.textContent.includes(hostile)));
   page.document.getElementById("export").click();

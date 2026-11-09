@@ -35,6 +35,23 @@ function slottedReply(input) {
   }] };
 }
 
+test("plain coverage names missing implementation groups without executing terminal controls", async t => {
+  const f = fixture(t);
+  const directory = "src/missing\x1b[2J\u202e";
+  mkdirSync(join(f.repository, directory));
+  writeFileSync(join(f.repository, directory, "other.rs"), "pub const OTHER: usize = 1;\n");
+  const result = await draftLocalOnboarding({ root: f.root, project: "first-run", discover: ["src"],
+    focus: ["FlightPath"], autoPlan: true, json: false }, async input => ({ answer: JSON.stringify(slottedReply(input)) }));
+  assert(result.output.includes("Implementation directories represented: 1/2"));
+  assert(result.output.includes("No implementation file selected:"));
+  assert(result.output.includes("\\u001b[2J\\u{202e}"));
+  assert(!result.output.includes("\x1b") && !result.output.includes("\u202e"));
+  const plain = run(f, ["local-onboarding-discover", "--directory", "src", "--focus", "FlightPath"]);
+  assert.equal(plain.status, 0, plain.stderr);
+  assert(plain.stdout.includes("Implementation group [unrepresented]"));
+  assert(!plain.stdout.includes("\x1b") && !plain.stdout.includes("\u202e"));
+});
+
 test("focused onboarding selects off-position windows through sources/groups/discovery and reviewed application", async t => {
   const f = fixture(t);
   const lines = Array.from({ length: 400 }, (_, i) => i === 81

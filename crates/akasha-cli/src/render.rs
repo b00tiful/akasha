@@ -95,12 +95,26 @@ pub(crate) fn render_local_onboarding_discovery(
             coverage.focus_scan_bytes.unwrap_or(0)
         );
     }
+    for group in &coverage.implementation_groups {
+        let _ = writeln!(
+            text,
+            "Implementation group [{}]: {} — {}/{} candidate files selected (filename heuristic)",
+            if group.selected == 0 {
+                "unrepresented"
+            } else {
+                "represented"
+            },
+            group.directory.escape_debug(),
+            group.selected,
+            group.candidates
+        );
+    }
     for source in &coverage.selected {
         let _ = writeln!(
             text,
             "Selected [{}]: {}",
             source.role,
-            librarian_display(&source.path)
+            source.path.escape_debug()
         );
         if !source.matched_terms.is_empty() {
             let _ = writeln!(
@@ -120,7 +134,7 @@ pub(crate) fn render_local_onboarding_discovery(
             text,
             "Omitted [{}]: {}",
             source.reason,
-            librarian_display(&source.path)
+            source.path.escape_debug()
         );
     }
     for source in &coverage.excluded_examples {
@@ -128,7 +142,7 @@ pub(crate) fn render_local_onboarding_discovery(
             text,
             "Excluded example [{}]: {}",
             source.reason,
-            librarian_display(&source.path)
+            source.path.escape_debug()
         );
     }
     write_stdout(&text)

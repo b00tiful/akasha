@@ -31,11 +31,20 @@ pub struct LocalSourceCoverage {
     pub entries_inspected: usize,
     pub candidates: usize,
     pub selected: Vec<LocalSourceSelection>,
+    /// Filename-derived implementation groups, including groups with no selected source.
+    pub implementation_groups: Vec<LocalImplementationCoverage>,
     pub omitted: Vec<LocalSourceOmission>,
     pub excluded_entries: usize,
     pub excluded_examples: Vec<LocalSourceOmission>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focus_scan_bytes: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LocalImplementationCoverage {
+    pub directory: String,
+    pub candidates: usize,
+    pub selected: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -104,6 +113,15 @@ fn excluded(name: &str) -> bool {
 
 pub(crate) fn role(path: &str) -> Option<&'static str> {
     let name = path.rsplit('/').next()?.to_ascii_lowercase();
+    // Explicit hidden scopes are supported; hidden descendants remain excluded by the scanner.
+    if (path.starts_with(".github/workflows/") || path == ".gitlab-ci.yml")
+        && matches!(
+            name.rsplit_once('.').map(|(_, ext)| ext),
+            Some("yml" | "yaml")
+        )
+    {
+        return Some("workflow");
+    }
     if name.starts_with("readme.") {
         return Some("overview");
     }
@@ -160,6 +178,17 @@ pub(crate) fn role(path: &str) -> Option<&'static str> {
     } else {
         "implementation"
     })
+}
+
+// Use only manifests already found inside the authorized inventory. A root manifest does not
+// collapse all source subdirectories into one group; nested packages own their descendants.
+fn implementation_group(path: &str, package_roots: &BTreeSet<String>) -> String {
+    let parent = path.rsplit_once('/').map_or(".", |(parent, _)| parent);
+    package_roots
+        .iter()
+        .filter(|root| parent == root.as_str() || parent.starts_with(&format!("{root}/")))
+        .max_by_key(|root| root.len())
+        .map_or_else(|| parent.to_owned(), Clone::clone)
 }
 
 /// Select complete sources, balancing roles and implementation directories within the old packet
@@ -236,6 +265,7 @@ fn discover_local_onboarding_mode(
         directories: scopes.clone(),
         entries_inspected: 0,
         candidates: 0,
+        implementation_groups: Vec::new(),
         selected: Vec::new(),
         omitted: Vec::new(),
         excluded_entries: 0,
@@ -314,6 +344,19 @@ fn discover_local_onboarding_mode(
             }
         }
     }
+    let package_roots: BTreeSet<_> = candidates
+        .get("manifest")
+        .into_iter()
+        .flatten()
+        .filter_map(|path| path.rsplit_once('/').map(|(parent, _)| parent.to_owned()))
+        .collect();
+    let mut implementation_groups: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    for path in candidates.get("implementation").into_iter().flatten() {
+        implementation_groups
+            .entry(implementation_group(path, &package_roots))
+            .or_default()
+            .0 += 1;
+    }
     // Only explicit focus inspects unselected eligible content. The full bounded inventory is
     // checked first; excluded paths are never opened. Cache packed sources, at most 128 x 8 KiB.
     let mut focused_sources = BTreeMap::new();
@@ -386,27 +429,47 @@ fn discover_local_onboarding_mode(
         });
     }
     let mut selected_parents = BTreeSet::new();
-    // Round-robin keeps a large source subtree from consuming every available slot.
+    let mut first_round = true;
+    // Cover roles once, then unrepresented implementation groups before repeated context files.
     while candidates.values().any(|paths| !paths.is_empty()) {
-        for role in [
+        let roles = [
             "overview",
             "manifest",
             "implementation",
             "tests",
             "documentation",
             "workflow",
-        ] {
+        ];
+        let missing_implementation = candidates.get("implementation").is_some_and(|paths| {
+            paths.iter().any(|path| {
+                implementation_groups[&implementation_group(path, &package_roots)].1 == 0
+            })
+        });
+        let round: &[&str] = if !first_round && missing_implementation {
+            &["implementation"]
+        } else {
+            &roles
+        };
+        first_round = false;
+        for &role in round {
             let Some(paths) = candidates.get_mut(role).filter(|paths| !paths.is_empty()) else {
                 continue;
             };
             let index = if role == "implementation" {
                 paths
                     .iter()
-                    .position(|p| {
-                        score(p) == score(&paths[0])
-                            && !selected_parents
-                                .contains(p.rsplit_once('/').map_or("", |(parent, _)| parent))
+                    .enumerate()
+                    .min_by_key(|(_, p)| {
+                        (
+                            std::cmp::Reverse(score(p)),
+                            implementation_groups[&implementation_group(p, &package_roots)].1 > 0,
+                            selected_parents
+                                .contains(p.rsplit_once('/').map_or("", |(parent, _)| parent)),
+                            p.matches('/').count(),
+                            *p,
+                        )
                     })
+                    .map(|(index, _)| index)
                     .unwrap_or(0)
             } else {
                 0
@@ -459,6 +522,12 @@ fn discover_local_onboarding_mode(
                     reason: "packet_budget".into(),
                 });
             } else {
+                if role == "implementation" {
+                    implementation_groups
+                        .get_mut(&implementation_group(&path, &package_roots))
+                        .expect("inventoried implementation group")
+                        .1 += 1;
+                }
                 selected_parents.insert(
                     path.rsplit_once('/')
                         .map_or("", |(parent, _)| parent)
@@ -492,6 +561,16 @@ fn discover_local_onboarding_mode(
     packet.sources.sort_by(|a, b| a.path.cmp(&b.path));
     coverage.selected.sort_by(|a, b| a.path.cmp(&b.path));
     coverage.omitted.sort_by(|a, b| a.path.cmp(&b.path));
+    coverage.implementation_groups = implementation_groups
+        .into_iter()
+        .map(
+            |(directory, (candidates, selected))| LocalImplementationCoverage {
+                directory,
+                candidates,
+                selected,
+            },
+        )
+        .collect();
     if packet != rebuild_local_onboarding(request, &packet)? {
         return Err(invalid(
             "discovered inputs changed during selection; discover again",

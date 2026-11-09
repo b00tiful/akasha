@@ -66,7 +66,9 @@ export async function prepareReviewedOnboarding(options) {
     const packet = await loadJson(join(options.capture, "packet.json"), 16_000);
     const plan = await loadJson(options.plan, 16_000);
     let discovery;
-    try { discovery = await loadJson(join(options.capture, "discovery.json"), 262_144); }
+    // At most 128 candidate paths, 128 implementation groups, 32 exclusions, 8 scopes and
+    // the 16 KiB packet; paths can reach 1024 bytes and JSON can escape a byte as six bytes.
+    try { discovery = await loadJson(join(options.capture, "discovery.json"), 2_097_152); }
     catch (error) { if (error.code !== "ENOENT") throw error; }
     if (discovery && (!isDeepStrictEqual(discovery.packet, packet) || !Array.isArray(discovery.coverage?.omitted)
       || !Array.isArray(discovery.coverage?.selected) || !Number.isSafeInteger(discovery.coverage?.excluded_entries))) {

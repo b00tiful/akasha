@@ -860,6 +860,164 @@ fn sampled_file_bounds_and_discovery_preserve_default_complete_file_behavior() {
 }
 
 #[test]
+fn discovery_covers_nested_packages_before_repeated_context_and_exposes_missing_groups() {
+    use akasha_core::onboarding_discovery::discover_local_onboarding;
+    let fixture = Fixture::new("workspace-coverage");
+    let repo = &fixture.resolution.cwd;
+    fs::write(repo.join("README.md"), "# Workspace\nThree services.\n").unwrap();
+    for package in ["alpha", "beta", "gamma"] {
+        let directory = repo.join(format!("packages/{package}/src/nested"));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("logic.rs"), "pub fn execute() {}\n").unwrap();
+        fs::write(
+            directory.parent().unwrap().join("lib.rs"),
+            "pub mod nested;\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(format!("packages/{package}/Cargo.toml")),
+            "[package]\nname = 'example'\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(format!("packages/{package}/README.md")),
+            "# Package\n",
+        )
+        .unwrap();
+    }
+    for (path, text) in [
+        ("tests/check.rs", "#[test] fn check() {}\n"),
+        ("docs/design.md", "# Design\nSeparate service boundaries.\n"),
+        ("scripts/check.sh", "cargo test\n"),
+    ] {
+        fs::create_dir_all(repo.join(path).parent().unwrap()).unwrap();
+        fs::write(repo.join(path), text).unwrap();
+    }
+    let before = fixture.project_snapshot();
+    let discovered = discover_local_onboarding(&fixture.resolution, &[".".into()]).unwrap();
+    assert_eq!(discovered.packet.sources.len(), 8);
+    assert_eq!(discovered.coverage.implementation_groups.len(), 3);
+    for group in &discovered.coverage.implementation_groups {
+        assert!(group.directory.starts_with("packages/"));
+        assert_eq!(group.candidates, 2);
+        assert_eq!(group.selected, 1);
+    }
+    assert!(
+        discovered
+            .coverage
+            .omitted
+            .iter()
+            .any(|s| s.path == "packages/alpha/README.md")
+    );
+    assert_eq!(fixture.project_snapshot(), before);
+
+    // More groups than the packet permits remain visible, with no false completeness claim.
+    for package in ["delta", "epsilon", "zeta"] {
+        let directory = repo.join(format!("packages/{package}/src"));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("lib.rs"), "pub fn extra() {}\n").unwrap();
+        fs::write(
+            directory.parent().unwrap().join("Cargo.toml"),
+            "[package]\n",
+        )
+        .unwrap();
+    }
+    let limited = discover_local_onboarding(&fixture.resolution, &[".".into()]).unwrap();
+    assert_eq!(limited.coverage.implementation_groups.len(), 6);
+    assert_eq!(
+        limited
+            .coverage
+            .implementation_groups
+            .iter()
+            .filter(|g| g.selected == 0)
+            .count(),
+        3
+    );
+    assert_eq!(
+        limited.coverage.candidates,
+        limited.coverage.selected.len() + limited.coverage.omitted.len()
+    );
+    assert!(serde_json::to_vec(&limited.packet).unwrap().len() <= 16_000);
+}
+
+#[test]
+fn explicit_workflow_scope_is_recognized_without_opening_other_hidden_content() {
+    use akasha_core::onboarding_discovery::{
+        discover_local_onboarding, discover_local_onboarding_focused,
+    };
+    let fixture = Fixture::new("workflow-coverage");
+    let repo = &fixture.resolution.cwd;
+    fs::create_dir_all(repo.join(".github/workflows")).unwrap();
+    fs::create_dir_all(repo.join("src/alpha")).unwrap();
+    fs::create_dir_all(repo.join("src/beta")).unwrap();
+    fs::write(
+        repo.join(".github/workflows/ci.yml"),
+        "name: CI\nsteps: [cargo test]\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.join(".github/workflows/.hidden.yml"),
+        "must stay excluded\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.join("src/alpha/lib.rs"),
+        "pub const LEASE: usize = 37;\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.join("src/beta/lib.rs"),
+        "pub const OTHER: usize = 1;\n",
+    )
+    .unwrap();
+    let scopes = &["src".into(), ".github/workflows".into()];
+    let result = discover_local_onboarding(&fixture.resolution, scopes).unwrap();
+    assert!(
+        result
+            .coverage
+            .selected
+            .iter()
+            .any(|s| s.path == ".github/workflows/ci.yml" && s.role == "workflow")
+    );
+    assert_eq!(result.coverage.implementation_groups.len(), 2);
+    assert!(
+        result
+            .coverage
+            .excluded_examples
+            .iter()
+            .any(|s| s.path.ends_with("/.hidden.yml"))
+    );
+    let root_scan = discover_local_onboarding(&fixture.resolution, &[".".into()]).unwrap();
+    assert!(
+        !root_scan
+            .packet
+            .sources
+            .iter()
+            .any(|s| s.path.starts_with(".github/"))
+    );
+    let focused =
+        discover_local_onboarding_focused(&fixture.resolution, scopes, &["lease".into()], false)
+            .unwrap();
+    assert_eq!(
+        focused
+            .coverage
+            .implementation_groups
+            .iter()
+            .find(|g| g.directory == "src/beta")
+            .unwrap()
+            .selected,
+        0
+    );
+    assert!(
+        focused
+            .coverage
+            .omitted
+            .iter()
+            .any(|s| s.path == "src/beta/lib.rs" && s.reason == "focus_no_match")
+    );
+}
+
+#[test]
 fn discovery_balances_roles_and_directories_and_is_read_only() {
     use akasha_core::onboarding_discovery::discover_local_onboarding;
     use akasha_core::onboarding_local::prepare_local_onboarding;

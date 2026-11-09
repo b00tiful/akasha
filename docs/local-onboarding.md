@@ -226,14 +226,21 @@ target/debug/akasha --root /path/to/akasha-root --project example \
 `--json` returns `{schema_version: 1, packet, coverage}`. `packet` is the existing version-2
 preparation input and can be saved for ordinary compilation/preview/application. `coverage`
 lists selected paths/roles, every omitted candidate/reason, excluded-entry count and up to
-32 excluded examples. Excluded directories count as one entry; their descendants are not scanned
+32 excluded examples. Additive `coverage.implementation_groups` rows contain `directory`,
+`candidates` and `selected` counts, including zero-selected groups. Excluded directories count as one entry; their descendants are not scanned
 or counted. The draft adapter includes coverage in stderr metrics and saves `discovery.json`
 alongside private inputs. Plain generation shows a coverage summary; successful draft JSON
 keeps its existing schema. Inference receives only selected sources and their roles.
 
-Selection cycles through overview, manifest, implementation, tests, documentation and workflow
-roles, preferring shallow paths and different implementation directories. Roles are filename
-heuristics, not component understanding. Files must fit the existing eight-file/8-KiB-per-file/
+Selection covers overview, manifest, implementation, tests, documentation and workflow roles
+once, then prioritizes unrepresented implementation groups before repeated context files.
+Groups use the nearest nested manifest directory found inside the authorized scan, falling back
+to the implementation file's parent; a root manifest does not collapse all source directories.
+Within implementation selection, literal-focus relevance stays ahead of group diversity, followed
+by parent diversity and shallow lexical ordering. A selected file represents a filename group;
+it does not establish complete component understanding. Plain discovery, draft summaries and
+offline review expose groups with no selected implementation. Narrow scopes or prepare a
+separate batch for missing groups. Files must fit the existing eight-file/8-KiB-per-file/
 16,000-byte-packet bounds in full; larger files, invalid text, empty/overlong-line sources and
 budget omissions are explicit. A later smaller candidate can still fit after an omission.
 Every selected byte/hash/catalog is rebuilt through ordinary preparation before return and
@@ -247,6 +254,10 @@ hidden names, dependency/build directories, names containing `secret`, `credenti
 eligible files there, including ignored files; use narrow directories or explicit sources when
 that distinction matters. Directory arguments themselves are explicit scope choices, so an
 explicit hidden directory is allowed; hidden descendants remain excluded.
+GitHub workflow `.yml`/`.yaml` files are recognized when `.github/workflows` is explicitly
+scoped (for example, `--directory packages --directory .github/workflows`); a scan of `.` still
+excludes `.github`. Explicit source preparation also recognizes `.gitlab-ci.yml` as a workflow.
+Other YAML files remain ineligible for directory discovery. No workflow content is executed.
 
 More than 2,048 inspected entries, 128 candidate files, eight levels below a requested directory,
 or a discovered path over 1,024 UTF-8 bytes refuses the entire scan before inference. Absolute,

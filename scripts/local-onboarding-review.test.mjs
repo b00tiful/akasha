@@ -97,7 +97,26 @@ test("bounded inputs reject symlinks, oversized JSON and cancellation without pu
   await assert.rejects(prepareReviewedOnboarding({ ...f, plan: alias + ".big" }), /at most 16000/);
   await assert.rejects(prepareReviewedOnboarding({ ...f, signal: AbortSignal.abort() }), /abort/iu);
   await assert.rejects(applyReviewedOnboarding({ ...f, bundle: f.capture, approvedPreviewId: "sha256:abc" }), /full approved/);
+  writeFileSync(join(f.capture, "discovery.json"), " ".repeat(2_097_153));
+  await assert.rejects(prepareReviewedOnboarding(f), /at most 2097152/);
   assert.throws(() => lstatSync(f.output), { code: "ENOENT" }); assert.deepEqual(snapshot(f.root), before);
+});
+
+test("complete long-path coverage fits the handoff without changing the checked proposal", async t => {
+  const f = await fixture(t), before = snapshot(f.root), repo = snapshot(f.repository);
+  const path = join(f.capture, "discovery.json"), discovery = JSON.parse(readFileSync(path));
+  // Exercise the scanner's maximum descriptive counts independently of the small source packet.
+  const directory = "nested/" + "\u0007".repeat(990);
+  discovery.coverage.implementation_groups = Array.from({ length: 128 }, (_, i) => ({ directory: `${directory}${i}`, candidates: 1, selected: 0 }));
+  discovery.coverage.omitted = Array.from({ length: 128 }, (_, i) => ({ path: `${directory}${i}/a.rs`, reason: "file_limit" }));
+  discovery.coverage.excluded_examples = Array.from({ length: 32 }, (_, i) => ({ path: `${directory}${i}/.hidden`, reason: "excluded_name" }));
+  const bytes = JSON.stringify(discovery);
+  assert(Buffer.byteLength(bytes) > 1_048_576 && Buffer.byteLength(bytes) < 2_097_152);
+  writeFileSync(path, bytes);
+  const result = await prepareReviewedOnboarding(f);
+  assert.equal(result.draft.review.requires_review, true);
+  assert.deepEqual(JSON.parse(readFileSync(join(f.output, "discovery.json"))), discovery);
+  assert.deepEqual(snapshot(f.root), before); assert.deepEqual(snapshot(f.repository), repo);
 });
 
 test("command failures have nonzero exit, stderr diagnostics and empty stdout", () => {

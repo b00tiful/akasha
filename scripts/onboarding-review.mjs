@@ -30,6 +30,12 @@ function reviewApp() {
   for (const window of data.draft.review.uncited_focus_excerpts ?? []) make("pre", JSON.stringify(window, null, 2), coverage);
   if (data.discovery) {
     make("p", `Discovery omitted ${data.discovery.coverage.omitted.length} candidates and excluded ${data.discovery.coverage.excluded_entries} entries.`, coverage);
+    const groups = data.discovery.coverage.implementation_groups;
+    if (groups?.length) {
+      const missing = groups.filter(group => group.selected === 0);
+      make("p", `Implementation directories represented: ${groups.length - missing.length}/${groups.length}. Filename groups indicate selected files, not complete component understanding.`, coverage);
+      if (missing.length) make("p", `No implementation file selected: ${missing.map(group => group.directory).join(", ")}. Narrow the discovery scopes or prepare a separate batch to inspect these groups.`, coverage);
+    }
     const omitted = make("details", undefined, coverage);
     make("summary", "Inspect discovery coverage", omitted);
     make("pre", JSON.stringify(data.discovery.coverage, null, 2), omitted);

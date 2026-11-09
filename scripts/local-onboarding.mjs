@@ -209,7 +209,14 @@ export async function draftLocalOnboarding(options, complete = localCompletion) 
         output = await run(["local-onboarding-preview", "--packet", packetPath, "--proposal", reviewPath]);
       }
     }
-    if (discovery && !options.json) output = `Source discovery: ${discovery.coverage.selected.length}/${discovery.coverage.candidates} candidates selected; ${discovery.coverage.omitted.length} omitted; ${discovery.coverage.excluded_entries} excluded entries. Inspect discovery.json or local-onboarding-discover for paths/reasons.\n${output}`;
+    if (discovery && !options.json) {
+      const groups = discovery.coverage.implementation_groups ?? [];
+      const missing = groups.filter(group => group.selected === 0);
+      output = `Source discovery: ${discovery.coverage.selected.length}/${discovery.coverage.candidates} candidates selected; ${discovery.coverage.omitted.length} omitted; ${discovery.coverage.excluded_entries} excluded entries. Inspect discovery.json or local-onboarding-discover for paths/reasons.\n`
+        + (groups.length ? `Implementation directories represented: ${groups.length - missing.length}/${groups.length} (filename heuristic).\n` : "")
+        + (missing.length ? `No implementation file selected: ${missing.map(group => JSON.stringify(group.directory)
+          .replace(/\p{Cc}|\p{Cf}/gu, character => `\\u{${character.codePointAt(0).toString(16)}}`)).join(", ")}.\n` : "") + output;
+    }
     return { output, metrics: { ...completion.metrics, ...(packet.focus ? { source_focus: packet.focus } : {}), source_sampling: packet.sources.filter(source => source.sampling).map(source => ({ path: source.path, total_lines: source.lines, ...source.sampling })), ...(discovery ? { source_discovery: discovery.coverage } : {}), ...(components ? { components: steps } : {}), ...(identityPlan ? { identity_plan: identityPlan } : {}), ...(session ? { inference_session: session.metrics } : {}), command_ms: performance.now() - started } };
   } finally { await rm(temporary, { recursive: true, force: true }); }
 }
