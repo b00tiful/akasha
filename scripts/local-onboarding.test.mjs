@@ -29,8 +29,7 @@ function plan(packet) {
 function slottedReply(input) {
   const original = plan(input).notes[0];
   const implementation = input.planned_note.role === "implementation";
-  return { schema_version: 4, notes: [{ slot: input.planned_note.slot,
-    fields: { ...original.fields, entity: input.planned_note.role, reviewed: input.date },
+  return { schema_version: 5, notes: [{ slot: input.planned_note.slot,
     evidence: implementation ? original.evidence : [{ kind: "unknown", claim: "Runtime behavior needs further review.",
       rationale: "This test uses a role group without interpreting its source text.", sources: [] }],
   }] };
@@ -63,7 +62,7 @@ test("focused onboarding selects off-position windows through sources/groups/dis
       const note = input.planned_note ? slottedReply(input).notes[0] : plan(input).notes[0];
       if (input.component && !input.planned_note) note.name = input.component;
       note.evidence = [{ kind: "fact", claim: "The lease duration constant is 37 seconds.", sources: [{ source: source.handle, excerpt: excerpt.handle }] }];
-      return { answer: JSON.stringify({ schema_version: input.planned_note ? 4 : 3, notes: [note] }) };
+      return { answer: JSON.stringify({ schema_version: input.planned_note ? 5 : 3, notes: [note] }) };
     });
     const packet = JSON.parse(readFileSync(join(saved, "packet.json")));
     assert.equal(packet.schema_version, 4);
@@ -121,12 +120,15 @@ test("automatic Rust planning fixes unique slots and remaps source handles throu
   let calls = 0;
   const result = await draftLocalOnboarding({ ...optionsForDiscovery(f), autoPlan: true, saveInputs: saved }, async (input, schema, policy) => {
     calls++;
-    assert(input.planned_note && policy.includes("host supplies name and note_type"));
-    assert.equal(schema.properties.schema_version.const, 4);
+    assert(input.planned_note && policy.includes("host supplies all metadata"));
+    assert.equal(schema.properties.schema_version.const, 5);
     const variant = schema.properties.notes.items.oneOf[0];
-    assert.deepEqual(Object.keys(variant.properties).sort(), ["evidence", "fields", "slot"]);
+    assert.deepEqual(Object.keys(variant.properties).sort(), ["evidence", "slot"]);
     assert.equal(variant.properties.slot.const, input.planned_note.slot);
     assert.equal(schema.properties.notes.items.oneOf.length, 1);
+    assert(!Object.hasOwn(input, "component"));
+    assert(!Object.hasOwn(input, "note_types") && !Object.hasOwn(input, "templates") && !Object.hasOwn(input, "date"));
+    assert(input.planning_rule.includes("defaults, return values and boundaries"));
     assert(!JSON.stringify(input).includes(f.root));
     if (input.planned_note.role === "implementation") assert.deepEqual(input.sources.map(s => s.path), ["src/lib.rs"]);
     return { answer: JSON.stringify(slottedReply(input)) };
@@ -135,9 +137,16 @@ test("automatic Rust planning fixes unique slots and remaps source handles throu
   const draft = JSON.parse(result.output), identities = JSON.parse(readFileSync(join(saved, "identity-plan.json")));
   assert.equal(new Set(draft.proposal.notes.map(n => n.path)).size, 2);
   assert(draft.proposal.notes.every(n => n.note_type === "entity" && n.path.startsWith("onboarding-")));
+  for (const [index, note] of draft.review.notes.entries()) {
+    assert.equal(note.fields.entity, identities.slots[index].name);
+    assert.equal(note.fields.kind, "source-group");
+    assert.equal(note.fields.status, "draft");
+    assert.equal(note.fields.reviewed, "unreviewed");
+  }
   assert.deepEqual(identities, result.metrics.identity_plan);
   const planFile = JSON.parse(readFileSync(join(saved, "plan.json")));
-  assert.equal(planFile.schema_version, 4);
+  assert.equal(planFile.schema_version, 5);
+  assert(!planFile.notes.some(note => Object.hasOwn(note, "fields")));
   assert.equal(planFile.notes[1].evidence[0].sources[0].source, 3);
   const plain = run(f, ["local-onboarding-plan", "--packet", join(saved, "packet.json")]);
   assert.equal(plain.status, 0, plain.stderr);
@@ -160,6 +169,8 @@ test("automatic plan refuses slot/name injection, later-group failure and source
     p => { p.notes[0].slot = 99; },
     p => { p.notes[0].name = "escape"; },
     p => { p.notes[0].note_type = "task"; },
+    p => { p.notes[0].fields = { status: "active", reviewed: "2026-11-09" }; },
+    p => { p.notes[0].fields = null; },
   ]) await assert.rejects(draftLocalOnboarding({ ...options(f), autoPlan: true }, async input => {
     const p = slottedReply(input); mutation(p); return { answer: JSON.stringify(p) };
   }), /Component must produce/);
@@ -194,6 +205,23 @@ test("automatic plan rejects incompatible options and supports sampled explicit 
   });
   assert.equal(result.metrics.identity_plan.slots.length, 1);
   assert.equal(JSON.parse(result.output).review.sampled_sources.length, 1);
+});
+
+test("automatic metadata refuses custom required fields before inference while explicit corrections remain available", async t => {
+  const f = fixture(t);
+  const configPath = join(f.root, "akasha.toml");
+  const config = readFileSync(configPath, "utf8");
+  assert(config.includes('"entity", "kind", "status", "reviewed"'));
+  writeFileSync(configPath, config.replace('"entity", "kind", "status", "reviewed"', '"entity", "kind", "status", "reviewed", "owner"'));
+  const before = snapshot(f.root);
+  await assert.rejects(draftLocalOnboarding({ ...options(f), autoPlan: true }, () => assert.fail("must refuse before inference")), /required fields owner/);
+  assert.deepEqual(snapshot(f.root), before);
+  const result = await draftLocalOnboarding(options(f), async input => {
+    const p = plan(input); p.notes[0].fields.owner = "unassigned";
+    return { answer: JSON.stringify(p) };
+  });
+  assert.equal(JSON.parse(result.output).review.notes[0].fields.owner, "unassigned");
+  assert.deepEqual(snapshot(f.root), before);
 });
 
 test("large-file sampling supports sources, groups and discovery through reviewed apply and retrieval", async t => {

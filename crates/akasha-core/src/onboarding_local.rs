@@ -287,6 +287,11 @@ pub struct LocalOnboardingSlot {
     pub path: PathBuf,
     /// One-based handles in the original packet, never completion-local handles.
     pub sources: Vec<usize>,
+    /// Mechanical initial metadata, never model-asserted project state or a review date.
+    pub fields: BTreeMap<String, String>,
+    /// Custom required metadata needs an explicit reviewed version-4 plan.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unresolved_fields: Vec<String>,
 }
 
 /// Plan a bounded partition before inference; an ambiguous entity schema refuses.
@@ -348,6 +353,35 @@ pub fn plan_local_onboarding(
             serde_json::to_vec(&(1, note_type, role, paths)).map_err(|e| invalid(e.to_string()))?;
         let digest = content_fingerprint(&identity);
         let name = format!("onboarding-{role}-{}", &digest[7..39]);
+        let mut fields = BTreeMap::from([
+            ("entity".into(), name.clone()),
+            ("kind".into(), "source-group".into()),
+            ("status".into(), "draft".into()),
+            ("reviewed".into(), "unreviewed".into()),
+        ]);
+        let mut unresolved_fields = Vec::new();
+        let required = schema["required_fields"]
+            .as_array()
+            .ok_or_else(|| invalid("missing entity required fields"))?;
+        for field in required {
+            let field = field
+                .as_str()
+                .ok_or_else(|| invalid("invalid entity required field"))?;
+            match field {
+                "schema_version" | "evidence" => {}
+                "project" => {
+                    let project = packet.preparation["project"]
+                        .as_str()
+                        .ok_or_else(|| invalid("missing project identity"))?;
+                    fields.insert(field.into(), project.into());
+                }
+                "type" => {
+                    fields.insert(field.into(), note_type.clone());
+                }
+                _ if fields.contains_key(field) => {}
+                _ => unresolved_fields.push(field.into()),
+            }
+        }
         slots.push(LocalOnboardingSlot {
             slot: slots.len() + 1,
             role: role.into(),
@@ -355,10 +389,12 @@ pub fn plan_local_onboarding(
             path: Path::new(folder).join(format!("{name}.md")),
             name,
             sources,
+            fields,
+            unresolved_fields,
         });
     }
     let plan = LocalOnboardingIdentityPlan {
-        schema_version: 1,
+        schema_version: 2,
         slots,
     };
     bounded_json(&plan)?;
@@ -376,7 +412,7 @@ struct SlottedPlan {
 #[serde(deny_unknown_fields)]
 struct SlottedNote {
     slot: usize,
-    fields: BTreeMap<String, String>,
+    fields: Option<BTreeMap<String, String>>,
     evidence: Vec<PlannedClaim>,
 }
 
@@ -387,8 +423,17 @@ fn resolve_slotted_plan(
 ) -> Result<LocalPlan, OnboardingBatchError> {
     let plan: SlottedPlan =
         serde_json::from_str(json).map_err(|e| invalid(format!("invalid slotted plan: {e}")))?;
-    if plan.schema_version != 4 {
-        return Err(invalid("slotted plans require schema_version 4"));
+    if ![4, 5].contains(&plan.schema_version) {
+        return Err(invalid("slotted plans require schema_version 4 or 5"));
+    }
+    // Presence matters: even null/empty metadata in a version-5 plan must refuse.
+    let raw: serde_json::Value = serde_json::from_str(json).map_err(|e| invalid(e.to_string()))?;
+    if plan.schema_version == 5
+        && raw["notes"]
+            .as_array()
+            .is_some_and(|notes| notes.iter().any(|note| note.get("fields").is_some()))
+    {
+        return Err(invalid("version-5 metadata is host-owned; omit fields"));
     }
     let identities = plan_local_onboarding(request, packet)?;
     if plan.notes.len() != identities.slots.len() {
@@ -403,6 +448,18 @@ fn resolve_slotted_plan(
             .checked_sub(1)
             .and_then(|index| identities.slots.get(index))
             .ok_or_else(|| invalid("unknown planned note slot"))?;
+        let fields = if plan.schema_version == 5 {
+            if !slot.unresolved_fields.is_empty() {
+                return Err(invalid(format!(
+                    "automatic metadata cannot supply required fields {:?}; use a reviewed version-4 plan",
+                    slot.unresolved_fields
+                )));
+            }
+            slot.fields.clone()
+        } else {
+            note.fields
+                .ok_or_else(|| invalid("version-4 slotted notes require fields"))?
+        };
         for claim in &note.evidence {
             for reference in &claim.sources {
                 match reference {
@@ -421,7 +478,7 @@ fn resolve_slotted_plan(
                 PlannedNote {
                     note_type: slot.note_type.clone(),
                     name: slot.name.clone(),
-                    fields: note.fields,
+                    fields,
                     evidence: note.evidence,
                 },
             )
@@ -473,7 +530,7 @@ pub fn compile_local_onboarding(
     }
     let version: serde_json::Value = serde_json::from_str(plan_json)
         .map_err(|error| invalid(format!("invalid local onboarding plan: {error}")))?;
-    let plan: LocalPlan = if version["schema_version"] == 4 {
+    let plan: LocalPlan = if matches!(version["schema_version"].as_u64(), Some(4 | 5)) {
         resolve_slotted_plan(request, packet, plan_json)?
     } else {
         serde_json::from_str(plan_json)

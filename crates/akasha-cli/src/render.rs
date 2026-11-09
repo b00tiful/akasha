@@ -51,6 +51,23 @@ pub(crate) fn render_local_onboarding_plan(
             slot.sources
         )
         .expect("writing to a string cannot fail");
+        for (key, value) in &slot.fields {
+            writeln!(
+                text,
+                "  {}: {}",
+                librarian_display(key),
+                librarian_display(value)
+            )
+            .expect("writing to a string cannot fail");
+        }
+        if !slot.unresolved_fields.is_empty() {
+            writeln!(
+                text,
+                "  Needs reviewed metadata: {:?}",
+                slot.unresolved_fields
+            )
+            .expect("writing to a string cannot fail");
+        }
     }
     write_stdout(&text)
 }

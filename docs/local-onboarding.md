@@ -175,23 +175,33 @@ target/debug/akasha --root /path/to/akasha-root --project example \
 ```
 
 Plain output lists slot, role, configured type, project-relative destination and original-packet
-source handles. `--json` returns `{schema_version: 1, slots}` with these fields. Filenames use
+source handles. `--json` returns `{schema_version: 2, slots}` with these fields, host-owned
+`fields` and any `unresolved_fields`. Filenames use
 `onboarding-ROLE-HASH`, with a stable 128-bit path-set hash; content edits retain the identity.
 Source-set/type changes can change names. Existing targets are never silently renamed or
 suffixed: differing contents refuse at compilation. Review the exact proposed destinations.
 
-One independent completion per slot supplies a version-4 plan: `notes` contain `slot`, `fields`
-and `evidence`; there are no model-owned `name` or `note_type` fields. The adapter remaps local
-source handles to the original packet. Rust rebuilds the plan, requires all slots exactly once
+One independent completion per slot supplies a version-5 plan: `notes` contain only `slot`
+and `evidence`. Rust owns all metadata: `entity` is the unique source-group stem, `kind` is
+`source-group`, `status` is `draft` and `reviewed` is `unreviewed`. The last value explicitly
+records that no review date has been established. Required `project`/`type` values come from
+configuration. Unknown required fields refuse before inference; use explicit groups or a
+reviewed version-4 correction for custom metadata. The model cannot supply `fields`, names,
+types or review dates, even as empty/null values. Its prompt contains role/scoped evidence and
+focus intent, without metadata schemas, templates, inventory or opaque storage stems. The adapter
+remaps local source handles to the original packet. Rust rebuilds the plan, requires all slots exactly once
 and rejects citations outside a slot's group. All notes still need metadata/claim review and
 full-ID application. Worker reuse retains the same overall deadline; a later failure returns no
 partial proposal.
 
 `--save-inputs` also preserves `identity-plan.json` privately before inference. Correct a copy of
-saved version-4 `plan.json` using its original slot IDs and original-packet source handles, then
-run ordinary `local-onboarding-compile` against `packet.json`. Names/types and group membership
-come from the packet, not the correction file. Existing version-2/3 correction plans and explicit
-component groups retain their behavior. Draft/proposal/publication formats remain unchanged.
+saved version-5 `plan.json` using its original slot IDs and original-packet source handles, then
+run ordinary `local-onboarding-compile` against `packet.json`. For explicit metadata corrections,
+change the plan version to 4 and add `fields` to every note, initially copied from its
+`identity-plan.json` slot. Edit those fields only after source review; `reviewed` should name an
+actual verification date only when that review occurred. Names/types and group membership
+still come from the packet. Version-4 reviewed corrections, existing version-2/3 plans and
+explicit component groups retain their behavior. Draft/proposal/publication formats remain unchanged.
 
 ## Bounded directory discovery
 
