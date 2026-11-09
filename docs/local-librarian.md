@@ -59,7 +59,7 @@ bodies are excluded. Shared validation can inspect foreign link-target metadata.
 an atomic filesystem snapshot. Regenerate disposable packets after retrieval changes; old
 packets that no longer match current evidence refuse as stale.
 
-Bodies fitting 640 characters stay whole. Longer bodies use the line with greatest query-term
+Bodies fitting the 1,000-character source cap stay whole. Longer bodies use the line with greatest query-term
 overlap, then nearby complete lines within a 640-character context target. A long winning line
 and no-body-match fallback can still use the 1,000-character hard cap. Excerpts preserve source
 bytes and physical lines; partial coverage is explicit. Filename weighting and lexical windows

@@ -477,6 +477,47 @@ fn librarian_does_not_fill_a_quote_with_an_unrelated_long_following_line() {
 }
 
 #[test]
+fn librarian_preserves_complete_bodies_up_to_the_hard_cap_before_ranking_lines() {
+    let f = fixture("librarian-complete-body-cap");
+    let id = "Projects/alpha/entities/core.md";
+    let header = "---\nschema_version: 1\nentity: core\nkind: subsystem\nstatus: observed\nreviewed: 2026-11-09\n---\n";
+    // A later high-overlap claim must not hide an earlier answer when both fit.
+    for length in [641, 800, 1000] {
+        let first = "\nMaximum buffer size is 24 MiB.\r\n";
+        let last = "\r\nBuffer reader checks size before returning bytes. 🌍\r\n";
+        let body = format!(
+            "{first}{}{last}",
+            "界".repeat(length - first.chars().count() - last.chars().count())
+        );
+        fs::write(f.root.join(id), format!("{header}{body}")).unwrap();
+        refresh(&f);
+        let before = link_fixture_snapshot(&f.root);
+        let packet =
+            prepare_librarian(&f.request, "maximum buffer reader size", &[], None).unwrap();
+        assert_eq!(packet.evidence[0].excerpt, body);
+        assert!(!packet.evidence[0].excerpt_truncated);
+        let checked = akasha_core::librarian::check_librarian_sources(
+            &f.request,
+            &packet,
+            &source_selection(1, None),
+        )
+        .unwrap();
+        assert_eq!(checked.matches[0].quote, body);
+        assert!(!checked.matches[0].partial_body);
+        assert_eq!(before, link_fixture_snapshot(&f.root));
+    }
+    let body = format!(
+        "\nMaximum buffer size is 24 MiB.\n{}\nBuffer reader size details.\n",
+        "界".repeat(1001)
+    );
+    fs::write(f.root.join(id), format!("{header}{body}")).unwrap();
+    refresh(&f);
+    let packet = prepare_librarian(&f.request, "buffer reader size", &[], None).unwrap();
+    assert!(packet.evidence[0].excerpt.chars().count() <= 1000);
+    assert!(packet.evidence[0].excerpt_truncated);
+}
+
+#[test]
 fn librarian_short_notes_preserve_facts_before_a_query_heavy_reference() {
     let f = fixture("librarian-short-context");
     append_link_source(

@@ -26,7 +26,7 @@ For multi-component coverage, replace the repeated `--source` options with
 
 ```json
 [
-  {"name":"job-queue","sources":["src/queue.rs"]},
+  {"name":"job-queue","sources":["src/queue.rs"],"note_type":"entity"},
   {"name":"capacity-settings","sources":["src/settings.rs"]},
   {"name":"summary-report","sources":["src/report.rs"]}
 ]
@@ -34,7 +34,8 @@ For multi-component coverage, replace the repeated `--source` options with
 
 Each group gets one independent completion with only its complete selected sources and must
 produce exactly one note with that name. Numeric source handles are scoped to each completion;
-the host translates them back to the original packet before Rust compilation. Groups may share
+the host translates them back to the original packet before Rust compilation. Optional `note_type`
+constrains each group to that configured type and is checked before combining notes. Groups may share
 sources; the union still has at most eight files and the original 16,000-byte packet limit.
 All notes are compiled and previewed together, after every completion succeeds. A later failure,
 cancellation or observed drift produces no partial proposal or canonical writes.
@@ -57,22 +58,24 @@ Without `--json`, the command displays the note bodies, projections, proposal ID
 as bounded plain text. Metrics go to stderr. Failure returns nonzero with no normal stdout.
 The draft contains private repository material; keep saved artifacts private.
 
-The model returns a version-2 typed claim plan: a short name, configured string metadata,
-claims and numeric source handles with exact quotes. There is no separate Markdown body field.
-Rust renders the entire body from those same labeled facts, inferences and unknowns, so prose
-cannot silently add an unrecorded claim. It supplies exact source paths/hashes and derives
-one-based inclusive line ranges from each quote, along with configured destinations and canonical
-navigation. Original projection bytes are preserved and links appended for every new note.
-Absolute filesystem identities stay out of inference input.
+The model returns a version-3 typed claim plan: a short name, configured string metadata,
+claims and numeric source/excerpt handles. It never supplies quote text, source paths or line
+numbers. Rust renders the body from those same labeled claims and supplies exact paths/hashes,
+source line ranges, configured destinations and canonical navigation. Original projection bytes
+are preserved and links appended for every new note. Absolute filesystem identities stay out of
+inference input.
 
-Each fact/inference source must contain a nonblank exact quote of at most 1,024 characters,
-occurring exactly once in that source (including overlapping matches). Preserve the source's
-actual whitespace and escapes; a normalized or invented quote refuses. Use enough surrounding
-code to make repeated fragments unique. Rust shows the complete source lines touched by the
-quote, up to 2,048 bytes per excerpt. The bounded `review` report contains all metadata, every
-claim, its rationale and fresh exact source excerpts, plus selected-but-uncited paths. It always
-sets `requires_review: true`. Plain text displays the excerpts with physical line numbers.
-Review output is limited to 16,000 serialized bytes; overflow refuses.
+Rust divides each complete source into consecutive windows of up to 16 complete lines and
+2,048 UTF-8 bytes. The model sees the whole source as numbered excerpts and may cite adjacent
+windows together when a claim crosses a boundary. Handles are one-based within each source;
+repeated text is unambiguous. Empty sources and files with a physical line over 2,048 bytes
+refuse before inference; no lines are silently dropped. Catalog byte offsets and line bounds
+belong to Rust and are revalidated with the complete packet before compilation.
+
+The bounded `review` report contains all metadata, every claim, its rationale and fresh exact
+source excerpts, plus selected-but-uncited paths. It always sets `requires_review: true`.
+Plain text displays excerpts with physical line numbers. Review output is limited to 16,000
+serialized bytes; overflow refuses.
 
 This command performs no canonical writes. Review every generated metadata value and claim against its supplied
 source, including labeled inferences and unknowns. Required string fields do not enforce every
@@ -100,20 +103,23 @@ and complete Markdown `source`), `index`, and `roadmap`. Types, required fields,
 templates come from the selected configuration. Local drafts additionally require both
 projections to link every proposed note and reject broken projection links.
 
-`plan.json` has `schema_version: 2` and `notes`, each with `note_type`, `name` (1–80 lowercase
+`plan.json` has `schema_version: 3` and `notes`, each with `note_type`, `name` (1–80 lowercase
 ASCII letters, digits or hyphens), `fields` (string-valued metadata) and `evidence`. Claims contain
-`kind`, `claim`, `sources: [{"source": 1, "quote": "exact unique source text"}]` (one-based packet
-handles), and `rationale` for inferences or unknowns. Unknowns have no sources. `schema_version`
-and `evidence` cannot be replaced through metadata fields. Legacy body plans must be regenerated;
-unknown fields and other plan versions refuse. Experimental draft JSON is now version 2 and adds
-`review`; preparation packets and the general external/MCP proposal format remain version 1.
+`kind`, `claim`, `sources: [{"source": 1, "excerpt": 2}]` (one-based source/excerpt handles), and
+`rationale` for inferences or unknowns. Unknowns have no sources. Metadata cannot replace
+`schema_version` or `evidence`. Quote/path/range fields in version-3 references refuse.
 
-The local raw-proposal preview also requires claim-rendered bodies and positive bounded source
-ranges; editing only a body refuses. Correct a version-2 plan's claims/quotes/metadata, recompile,
-and review its fresh proposal/preview IDs. Older arbitrary-body local drafts must be regenerated.
-External onboarding retains its existing format and general validation behavior. Quotes and
-body coverage establish traceability, never semantic entailment: a false paraphrase of a real
-comparison can still pass source checks and must be corrected during review.
+Fresh preparation packets are version 2 and include source catalogs; old packets must be
+regenerated. Draft output remains version 2. Version-2 exact-quote plans remain supported with
+fresh packets for saved correction workflows: references use `{"source": 1, "quote": "exact unique
+source text"}`, with a nonblank quote of at most 1,024 characters occurring uniquely, including
+overlapping matches. Legacy arbitrary-body plans refuse. General external/MCP proposal and
+persistent evidence formats remain unchanged.
+
+Raw local preview also requires claim-rendered bodies and positive bounded source ranges;
+editing only a body refuses. Correct the plan's claims/metadata or excerpt selection, recompile,
+and review the fresh proposal/preview IDs. Source integrity does not establish semantic
+entailment: a false paraphrase of a real comparison can still pass and needs review.
 
 The pilot accepts 1–8 complete regular UTF-8 source files, at most 8 KiB each, and a 16,000-byte
 serialized packet including templates, inventory and projections. Oversized inputs refuse;

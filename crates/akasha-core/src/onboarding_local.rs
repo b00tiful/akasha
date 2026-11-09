@@ -25,6 +25,46 @@ pub struct LocalOnboardingSource {
     pub fingerprint: String,
     pub text: String,
     pub lines: usize,
+    pub excerpts: Vec<LocalOnboardingExcerpt>,
+}
+
+/// One complete-line window. UTF-8 byte boundaries refer to the original source.
+/// The adapter only formats these core-owned windows. Handles are 1-based.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalOnboardingExcerpt {
+    pub byte_start: usize,
+    pub byte_end: usize,
+    pub line_start: usize,
+    pub line_end: usize,
+}
+
+fn source_excerpts(text: &str) -> Vec<LocalOnboardingExcerpt> {
+    let mut excerpts: Vec<LocalOnboardingExcerpt> = Vec::new();
+    let mut offset = 0;
+    for (index, line) in text.split_inclusive('\n').enumerate() {
+        // Keep complete text for quote plans, but never silently omit a long line
+        // from the catalog. The excerpt-based adapter refuses an empty catalog.
+        if line.len() > 2048 {
+            return Vec::new();
+        }
+        if let Some(last) = excerpts.last_mut()
+            && offset + line.len() - last.byte_start <= 2048
+            && index + 1 - last.line_start < 16
+        {
+            last.byte_end = offset + line.len();
+            last.line_end = index + 1;
+        } else {
+            excerpts.push(LocalOnboardingExcerpt {
+                byte_start: offset,
+                byte_end: offset + line.len(),
+                line_start: index + 1,
+                line_end: index + 1,
+            });
+        }
+        offset += line.len();
+    }
+    excerpts
 }
 
 /// Complete, bounded explicit inputs, including current templates and projections.
@@ -142,10 +182,10 @@ struct PlannedClaim {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PlannedSource {
-    source: usize,
-    quote: String,
+#[serde(untagged, deny_unknown_fields)]
+enum PlannedSource {
+    Quote { source: usize, quote: String },
+    Excerpt { source: usize, excerpt: usize },
 }
 
 /// Compile typed model plans to ordinary onboarding proposals. JSON frontmatter is valid YAML;
@@ -160,9 +200,9 @@ pub fn compile_local_onboarding(
     }
     let plan: LocalPlan = serde_json::from_str(plan_json)
         .map_err(|error| invalid(format!("invalid local onboarding plan: {error}")))?;
-    if plan.schema_version != 2 {
+    if ![2, 3].contains(&plan.schema_version) {
         return Err(invalid(
-            "local onboarding plans require schema_version 2; regenerate legacy body plans",
+            "local onboarding plans require schema_version 2 (quotes) or 3 (excerpt handles); regenerate legacy body plans",
         ));
     }
     if plan.notes.is_empty() || plan.notes.len() > 3 {
@@ -235,12 +275,40 @@ pub fn compile_local_onboarding(
             }
             let mut sources = Vec::new();
             for reference in claim.sources {
-                let source = reference
-                    .source
+                let handle = match &reference {
+                    PlannedSource::Quote { source, .. } | PlannedSource::Excerpt { source, .. } => {
+                        *source
+                    }
+                };
+                let source = handle
                     .checked_sub(1)
                     .and_then(|index| packet.sources.get(index))
                     .ok_or_else(|| invalid("unknown local onboarding source handle"))?;
-                let (start, end) = quote_lines(source, &reference.quote)?;
+                let (start, end) = match reference {
+                    PlannedSource::Quote { quote, .. } if plan.schema_version == 2 => {
+                        quote_lines(source, &quote)?
+                    }
+                    PlannedSource::Excerpt { excerpt, .. } if plan.schema_version == 3 => {
+                        let window = excerpt
+                            .checked_sub(1)
+                            .and_then(|i| source.excerpts.get(i))
+                            .ok_or_else(|| invalid("unknown local onboarding excerpt handle"))?;
+                        if source.text[window.byte_start..window.byte_end]
+                            .trim()
+                            .is_empty()
+                        {
+                            return Err(invalid(
+                                "local onboarding evidence excerpt must not be blank",
+                            ));
+                        }
+                        (window.line_start, window.line_end)
+                    }
+                    _ => {
+                        return Err(invalid(
+                            "source reference does not match local plan version",
+                        ));
+                    }
+                };
                 let entry = serde_json::json!({ "path": source.path, "fingerprint": source.fingerprint,
                     "line_start": start, "line_end": end });
                 sources.push(entry);
@@ -354,7 +422,7 @@ fn review_local_proposal(
             .ok_or_else(|| invalid("invalid note name"))?;
         if parsed.body != claim_body(name, claims, index, roadmap) {
             return Err(invalid(
-                "local draft body must be rendered from its evidence claims; regenerate with a version-2 plan",
+                "local draft body must be rendered from its evidence claims; regenerate with a claim-only plan",
             ));
         }
         let mut reviewed_claims = Vec::new();
@@ -370,8 +438,13 @@ fn review_local_proposal(
                     .find(|s| reference["path"].as_str() == Some(&s.path))
                     .ok_or_else(|| invalid("unknown review source"))?;
                 let line = |key| {
-                    reference[key].as_u64().and_then(|v| usize::try_from(v).ok()).filter(|&v| v > 0)
-                    .ok_or_else(|| invalid("local draft evidence requires positive line bounds from exact quotes"))
+                    reference[key]
+                        .as_u64()
+                        .and_then(|v| usize::try_from(v).ok())
+                        .filter(|&v| v > 0)
+                        .ok_or_else(|| {
+                            invalid("local draft evidence requires positive source line bounds")
+                        })
                 };
                 let start = line("line_start")?;
                 let end = line("line_end")?;
@@ -532,6 +605,7 @@ pub fn prepare_local_onboarding(
             path: path.clone(),
             fingerprint: content_fingerprint(text.as_bytes()),
             lines: text.lines().count().max(1),
+            excerpts: source_excerpts(&text),
             text,
         });
     }
@@ -544,7 +618,7 @@ pub fn prepare_local_onboarding(
         )
     };
     let packet = LocalOnboardingPacket {
-        schema_version: 1,
+        schema_version: 2,
         index: projection(&config.project.index)?,
         roadmap: projection(&config.project.roadmap)?,
         preparation: serde_json::to_value(preparation)

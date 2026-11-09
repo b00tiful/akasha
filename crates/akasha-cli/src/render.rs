@@ -46,11 +46,21 @@ pub(crate) fn render_local_onboarding_packet(
     for source in &packet.sources {
         let _ = writeln!(
             text,
-            "{} — {} lines — {}",
+            "{} — {} lines — {} excerpts — {}",
             librarian_display(&source.path),
             source.lines,
+            source.excerpts.len(),
             source.fingerprint
         );
+        for (index, excerpt) in source.excerpts.iter().enumerate() {
+            let _ = writeln!(
+                text,
+                "  Excerpt {}: lines {}-{}",
+                index + 1,
+                excerpt.line_start,
+                excerpt.line_end
+            );
+        }
         for line in source.text.lines() {
             let _ = writeln!(text, "  | {}", librarian_display(line));
         }

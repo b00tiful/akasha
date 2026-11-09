@@ -19,10 +19,10 @@ function run(f, args) {
 }
 function options(f) { return { root: f.root, project: "first-run", sources: ["README.md", "Cargo.toml", "src/lib.rs"], json: true }; }
 function plan(packet) {
-  return { schema_version: 2, notes: [{ note_type: "entity", name: "flight-path",
+  return { schema_version: 3, notes: [{ note_type: "entity", name: "flight-path",
     fields: { entity: "flight-path", kind: "library", status: "active", reviewed: "2026-11-08" },
     evidence: [{ kind: "fact", claim: "FlightPath stores waypoints in a vector.",
-      sources: [{ source: Math.max(0, packet.sources.findIndex(source => source.path === "src/lib.rs")) + 1, quote: "pub struct FlightPath {" }] }],
+      sources: [{ source: Math.max(0, packet.sources.findIndex(source => source.path === "src/lib.rs")) + 1, excerpt: 1 }] }],
   }] };
 }
 
@@ -34,6 +34,9 @@ test("local draft uses exact core input and preview; disposable MCP apply makes 
     assert.equal(policy, POLICY);
     assert.equal(input.project, "first-run");
     assert.equal(input.sources.length, 3);
+    assert(input.sources.every(source => source.excerpts.length && !Object.hasOwn(source, "text")));
+    assert.equal(schema.properties.schema_version.const, 3);
+    assert(schema.properties.notes.items.oneOf[0].properties.evidence.items.oneOf[0].properties.sources.items.oneOf[0].properties.excerpt);
     assert(schema.properties.notes.items.oneOf.some(variant => variant.properties.note_type.const === "entity"));
     return { answer: JSON.stringify(plan(input)), metrics: { synthetic: true } };
   });
@@ -88,7 +91,7 @@ test("plain multi-note review binds sorted preview paths to the correct original
     const value = plan(input);
     const zeta = { ...value.notes[0], name: "zeta", fields: { ...value.notes[0].fields, entity: "zeta" } };
     const alpha = { ...zeta, name: "alpha", fields: { ...zeta.fields, entity: "alpha" } };
-    return { answer: JSON.stringify({ schema_version: 2, notes: [zeta, alpha] }) };
+    return { answer: JSON.stringify({ schema_version: 3, notes: [zeta, alpha] }) };
   });
   const positions = ["alpha.md (", "# alpha", "zeta.md (", "# zeta"].map(text => result.output.indexOf(text));
   assert(positions.every(position => position >= 0));
@@ -134,9 +137,9 @@ test("component drafts remap local handles, preview together and retrieve each a
     calls++;
     const note = plan(input).notes[0];
     note.name = input.component; note.fields.entity = input.component;
-    note.evidence[0].sources = [{ source: 1, quote: input.sources[0].text.split("\n")[0] }];
+    note.evidence[0].sources = [{ source: 1, excerpt: 1 }];
     note.evidence[0].claim = input.component === "library" ? "FlightPath stores waypoints." : "The manifest declares a Rust package.";
-    return { answer: JSON.stringify({ schema_version: 2, notes: [note] }), metrics: { fake: true } };
+    return { answer: JSON.stringify({ schema_version: 3, notes: [note] }), metrics: { fake: true } };
   });
   assert.equal(calls, 2);
   const draft = JSON.parse(result.output);
@@ -175,7 +178,7 @@ test("later component failure, out-of-group handles and drift never publish a pa
     await assert.rejects(draftLocalOnboarding({ root: f.root, project: "first-run", components, signal: controller.signal }, async input => {
       calls++;
       const note = plan(input).notes[0]; note.name = input.component;
-      note.evidence[0].sources = [{ source: 1, quote: input.sources[0].text.split("\n")[0] }];
+      note.evidence[0].sources = [{ source: 1, excerpt: 1 }];
       if (calls === 2) {
         if (mode === "failure") throw new Error("later failure");
         if (mode === "handle") note.evidence[0].sources[0].source = 2;
@@ -183,7 +186,7 @@ test("later component failure, out-of-group handles and drift never publish a pa
         if (mode === "drift") writeFileSync(join(f.repository, "Cargo.toml"), readFileSync(join(f.repository, "Cargo.toml"), "utf8") + "\n");
         if (mode === "cancel") controller.abort(new Error("cancelled"));
       }
-      return { answer: JSON.stringify({ schema_version: 2, notes: [note] }) };
+      return { answer: JSON.stringify({ schema_version: 3, notes: [note] }) };
     }));
     assert.equal(calls, 2);
     assert.deepEqual(snapshot(f.root), before);
@@ -192,8 +195,64 @@ test("later component failure, out-of-group handles and drift never publish a pa
 
 
 test("configured reviewed fields are constrained to the supplied draft date", () => {
-  const schema = planSchema({ sources: [{path:"one"}], preparation: { project:"test", note_types: { entity: { required_fields: ["reviewed", "entity"] } } } }, "2026-11-08");
+  const schema = planSchema({ sources: [{path:"one", excerpts: [{}]}], preparation: { project:"test", note_types: { entity: { required_fields: ["reviewed", "entity"] } } } }, "2026-11-08");
   assert.deepEqual(schema.properties.notes.items.oneOf[0].properties.fields.properties.reviewed, { const: "2026-11-08" });
+});
+
+test("excerpt prompt formatting preserves complete Unicode/CRLF bytes across windows", async t => {
+  const f = fixture(t);
+  const text = Array.from({ length: 34 }, (_, i) => `// Привет 世界 ${i}\r\n`).join("") + "// final λ";
+  writeFileSync(join(f.repository, "unicode.rs"), text);
+  const result = await draftLocalOnboarding({ ...options(f), sources: ["unicode.rs"] }, async input => {
+    assert.equal(input.sources[0].excerpts.length, 3);
+    assert.equal(input.sources[0].excerpts.map(e => e.text).join(""), text);
+    const value = plan(input);
+    value.notes[0].evidence[0].claim = "The source includes multilingual comments.";
+    value.notes[0].evidence[0].sources = [{ source: 1, excerpt: 3 }];
+    return { answer: JSON.stringify(value) };
+  });
+  const reviewed = JSON.parse(result.output).review.notes[0].claims[0].sources[0];
+  assert.equal(reviewed.line_start, 33);
+  assert.equal(reviewed.line_end, 35);
+  assert(reviewed.excerpt.endsWith("// final λ"));
+});
+
+test("explicit configured component class constrains schema and refuses model class drift", async t => {
+  const f = fixture(t), before = snapshot(f.root);
+  const components = [{ name: "library", sources: ["src/lib.rs"], note_type: "entity" }];
+  const opts = { root: f.root, project: "first-run", components, json: true };
+  for (const wrongType of [false, true]) {
+    const draft = draftLocalOnboarding(opts, async (input, schema) => {
+      assert.deepEqual(schema.properties.notes.items.oneOf.map(v => v.properties.note_type.const), ["entity"]);
+      const value = plan(input);
+      value.notes[0].name = input.component;
+      if (wrongType) value.notes[0].note_type = "decision";
+      return { answer: JSON.stringify(value) };
+    });
+    if (wrongType) await assert.rejects(draft, /named note/);
+    else assert.equal(JSON.parse((await draft).output).proposal.notes[0].note_type, "entity");
+  }
+  await assert.rejects(draftLocalOnboarding({ ...opts, components: [{ ...components[0], note_type: "absent" }] }, () => assert.fail("must not infer")), /configured component note_type/);
+  assert.deepEqual(snapshot(f.root), before);
+});
+
+test("empty or unselectable complete-line catalogs refuse before inference", async t => {
+  const f = fixture(t), before = snapshot(f.root);
+  for (const text of ["", "x".repeat(2049)]) {
+    writeFileSync(join(f.repository, "uncitable"), text);
+    await assert.rejects(draftLocalOnboarding({ ...options(f), sources: ["uncitable"] }, () => assert.fail("must not infer")), /no complete excerpt catalog/);
+  }
+  assert.deepEqual(snapshot(f.root), before);
+});
+
+test("out-of-group excerpt handles refuse without returning a partial component batch", async t => {
+  const f = fixture(t), before = snapshot(f.root);
+  await assert.rejects(draftLocalOnboarding({ root: f.root, project: "first-run", components: [{ name: "manifest", sources: ["Cargo.toml"] }] }, async input => {
+    const value = plan(input); value.notes[0].name = input.component;
+    value.notes[0].evidence[0].sources[0].excerpt = 99;
+    return { answer: JSON.stringify(value) };
+  }), /Unknown component excerpt handle/);
+  assert.deepEqual(snapshot(f.root), before);
 });
 
 
@@ -219,7 +278,7 @@ test("saved inputs preserve rejected plans privately and refuse overwrite or mem
     const value = plan(input); value.notes[0].evidence[0].sources[0].quote = "invented quote";
     return { answer: JSON.stringify(value) };
   }), error => error.code === 4);
-  assert.equal(JSON.parse(readFileSync(join(saved, "plan.json"))).schema_version, 2);
+  assert.equal(JSON.parse(readFileSync(join(saved, "plan.json"))).schema_version, 3);
   assert.equal(readFileSync(join(saved, "completion-1.json"), "utf8"), readFileSync(join(saved, "plan.json"), "utf8"));
   assert.equal(JSON.parse(readFileSync(join(saved, "packet.json"))).sources.length, 3);
   if (process.platform !== "win32") {

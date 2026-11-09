@@ -164,7 +164,7 @@ fn matches_term(text: &str, term: &str, automatic: bool) -> bool {
 
 // Keep a line-aligned exact quote: choose coverage before proximity, then add bounded context.
 fn ranked_excerpt(body: &str, needles: &BTreeSet<String>, automatic: bool) -> (usize, String) {
-    if body.chars().take(EXCERPT_CONTEXT_CHARS + 1).count() <= EXCERPT_CONTEXT_CHARS {
+    if body.chars().take(EXCERPT_CHARS + 1).count() <= EXCERPT_CHARS {
         return (0, body.to_owned());
     }
     let mut best_hits = 0;

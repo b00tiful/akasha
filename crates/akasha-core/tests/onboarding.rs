@@ -14,6 +14,131 @@ use sha2::{Digest, Sha256};
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn local_excerpt_catalog_is_lossless_bounded_and_resists_handle_tampering() {
+    use akasha_core::onboarding_local::{compile_local_onboarding, prepare_local_onboarding};
+    let fixture = Fixture::new("local-excerpt-handles");
+    // Repeated text is intentionally legal: handles identify a specific physical window.
+    let text = (0..38)
+        .map(|i| format!("// Привет 世界 repeated {}\r\n", i % 2))
+        .collect::<String>();
+    fs::write(fixture.resolution.cwd.join("input.rs"), &text).unwrap();
+    let packet = prepare_local_onboarding(&fixture.resolution, &["input.rs".into()]).unwrap();
+    assert_eq!(packet.schema_version, 2);
+    let source = &packet.sources[0];
+    assert_eq!(source.excerpts.len(), 3);
+    let mut bytes = String::new();
+    for excerpt in &source.excerpts {
+        assert!(excerpt.byte_end - excerpt.byte_start <= 2048);
+        assert!(excerpt.line_end - excerpt.line_start < 16);
+        bytes.push_str(&text[excerpt.byte_start..excerpt.byte_end]);
+    }
+    assert_eq!(bytes, text);
+    let plan = serde_json::json!({ "schema_version": 3, "notes": [{ "note_type": "entity", "name": "core",
+        "fields": { "entity": "core", "kind": "subsystem", "status": "active", "reviewed": "2026-11-09" },
+        "evidence": [{ "kind": "fact", "claim": "The source includes repeated multilingual comments.", "sources": [{ "source": 1, "excerpt": 2 }] }]
+    }] });
+    let before = fixture.project_snapshot();
+    let draft = compile_local_onboarding(&fixture.resolution, &packet, &plan.to_string()).unwrap();
+    let review = &draft.review.notes[0].claims[0].sources[0];
+    assert_eq!((review.line_start, review.line_end), (17, 32));
+    assert_eq!(
+        review.excerpt,
+        text.lines()
+            .skip(16)
+            .take(16)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    for reference in [
+        serde_json::json!({"source": 1, "excerpt": 0}),
+        serde_json::json!({"source": 1, "excerpt": 4}),
+        serde_json::json!({"source": 0, "excerpt": 1}),
+        serde_json::json!({"source": 2, "excerpt": 1}),
+        serde_json::json!({"source": 1, "excerpt": 1, "quote": "invented"}),
+        serde_json::json!({"source": 1, "excerpt": 1, "line_start": 17}),
+        serde_json::json!({"source": 1, "quote": "// Привет"}),
+    ] {
+        let mut changed = plan.clone();
+        changed["notes"][0]["evidence"][0]["sources"][0] = reference;
+        assert!(
+            compile_local_onboarding(&fixture.resolution, &packet, &changed.to_string()).is_err()
+        );
+    }
+    let mut altered = packet.clone();
+    altered.sources[0].excerpts[1].line_start = 1;
+    assert_eq!(
+        compile_local_onboarding(&fixture.resolution, &altered, &plan.to_string())
+            .unwrap_err()
+            .exit_code(),
+        5
+    );
+    altered = packet.clone();
+    altered.sources[0].excerpts[1].byte_start = usize::MAX;
+    assert_eq!(
+        compile_local_onboarding(&fixture.resolution, &altered, &plan.to_string())
+            .unwrap_err()
+            .exit_code(),
+        5
+    );
+    fs::write(
+        fixture.resolution.cwd.join("input.rs"),
+        text + "// changed\n",
+    )
+    .unwrap();
+    assert_eq!(
+        compile_local_onboarding(&fixture.resolution, &packet, &plan.to_string())
+            .unwrap_err()
+            .exit_code(),
+        5
+    );
+    assert_eq!(fixture.project_snapshot(), before);
+}
+
+#[test]
+fn local_excerpt_catalog_keeps_final_lines_byte_limits_and_blank_refusals_explicit() {
+    use akasha_core::onboarding_local::{compile_local_onboarding, prepare_local_onboarding};
+    let fixture = Fixture::new("local-excerpt-boundaries");
+    for text in [
+        "",
+        "one",
+        "first\n\nlast\n",
+        "first\r\n\r\nlast",
+        &format!("{}\n{}", "x".repeat(2047), "λ".repeat(1024)),
+    ] {
+        fs::write(fixture.resolution.cwd.join("input"), text).unwrap();
+        let packet = prepare_local_onboarding(&fixture.resolution, &["input".into()]).unwrap();
+        let source = &packet.sources[0];
+        assert_eq!(
+            source
+                .excerpts
+                .iter()
+                .map(|e| &text[e.byte_start..e.byte_end])
+                .collect::<String>(),
+            text
+        );
+        if let Some(last) = source.excerpts.last() {
+            assert_eq!(last.line_end, source.lines);
+        }
+    }
+    fs::write(fixture.resolution.cwd.join("input"), "x".repeat(2049)).unwrap();
+    let packet = prepare_local_onboarding(&fixture.resolution, &["input".into()]).unwrap();
+    assert!(packet.sources[0].excerpts.is_empty());
+    assert_eq!(packet.sources[0].text.len(), 2049); // No silent clipping, legacy quote input preserved.
+    fs::write(fixture.resolution.cwd.join("input"), "\n\r\n  \n").unwrap();
+    let packet = prepare_local_onboarding(&fixture.resolution, &["input".into()]).unwrap();
+    let plan = serde_json::json!({ "schema_version": 3, "notes": [{ "note_type": "entity", "name": "core",
+        "fields": { "entity": "core", "kind": "subsystem", "status": "active", "reviewed": "2026-11-09" },
+        "evidence": [{ "kind": "fact", "claim": "A source exists.", "sources": [{ "source": 1, "excerpt": 1 }] }]
+    }] });
+    assert!(
+        compile_local_onboarding(&fixture.resolution, &packet, &plan.to_string())
+            .unwrap_err()
+            .to_string()
+            .contains("must not be blank")
+    );
+}
+
+#[test]
 fn local_packet_preserves_complete_unicode_sources_and_exact_fingerprints() {
     use akasha_core::onboarding_local::prepare_local_onboarding;
     let fixture = Fixture::new("local-packet");
