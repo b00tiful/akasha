@@ -1,9 +1,54 @@
-# Local librarian source passages
+# Local librarian: source passages and cited answers
+
+Experimental `--answer` asks the selected main Qwen3.5-9B model to locate exact recorded statements.
+Its current usefulness gate fails: it can miss answers, select headings and drop supported parts.
+Keep the source-only default for normal navigation while this experiment is evaluated:
+
+```sh
+inference_dir="$HOME/.local/share/akasha/local-inference"
+node scripts/local-librarian.mjs --root /path/to/memory --project example \
+  --answer --question "What is the queue capacity and how are duplicates handled?" \
+  --server "$inference_dir/runtimes/llama-b12110-vulkan/llama-server" \
+  --model "$inference_dir/models/Qwen3.5-9B-UD-Q4_K_XL.gguf" \
+  --model-sha256 6f5d30666c2d8ae16a306e616d95341dcf3cc46810df84d7e6f5a7d1e4c1b293 \
+  --gpu-layers 99 --threads 4
+```
+
+This opt-in development mode returns up to four **exact recorded statements** with citations.
+The adapter catalogs nonblank complete excerpt lines up to 600 Unicode characters, excluding
+terminal controls and uncertain clipped ending lines. These are text spans, not a new Markdown
+parser or inferred facts. The model selects numeric statement handles and an insufficient-evidence
+flag; it cannot supply displayed prose, paths, quotes or citation values. The host derives each
+statement and citation from the prepared packet and rejects extra fields, unknown/duplicate
+handles, oversized output and empty selections claiming sufficient evidence.
+
+Rust's existing `librarian-check` then rebuilds the packet and checks observed source drift and
+citation/claim bounds. Plain output shows selected statements plus every cited exact passage,
+canonical ID, physical lines, recorded status and partial-body flag. These checks establish exact
+saved text and citation integrity; saved statements may still be wrong or irrelevant. Drafts stay
+drafts and proposals stay proposals. Free-form generation failed the scoped support/partial-answer
+checks and is preserved only as research evidence.
+
+`Insufficient evidence for a complete answer` also permits selected supported statements; no
+statements means none was selected to answer. This does not establish that the repository lacks
+an answer. Empty retrieval or a packet with no eligible complete lines skips model access.
+`--json` keeps the existing checked-answer shape
+`{project, answer: {insufficient_evidence, claims}, evidence}`. Claim text is exact recorded text,
+including existing Markdown notation. Evidence includes all prepared candidates; each claim's
+`citations` identifies its source. No persisted schema or onboarding approval changes. Omit
+`--answer` for the source-passage behavior below.
+
+The command has one absolute 120-second deadline. Preparation and checking use cancellable
+subprocesses, verify CLI identity across the request and hold successful stdout until source
+revalidation and private scratch cleanup finish. Ctrl-C cancels. Main-model evaluation is scoped
+to a fictional multi-component onboarding round trip: source/lifecycle checks pass, while answer
+utility and worker-start acceptance fail. Broader quality/retrieval/desktop gates remain open.
+[Evidence](../akasha/Research/local_cited_answers.md).
 
 The separate [bounded investigator experiment](local-investigator.md) can request scoped follow-up
 reads. This source-selector command retains its existing one-packet behavior and policy.
 
-The development runner uses llama.cpp to select useful **source IDs**. Rust supplies the exact
+By default the development runner uses llama.cpp to select useful **source IDs**. Rust supplies the exact
 quoted passages, recorded status, physical line ranges and scoped wikilinks. The model cannot
 supply an explanation, rewrite a quote or invent a displayed relationship through this interface.
 Relevance still needs review: a passage can be real without answering the question. This is a
@@ -103,15 +148,16 @@ no-match retrieval skips model access. Abrupt parent death can leave a worker or
 Trusted packages remain necessary; this is not OS egress isolation or the deferred privacy mode.
 No chat history or canonical writes are performed. Weights remain installed between calls.
 
-The older `librarian-check --packet FILE --answer FILE` remains an explicitly invoked draft
-checker for compatibility/research. Its valid citations do not prove factual support. The prior
+`librarian-check --packet FILE --answer FILE` also remains directly usable for saved draft
+checking; `--answer` invokes that same checker after host compilation of selected exact statements. Valid citations do not prove factual support. The prior
 Qwen3 4B free-form trial failed (8/16 expanded cases, 0/8 missing-information cases); source
 selection does not overturn that result or establish answerability. The runner now uses the
 source-passage checker by default.
 
 External/cloud onboarding remains available. Local onboarding, changeable route preference and
 local-only privacy mode are accepted later work. Run `node --test scripts/local-librarian.test.mjs`
-for local transport/lifecycle tests and `cargo test --workspace` for Rust verification. Live model
+plus `node --test scripts/librarian-answer.test.mjs` for the onboarding/answer integration and
+`cargo test --workspace` for Rust verification. Live model
 checks must distinguish quote integrity, topical relevance and actual answer support.
 
 The repeatable [retrieval benchmark](../tests/fixtures/librarian-benchmark/README.md) contains

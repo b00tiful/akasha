@@ -444,6 +444,14 @@ pub(crate) fn render_librarian_answer(
         );
     }
     for source in &checked.evidence {
+        if !checked
+            .answer
+            .claims
+            .iter()
+            .any(|claim| claim.citations.contains(&source.citation))
+        {
+            continue;
+        }
         let _ = writeln!(
             text,
             "[{}] {}:{}–{}",
@@ -452,6 +460,19 @@ pub(crate) fn render_librarian_answer(
             source.line_start,
             source.line_end
         );
+        let _ = writeln!(
+            text,
+            "  Recorded status: {}{}",
+            librarian_display(source.status.as_deref().unwrap_or("not recorded")),
+            if source.excerpt_truncated {
+                "; partial body"
+            } else {
+                ""
+            }
+        );
+        for line in source.excerpt.lines() {
+            let _ = writeln!(text, "  | {}", librarian_display(line));
+        }
     }
     write_stdout(&text)
 }

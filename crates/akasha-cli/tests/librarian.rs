@@ -86,6 +86,19 @@ fn librarian_actual_binary_checks_citations_and_bounds_input() {
             [0]["citations"][0],
         1
     );
+    let plain = run(&args[1..]);
+    assert!(plain.status.success());
+    let text = String::from_utf8(plain.stdout).unwrap();
+    assert!(text.contains("- The problem is open. [1]"));
+    assert!(text.contains("Recorded status: open"));
+    assert!(text.contains("  | # Synthetic open problem"));
+    assert!(!text.contains('\u{1b}'));
+    fs::write(&answer, r#"{"insufficient_evidence":true,"claims":[]}"#).unwrap();
+    let unknown = run(&args[1..]);
+    assert!(unknown.status.success());
+    let text = String::from_utf8(unknown.stdout).unwrap();
+    assert!(text.contains("Insufficient evidence for a complete answer."));
+    assert!(!text.contains("  | ") && !text.contains("Recorded status:"));
     for bytes in [
         br#"{"insufficient_evidence":false,"claims":[{"text":"Invented.","citations":[99]}]}"#
             .to_vec(),

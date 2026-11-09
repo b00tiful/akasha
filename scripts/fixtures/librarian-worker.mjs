@@ -40,6 +40,7 @@ const server = http.createServer(async (request, response) => {
     result = { stop: true, truncated: scenario === "truncated", stop_type: scenario === "limit" ? "limit" : "eos",
       content: scenario === "investigator-invalid" ? '{"action":"invalid"}' : scenario === "investigator"
         ? JSON.stringify(body.json_schema.properties?.terms ? { terms: [] } : { action: "finish", handles: [] })
+        : scenario === "answer" ? '{"insufficient_evidence":false,"selections":[{"statement":3}]}'
         : '{"selections":[]}', timings: { predicted_n: 8 } };
   }
   response.end(JSON.stringify(result));

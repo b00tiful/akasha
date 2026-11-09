@@ -400,6 +400,13 @@ Use that proposal and its new full preview ID for application. The earlier ID ca
 changed content; editing an identifier is not a substitute for reviewing again.
 
 After success or an uncertain/interrupted apply, inspect current state and run `validate`.
+After a successful reviewed publication, the [local librarian's optional `--answer` mode](local-librarian.md)
+can select exact recorded statements with citations and status. Its answer-utility gate remains
+unaccepted; source-only navigation remains the default. Use the same explicit
+root/project and main-model options; questions use saved canonical knowledge, not a fresh scan
+of the repository. Selection and uncertainty still need review. A published draft retains its
+draft status and does not become automatically verified knowledge.
+
 If a pending note journal leaves the project invalid, use the existing desktop load/retry or
 F5 in a clean TUI session for recovery, following [the recovery runbook](recovery.md).
 Local preview/apply first validates its packet and cannot recover an invalid partial project;
