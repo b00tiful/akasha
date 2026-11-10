@@ -4,8 +4,8 @@ import { LibrarianPanel } from "./librarian";
 import type { DesktopLibrarianReview } from "./librarian-types";
 import type { LinkedLibraryDocument } from "./types";
 
-const { inspect, follow, setupModel, reserve, cancel, assist, install, verify } = vi.hoisted(() => ({ inspect: vi.fn(), follow: vi.fn(), setupModel: vi.fn(), reserve: vi.fn(), cancel: vi.fn(), assist: vi.fn(), install: vi.fn(), verify: vi.fn() }));
-vi.mock("./api", () => ({ inspectLibrarian: inspect, followLibrarianSource: follow, localInferenceAvailability: setupModel, reserveLocalGeneration: reserve, cancelLocalGeneration: cancel, assistLibrarian: assist, importInferenceAsset: install, verifyInferenceAsset: verify }));
+const { inspect, follow, explore, setupModel, reserve, cancel, assist, install, verify } = vi.hoisted(() => ({ inspect: vi.fn(), follow: vi.fn(), explore: vi.fn(), setupModel: vi.fn(), reserve: vi.fn(), cancel: vi.fn(), assist: vi.fn(), install: vi.fn(), verify: vi.fn() }));
+vi.mock("./api", () => ({ inspectLibrarian: inspect, followLibrarianSource: follow, exploreLibrarian: explore, localInferenceAvailability: setupModel, reserveLocalGeneration: reserve, cancelLocalGeneration: cancel, assistLibrarian: assist, importInferenceAsset: install, verifyInferenceAsset: verify }));
 const binding = { root: "/resolved/root", project: "alpha" };
 const id = "Projects/alpha/entities/core.md";
 function result(): DesktopLibrarianReview {
@@ -26,6 +26,13 @@ function result(): DesktopLibrarianReview {
           line_start: 2, line_end: 2, freshness: "unchanged", excerpt_state: "complete", excerpt: "const LIMIT: usize = 37;\r\n" }] }] }] },
   } };
 }
+function relatedResult(parent: DesktopLibrarianReview, anchor: string, next: string): DesktopLibrarianReview {
+  const related = structuredClone(parent);
+  related.packet.note = anchor;
+  related.packet.evidence = [{ ...related.packet.evidence[0]!, id: next }];
+  related.review.sources.matches = [{ ...related.review.sources.matches[0]!, id: next }];
+  return related;
+}
 function panel() {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
@@ -39,10 +46,77 @@ function panel() {
   return { host, panel, question, submit, open, activate };
 }
 beforeEach(() => {
-  for (const mock of [inspect, follow, setupModel, reserve, cancel, assist]) mock.mockReset();
+  for (const mock of [inspect, follow, explore, setupModel, reserve, cancel, assist]) mock.mockReset();
   cancel.mockResolvedValue(undefined);
   reserve.mockResolvedValue("reserved-local-id");
   setupModel.mockResolvedValue({ supported: true, model_present: true, vulkan_present: true, cpu_present: false, model: "Qwen9B", location: "/installed" });
+});
+
+it("follows two checked neighborhoods, retaining originals and packet-bound navigation, with a three-search cap", async () => {
+  const initial = result();
+  const next = relatedResult(initial, id, "Projects/alpha/entities/retry.md");
+  const last = relatedResult(next, next.packet.evidence[0]!.id, "Projects/alpha/entities/checks.md");
+  inspect.mockResolvedValue(initial);
+  explore.mockResolvedValueOnce(next).mockResolvedValueOnce(last).mockResolvedValueOnce(relatedResult(last, last.packet.evidence[0]!.id, "Projects/alpha/entities/final.md"));
+  const { host, submit, activate } = panel();
+  submit();
+  await vi.waitFor(() => expect(host.querySelectorAll("article")).toHaveLength(1));
+  host.querySelector<HTMLButtonElement>("[data-explore]")!.click();
+  await vi.waitFor(() => expect(host.querySelectorAll("article")).toHaveLength(2));
+  expect(explore).toHaveBeenLastCalledWith(binding.root, binding.project, initial.packet, 1, false);
+  expect(host.querySelector<HTMLButtonElement>("[data-explore]")!.disabled).toBe(true);
+  host.querySelectorAll<HTMLButtonElement>("[data-explore]")[1]!.click();
+  await vi.waitFor(() => expect(host.querySelectorAll("article")).toHaveLength(3));
+  expect(host.textContent).toContain(`Related to ${next.packet.evidence[0]!.id}`);
+  const document = { id: last.packet.evidence[0]!.id, source: "# Checked\n", links: [] };
+  follow.mockResolvedValue(document);
+  host.querySelectorAll<HTMLButtonElement>("article > button:first-child")[2]!.click();
+  await vi.waitFor(() => expect(activate).toHaveBeenCalledWith(document));
+  expect(follow).toHaveBeenLastCalledWith(binding.root, binding.project, last.packet, 1);
+  host.querySelectorAll<HTMLButtonElement>("[data-explore]")[2]!.click();
+  await vi.waitFor(() => expect(host.textContent).toContain("Related-search limit reached"));
+  expect([...host.querySelectorAll<HTMLButtonElement>("[data-explore]")].every(button => button.disabled)).toBe(true);
+  expect(assist).not.toHaveBeenCalled(); expect(reserve).not.toHaveBeenCalled();
+});
+
+it("hides exact repeated passages and disables stale exploration after a checked refusal", async () => {
+  const initial = result(), repeated = structuredClone(initial);
+  repeated.packet.note = id;
+  inspect.mockResolvedValue(initial); explore.mockResolvedValueOnce(repeated).mockRejectedValueOnce({ message: "source changed" });
+  const { host, submit } = panel();
+  submit();
+  await vi.waitFor(() => expect(host.querySelector("[data-explore]")).not.toBeNull());
+  host.querySelector<HTMLButtonElement>("[data-explore]")!.click();
+  await vi.waitFor(() => expect(host.textContent).toContain("No new distinct passages"));
+  expect(host.querySelectorAll("article")).toHaveLength(1);
+  submit();
+  await vi.waitFor(() => expect(host.querySelector<HTMLButtonElement>("[data-explore]")!.disabled).toBe(false));
+  host.querySelector<HTMLButtonElement>("[data-explore]")!.click();
+  await vi.waitFor(() => expect(host.textContent).toContain("Previous results are stale"));
+  expect(host.querySelector<HTMLButtonElement>("[data-explore]")!.disabled).toBe(true);
+});
+
+it("suppresses obsolete related responses after query edits, close, cancel and project changes", async () => {
+  for (const change of ["query", "close", "cancel", "project"]) {
+    const initial = result(); inspect.mockResolvedValue(initial);
+    let finish!: (value: DesktopLibrarianReview) => void;
+    explore.mockImplementationOnce(() => new Promise<DesktopLibrarianReview>(resolve => { finish = resolve; }));
+    const { host, panel: view, question, submit } = panel();
+    submit();
+    await vi.waitFor(() => expect(host.querySelector("[data-explore]")).not.toBeNull());
+    view.setDirty(true);
+    expect(host.querySelector<HTMLButtonElement>("[data-explore]")!.disabled).toBe(true);
+    view.setDirty(false);
+    host.querySelector<HTMLButtonElement>("[data-explore]")!.click();
+    if (change === "query") { question.value = "changed"; question.dispatchEvent(new Event("input")); }
+    if (change === "close") view.suspend();
+    if (change === "cancel") host.querySelector<HTMLButtonElement>("[data-cancel]")!.click();
+    if (change === "project") view.bind({ root: "/other", project: "beta" });
+    finish(relatedResult(initial, id, "Projects/alpha/entities/late.md"));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(host.textContent).not.toContain("Related to");
+    expect(host.textContent).not.toContain("late.md");
+  }
 });
 
 it("shows all checked passages, physical ranges, status, omissions and code without executing source markup", async () => {
@@ -200,7 +274,7 @@ it("explicitly assists with the installed model, retains initial results and bin
   expect(host.textContent).toContain("Additional local search");
   const document = { id: response.expanded.packet.evidence[1]!.id, source: "Retry limit 3.", links: [] };
   follow.mockResolvedValue(document);
-  host.querySelectorAll<HTMLButtonElement>("article > button")[1]!.click();
+  host.querySelectorAll<HTMLButtonElement>("article > button:first-child")[1]!.click();
   await vi.waitFor(() => expect(activate).toHaveBeenCalledWith(document));
   expect(follow).toHaveBeenCalledWith(binding.root, binding.project, response.expanded.packet, 2);
   expect(cancel).toHaveBeenCalledWith("reserved-local-id");

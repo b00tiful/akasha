@@ -534,6 +534,38 @@ pub fn prepare_librarian(
     Ok(packet)
 }
 
+/// Prepare a new bounded search around a freshly checked displayed citation.
+/// The caller cannot substitute a path, question or vocabulary. No recovery or writes.
+pub fn explore_librarian_source(
+    request: &ResolveRequest,
+    packet: &LibrarianPacket,
+    citation: usize,
+) -> Result<LibrarianPacket, NoteLinksError> {
+    if serde_json::to_vec(packet)
+        .expect("serializable packet")
+        .len()
+        > MAX_LIBRARIAN_PACKET_BYTES
+    {
+        return Err(invalid(
+            &request.cwd,
+            "librarian packet exceeds 16000 bytes",
+        ));
+    }
+    let selection = serde_json::json!({"selections": [{"citation": citation}]}).to_string();
+    let checked = check_librarian_sources(request, packet, &selection)?;
+    let anchor = &checked.matches[0];
+    let related = prepare_librarian(request, &packet.question, &packet.terms, Some(&anchor.id))?;
+    if !related
+        .evidence
+        .iter()
+        .any(|entry| entry.id == anchor.id && entry.fingerprint == anchor.fingerprint)
+    {
+        return Err(NoteLinksError::StaleSource(anchor.id.clone()));
+    }
+    check_librarian_sources(request, packet, &selection)?;
+    Ok(related)
+}
+
 /// Check snapshot, response shape and citation membership, not semantic truth.
 pub fn check_librarian_answer(
     request: &ResolveRequest,

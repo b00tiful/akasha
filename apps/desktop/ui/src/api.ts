@@ -14,6 +14,11 @@ export function followLibrarianSource(root: string, project: string, packet: Lib
   return invoke("follow_librarian_source", { root: optional(root), project, packet, citation });
 }
 
+/** Recheck a displayed citation, then retrieve its selected-project outgoing neighbors. */
+export function exploreLibrarian(root: string, project: string, packet: LibrarianPacket, citation: number, provenance: boolean): Promise<DesktopLibrarianReview> {
+  return invoke("explore_librarian", { root: optional(root), project, packet, citation, provenance });
+}
+
 import type {
   DesktopLibrary,
   LinkedLibraryDocument,

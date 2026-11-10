@@ -69,6 +69,65 @@ fn librarian_anchor_expands_only_canonical_same_project_neighbors() {
 }
 
 #[test]
+fn librarian_explores_only_fresh_citations_and_retains_question_vocabulary_and_scope() {
+    use akasha_core::librarian::explore_librarian_source;
+    let f = fixture("librarian-explore");
+    let id = "Projects/alpha/entities/core.md";
+    append_link_source(
+        &f.root,
+        id,
+        "\nOrchid design. [[Projects/alpha/records/tasks/ship-mvp]] [[Projects/zeta/entities/renderer]]\n",
+    );
+    refresh(&f);
+    let before = link_fixture_snapshot(&f.root);
+    let packet = prepare_librarian(&f.request, "Explain ORCHID", &["Orchid".into()], None).unwrap();
+    assert_eq!(packet.evidence.len(), 1);
+    let related = explore_librarian_source(&f.request, &packet, 1).unwrap();
+    assert_eq!(related.question, packet.question);
+    assert_eq!(related.terms, packet.terms);
+    assert_eq!(related.note.as_deref(), Some(id));
+    assert_eq!(related.evidence[0].id, id);
+    assert!(
+        related
+            .evidence
+            .iter()
+            .any(|e| e.id.ends_with("ship-mvp.md"))
+    );
+    assert!(
+        related
+            .evidence
+            .iter()
+            .all(|e| e.id.starts_with("Projects/alpha/"))
+    );
+    assert!(explore_librarian_source(&f.request, &packet, 0).is_err());
+    assert!(explore_librarian_source(&f.request, &packet, 2).is_err());
+    let mut altered = packet.clone();
+    altered.evidence[0].id = "Projects/zeta/entities/renderer.md".into();
+    assert!(explore_librarian_source(&f.request, &altered, 1).is_err());
+    altered = packet.clone();
+    altered.project = "zeta".into();
+    assert!(explore_librarian_source(&f.request, &altered, 1).is_err());
+    altered = packet.clone();
+    altered.evidence[0].excerpt = "x".repeat(16_001);
+    assert!(explore_librarian_source(&f.request, &altered, 1).is_err());
+    assert_eq!(before, link_fixture_snapshot(&f.root));
+    append_link_source(&f.root, id, "\nChanged saved source.\n");
+    assert!(explore_librarian_source(&f.request, &packet, 1).is_err());
+    refresh(&f);
+    let fresh = prepare_librarian(&f.request, "Orchid", &[], None).unwrap();
+    fs::write(
+        f.root
+            .join("Projects/alpha")
+            .join(akasha_core::NOTE_EDIT_JOURNAL_FILE),
+        "{}",
+    )
+    .unwrap();
+    let pending = link_fixture_snapshot(&f.root);
+    assert!(explore_librarian_source(&f.request, &fresh, 1).is_err());
+    assert_eq!(pending, link_fixture_snapshot(&f.root));
+}
+
+#[test]
 fn librarian_excerpts_preserve_unicode_line_ranges_and_bound_long_lines() {
     let f = fixture("librarian-unicode");
     let id = "Projects/alpha/entities/core.md";

@@ -493,6 +493,224 @@ fn desktop_source_selection_refuses_scope_modes_limits_and_symlinks() {
     assert_eq!(snapshot(&fixture.root), before);
 }
 
+/// Same synthetic publication/retrieval scenario for deterministic regression and explicit live
+/// acceptance. Reviewer-authored corrections are kept separate from the original model capture.
+async fn related_source_round_trip(live: bool) {
+    use akasha_desktop::explore_librarian_sources;
+    let fixture = Fixture::new(5);
+    let repo = fixture.base.join("repository");
+    fs::create_dir(repo.join("tests")).unwrap();
+    fs::remove_file(repo.join("limits.rs")).unwrap();
+    fs::write(repo.join("README.md"), "# Orchid delivery\nOrchid delivery retries are bounded.\nSee retry.rs for the policy and tests/retry.rs for concrete boundary assertions.\n").unwrap();
+    fs::write(repo.join("retry.rs"), "pub fn delay_ms(attempt: u32) -> Option<u64> {\n    if attempt >= 3 { return None; }\n    Some(250 * (1_u64 << attempt))\n}\n").unwrap();
+    fs::write(repo.join("tests/retry.rs"), "#[path = \"../retry.rs\"]\nmod retry;\n#[test]\nfn boundaries() {\n    assert_eq!(retry::delay_ms(0), Some(250));\n    assert_eq!(retry::delay_ms(1), Some(500));\n    assert_eq!(retry::delay_ms(2), Some(1000));\n    assert_eq!(retry::delay_ms(3), None);\n    assert_eq!(retry::delay_ms(u32::MAX), None);\n}\n").unwrap();
+    let prepared = prepare_onboarding_sources(
+        Some(fixture.root.clone()),
+        "example".into(),
+        selection(
+            "files",
+            &["README.md", "retry.rs", "tests/retry.rs"],
+            &[],
+            false,
+        ),
+    )
+    .unwrap();
+    let memory_before = snapshot(&fixture.root);
+    let code_before = snapshot(&repo);
+    let generated = if live {
+        Some(
+            akasha_desktop::onboarding_generation::generate_onboarding(
+                Some(fixture.root.clone()),
+                "example".into(),
+                prepared.packet_json.clone(),
+                akasha_desktop::inference::Profile::Vulkan,
+                akasha_desktop::inference::Cancellation::new(),
+            )
+            .await
+            .unwrap(),
+        )
+    } else {
+        None
+    };
+    let identity = |role: &str| {
+        let slot = prepared
+            .identities
+            .slots
+            .iter()
+            .find(|s| s.role == role)
+            .unwrap();
+        format!("Projects/example/{}", slot.path.display())
+            .trim_end_matches(".md")
+            .to_string()
+    };
+    let mut notes = Vec::new();
+    for slot in &prepared.identities.slots {
+        let (claim, path) = match slot.role.as_str() {
+            "context" => (format!("Orchid delivery retries are bounded; see [[{}|retry policy]] for behavior and its verification link.", identity("implementation")), "README.md"),
+            "implementation" => (format!("delay_ms returns 250, 500 and 1000 milliseconds for attempts 0, 1 and 2; attempts >= 3 return None. See [[{}|boundary assertions]].", identity("verification")), "retry.rs"),
+            "verification" => ("The boundary test asserts Some(250), Some(500), Some(1000), None and None for inputs 0, 1, 2, 3 and u32::MAX respectively.".into(), "tests/retry.rs"),
+            _ => unreachable!(),
+        };
+        let packet: Value = serde_json::from_str(&prepared.packet_json).unwrap();
+        let handle = packet["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|s| s["path"] == path)
+            .unwrap()
+            + 1;
+        notes.push(json!({"slot":slot.slot,"evidence":[{"kind":"fact","claim":claim,"sources":[{"source":handle,"excerpt":1}]}]}));
+    }
+    let corrected = json!({"schema_version":5,"notes":notes}).to_string();
+    let review = review_onboarding_plan(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &prepared.packet_json,
+        &corrected,
+    )
+    .unwrap();
+    assert_eq!(snapshot(&fixture.root), memory_before);
+    let published = publish_onboarding_plan(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &prepared.packet_json,
+        &corrected,
+        &review.draft.preview.preview_id,
+    )
+    .unwrap();
+    assert_eq!(published.created_notes.len(), 3);
+    let memory_after = snapshot(&fixture.root);
+    let initial =
+        inspect_librarian_sources(Some(fixture.root.clone()), "example".into(), "Orchid", true)
+            .unwrap();
+    assert_eq!(initial.packet.evidence.len(), 1);
+    assert!(
+        !initial
+            .packet
+            .evidence
+            .iter()
+            .any(|e| e.excerpt.contains("1000 milliseconds"))
+    );
+    let related = explore_librarian_sources(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &initial.packet,
+        1,
+        true,
+    )
+    .unwrap();
+    let behavior = related
+        .packet
+        .evidence
+        .iter()
+        .find(|e| e.excerpt.contains("1000 milliseconds"))
+        .unwrap();
+    assert!(behavior.excerpt.contains("attempts >= 3 return None"));
+    let boundaries = explore_librarian_sources(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &related.packet,
+        behavior.citation,
+        true,
+    )
+    .unwrap();
+    let assertion = boundaries
+        .packet
+        .evidence
+        .iter()
+        .find(|e| e.excerpt.contains("u32::MAX respectively"))
+        .unwrap();
+    let opened = open_librarian_source(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &boundaries.packet,
+        assertion.citation,
+    )
+    .unwrap();
+    assert!(opened.document.source.contains("u32::MAX respectively"));
+    assert_eq!(initial.packet.question, boundaries.packet.question);
+    assert!(
+        boundaries
+            .review
+            .provenance
+            .as_ref()
+            .unwrap()
+            .notes
+            .iter()
+            .flat_map(|n| &n.claims)
+            .flat_map(|c| &c.sources)
+            .all(|s| s.freshness == "unchanged")
+    );
+    assert_eq!(snapshot(&fixture.root), memory_after);
+    assert_eq!(snapshot(&repo), code_before);
+    assert!(
+        explore_librarian_sources(
+            Some(fixture.root.clone()),
+            "foreign".into(),
+            &initial.packet,
+            1,
+            false
+        )
+        .is_err()
+    );
+    if live {
+        let evidence =
+            std::env::temp_dir().join(format!("akasha-related-acceptance-{}", std::process::id()));
+        fs::create_dir(&evidence).unwrap();
+        for (name, value) in [
+            ("prepared", serde_json::to_value(&prepared).unwrap()),
+            ("generated", serde_json::to_value(generated).unwrap()),
+            ("corrected-plan", serde_json::from_str(&corrected).unwrap()),
+            ("review", serde_json::to_value(review).unwrap()),
+            ("published", serde_json::to_value(published).unwrap()),
+            ("initial", serde_json::to_value(initial).unwrap()),
+            ("related", serde_json::to_value(related).unwrap()),
+            ("boundaries", serde_json::to_value(&boundaries).unwrap()),
+            ("opened", serde_json::to_value(&opened).unwrap()),
+        ] {
+            fs::write(
+                evidence.join(format!("{name}.json")),
+                serde_json::to_vec_pretty(&value).unwrap(),
+            )
+            .unwrap();
+        }
+        copy(&repo, &evidence.join("repository"));
+        copy(&fixture.root, &evidence.join("memory"));
+        println!(
+            "Native draft → reviewed publication → two-hop librarian PASS; evidence {}",
+            evidence.display()
+        );
+    }
+    // A later saved-note edit invalidates the original displayed packet; neither expansion nor
+    // navigation repairs/recover/writes around it.
+    let anchor = fixture.root.join(&boundaries.packet.evidence[0].id);
+    let source = fs::read_to_string(&anchor).unwrap();
+    fs::write(anchor, format!("{source}\nChanged saved source.\n")).unwrap();
+    let changed = snapshot(&fixture.root);
+    assert!(
+        explore_librarian_sources(
+            Some(fixture.root.clone()),
+            "example".into(),
+            &boundaries.packet,
+            assertion.citation,
+            false
+        )
+        .is_err()
+    );
+    assert_eq!(snapshot(&fixture.root), changed);
+}
+
+#[tokio::test]
+async fn desktop_onboarding_feeds_two_hop_related_source_exploration() {
+    related_source_round_trip(false).await;
+}
+
+#[tokio::test]
+#[ignore = "requires installed selected Qwen9B, host loopback and Vulkan device"]
+async fn native_onboarding_feeds_two_hop_related_source_exploration() {
+    related_source_round_trip(true).await;
+}
+
 /// Explicit host acceptance: uses only synthetic memory/repository and the already installed
 /// selected main model. Never runs as part of unattended workspace tests.
 #[tokio::test]

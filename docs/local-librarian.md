@@ -12,6 +12,18 @@ and choose **Find sources**. The panel shows exact bounded passages with physica
 status, partial-body flags and retrieval omissions. It uses deterministic saved-memory retrieval
 and needs no model installation. No match is explicit; try more specific recorded terms.
 
+Choose **Explore related sources** on a result to investigate beyond the initial vocabulary.
+The core rechecks that displayed citation, then runs the same question and search words with
+that note as the anchor. Its same-project outgoing canonical links receive priority; remaining
+results use ordinary matching. Links anywhere in the saved note can supply neighbors, including
+outside the displayed excerpt. Projection/global/foreign links are not traversed. The original
+passages remain visible, exact duplicates appear once, and each new card opens through its own
+checked packet. You can follow another newly found source for up to three related searches;
+start a new search to reset the limit. Each round retains the existing six-source/packet/report
+bounds and explicitly reports omissions. Relatedness does not establish factual support or
+complete coverage. Stale sources and pending journals refuse; no recovery or writes occur.
+[Try the two-hop onboarding-to-librarian replay](../akasha/Research/evidence/2026-11-10-related-sources/demo.html).
+
 For optional local vocabulary assistance on Linux, expand **Optional local search assistance**,
 choose **Inspect model setup**, select the installed GPU/CPU profile, then **Find with local model**.
 The selected Qwen9B sees only your question (up to 160 characters) and suggests search words.

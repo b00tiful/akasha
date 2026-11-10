@@ -1,4 +1,4 @@
-import { inspectLibrarian, followLibrarianSource, assistLibrarian, localInferenceAvailability, reserveLocalGeneration, cancelLocalGeneration } from "./api";
+import { inspectLibrarian, followLibrarianSource, exploreLibrarian, assistLibrarian, localInferenceAvailability, reserveLocalGeneration, cancelLocalGeneration } from "./api";
 import type { DesktopLibrarianReview, LibrarianNoteProvenance } from "./librarian-types";
 import type { InferenceAvailability } from "./onboarding-types";
 import { LocalInferenceSetup } from "./inference-setup";
@@ -11,6 +11,8 @@ export class LibrarianPanel {
   private binding: Binding | null = null;
   private generation = 0;
   private result: DesktopLibrarianReview[] = [];
+  private readonly related = new Map<DesktopLibrarianReview, string>();
+  private readonly explored = new Set<string>();
   private available = false;
   private busy = false;
   private opening = false;
@@ -74,6 +76,8 @@ export class LibrarianPanel {
     this.invalidate("Project changed.");
     this.binding = binding;
     this.result = [];
+    this.related.clear();
+    this.explored.clear();
     this.available = false;
     this.busy = false;
     this.opening = false;
@@ -125,7 +129,8 @@ export class LibrarianPanel {
       ? "Unsaved changes: results describe saved files. Save or Discard before opening a source."
       : "Exact saved passages from this project. Literal retrieval can omit relevant notes; source freshness does not establish claim correctness.";
     for (const button of this.results.querySelectorAll<HTMLButtonElement>("button")) {
-      button.disabled = !this.available || this.busy || this.dirty;
+      button.disabled = !this.available || this.busy || this.dirty
+        || (button.dataset.explore !== undefined && (this.related.size >= 3 || this.explored.has(button.dataset.explore)));
     }
   }
 
@@ -175,41 +180,86 @@ export class LibrarianPanel {
         throw new Error("Source result belongs to another project.");
       }
       this.result = packets;
+      this.related.clear();
+      this.explored.clear();
       if (assisted) this.terms.value = terms.join("\n");
       this.available = true;
       const review = packets[0]!.review;
       this.message.textContent = `${review.sources.matches.length} passages / ${review.matched_notes} matched / ${review.scanned_notes} scanned / ${review.omitted_notes} omitted by retrieval limits.${review.sources.matches.length ? "" : " No saved source matches. Try specific names or words recorded in the notes."}`;
       if (assisted) this.message.textContent = `Literal: ${this.message.textContent} Local search words: ${terms.join(", ") || "none; literal results retained"}. Worker stopped. Matches do not establish an answer or prove that knowledge is absent.`;
-      const seen = new Set<string>();
-      this.results.replaceChildren(...packets.map((result, index) => {
-        const section = document.createElement("section");
-        if (assisted) section.append(text("h3", index === 0 ? "Original search" : "Additional local search"));
-        if (index) section.append(text("p", `${result.review.matched_notes} matched / ${result.review.scanned_notes} scanned / ${result.review.omitted_notes} omitted by retrieval limits. Exact duplicate passages shown above.`));
-        section.append(...result.review.sources.matches.filter(passage => {
-          const key = JSON.stringify([passage.id, passage.fingerprint, passage.line_start, passage.line_end, passage.quote]);
-          if (seen.has(key)) return false;
-          seen.add(key); return true;
-        }).map(passage => {
-        const card = document.createElement("article");
-        card.className = "librarian-source";
-        const open = document.createElement("button");
-        open.type = "button";
-        open.textContent = `[${passage.citation}] Open ${passage.id}`;
-        open.addEventListener("click", () => void this.open(result, passage.citation));
-        card.append(open, text("p", `Lines ${passage.line_start}–${passage.line_end} / recorded status: ${passage.status ?? "not recorded"}${passage.partial_body ? " / partial note body" : ""}`), text("pre", passage.quote));
-        if (passage.omitted_links) card.append(text("p", `${passage.omitted_links} recorded links omitted.`));
-        const provenance = review.provenance?.notes.find(note => note.citation === passage.citation);
-        if (provenance) card.append(renderProvenance(provenance));
-        return card;
-        }));
-        return section;
-      }));
+      this.renderResults();
     } catch (error) {
       if (generation !== this.generation || binding !== this.binding) return;
       this.message.textContent = `Sources unavailable: ${message(error)}${this.result.length ? " Previous results are stale; find sources again." : ""}`;
     } finally {
       if (id) await cancelLocalGeneration(id).catch(() => {});
       if (generation === this.generation && binding === this.binding) { this.requestId = null; this.busy = false; this.controls(); }
+    }
+  }
+
+  private renderResults(): void {
+    const seen = new Set<string>();
+    this.results.replaceChildren(...this.result.map((result, index) => {
+      const section = document.createElement("section");
+      section.append(text("h3", this.related.has(result) ? `Related to ${this.related.get(result)}` : index === 0 ? "Original search" : "Additional local search"));
+      if (this.related.has(result)) section.append(text("p", "This search prioritizes the selected source and its outgoing saved links; remaining matches use the original search words."));
+      if (index) section.append(text("p", `${result.review.matched_notes} matched / ${result.review.scanned_notes} scanned / ${result.review.omitted_notes} omitted by retrieval limits. Exact duplicate passages shown above.`));
+      section.append(...result.review.sources.matches.filter(passage => {
+        const key = JSON.stringify([passage.id, passage.fingerprint, passage.line_start, passage.line_end, passage.quote]);
+        if (seen.has(key)) return false;
+        seen.add(key); return true;
+      }).map(passage => {
+        const card = document.createElement("article");
+        card.className = "librarian-source";
+        const open = document.createElement("button");
+        open.type = "button";
+        open.textContent = `[${passage.citation}] Open ${passage.id}`;
+        open.addEventListener("click", () => void this.open(result, passage.citation));
+        const explore = document.createElement("button");
+        explore.type = "button";
+        explore.textContent = "Explore related sources";
+        explore.dataset.explore = JSON.stringify([passage.id, passage.fingerprint]);
+        explore.addEventListener("click", () => void this.explore(result, passage.citation));
+        card.append(open, explore, text("p", `Lines ${passage.line_start}–${passage.line_end} / recorded status: ${passage.status ?? "not recorded"}${passage.partial_body ? " / partial note body" : ""}`), text("pre", passage.quote));
+        if (passage.omitted_links) card.append(text("p", `${passage.omitted_links} recorded links omitted.`));
+        const provenance = result.review.provenance?.notes.find(note => note.citation === passage.citation);
+        if (provenance) card.append(renderProvenance(provenance));
+        return card;
+      }));
+      if (!section.querySelector("article")) section.append(text("p", "No new distinct passages; checked duplicates are shown above."));
+      return section;
+    }));
+  }
+
+  private async explore(result: DesktopLibrarianReview, citation: number): Promise<void> {
+    const binding = this.binding;
+    const source = result.packet.evidence.find(item => item.citation === citation);
+    const key = source && JSON.stringify([source.id, source.fingerprint]);
+    if (!binding || !source || !key || !this.available || this.busy || this.dirty
+      || !this.result.includes(result) || this.related.size >= 3 || this.explored.has(key)) return;
+    const generation = ++this.generation;
+    this.busy = true;
+    this.message.textContent = `Checking related saved sources around ${source.id}…`;
+    this.controls();
+    try {
+      const related = await exploreLibrarian(binding.root, binding.project, result.packet, citation, this.provenance.checked);
+      if (generation !== this.generation || binding !== this.binding) return;
+      if (related.packet.project !== binding.project || related.review.sources.project !== binding.project
+        || related.packet.question !== result.packet.question || related.review.sources.question !== result.packet.question
+        || related.packet.note !== source.id || JSON.stringify(related.packet.terms) !== JSON.stringify(result.packet.terms)) {
+        throw new Error("Related sources do not match the selected citation and question.");
+      }
+      this.result.push(related);
+      this.related.set(related, source.id);
+      this.explored.add(key);
+      this.renderResults();
+      this.message.textContent = `${this.related.size}/3 related searches. Original passages retained. ${related.review.omitted_notes} omitted by this search's retrieval limits.${this.related.size === 3 ? " Related-search limit reached; start a new search to continue." : " Explore another source to follow its outgoing saved links."} Related passages do not establish an answer.`;
+    } catch (error) {
+      if (generation !== this.generation || binding !== this.binding) return;
+      this.available = false;
+      this.message.textContent = `Related sources unavailable: ${message(error)}. Previous results are stale; find sources again.`;
+    } finally {
+      if (generation === this.generation && binding === this.binding) { this.busy = false; this.controls(); }
     }
   }
 

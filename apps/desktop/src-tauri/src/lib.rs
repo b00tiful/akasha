@@ -94,6 +94,46 @@ pub fn open_librarian_source(
     akasha_core::activate_librarian_source(&request, packet, citation).map_err(librarian_error)
 }
 
+/// Explicit source-directed retrieval; core owns citation binding and neighbor scope.
+pub fn explore_librarian_sources(
+    root: Option<PathBuf>,
+    project: String,
+    packet: &LibrarianPacket,
+    citation: usize,
+    provenance: bool,
+) -> Result<DesktopLibrarianReview, DesktopError> {
+    let request = request(root, Some(project))?;
+    let packet = akasha_core::librarian::explore_librarian_source(&request, packet, citation)
+        .map_err(librarian_error)?;
+    let selection = r#"{"selections":[]}"#;
+    let review = if provenance {
+        review_librarian_provenance(&request, &packet, selection)
+    } else {
+        review_librarian_sources(&request, &packet, selection)
+    }
+    .map_err(librarian_error)?;
+    Ok(DesktopLibrarianReview { packet, review })
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn explore_librarian(
+    root: Option<PathBuf>,
+    project: String,
+    packet: LibrarianPacket,
+    citation: usize,
+    provenance: bool,
+) -> Result<DesktopLibrarianReview, DesktopError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        explore_librarian_sources(root, project, &packet, citation, provenance)
+    })
+    .await
+    .map_err(|error| DesktopError {
+        code: 3,
+        message: error.to_string(),
+    })?
+}
+
 fn librarian_error(error: akasha_core::NoteLinksError) -> DesktopError {
     DesktopError {
         code: error.exit_code(),
@@ -679,6 +719,7 @@ pub fn run() {
         follow_document_backlink,
         search_project,
         inspect_librarian,
+        explore_librarian,
         librarian_expansion::assist_librarian_sources,
         onboarding::prepare_local_onboarding_sources,
         onboarding_generation::local_inference_availability,
@@ -706,6 +747,7 @@ pub fn run() {
         follow_document_backlink,
         search_project,
         inspect_librarian,
+        explore_librarian,
         librarian_expansion::assist_librarian_sources,
         onboarding::prepare_local_onboarding_sources,
         onboarding_generation::local_inference_availability,
