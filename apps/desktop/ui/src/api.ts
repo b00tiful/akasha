@@ -119,6 +119,11 @@ export function saveLocalNavigation(state: LocalNavigationState): Promise<void> 
   return invoke<void>("save_local_navigation", { state });
 }
 
+/** Explicit read-only repository preparation; core owns discovery, paths and source identities. */
+export function prepareOnboardingSources(root: string, project: string, selection: import("./onboarding-types").OnboardingSelection): Promise<import("./onboarding-types").OnboardingSources> {
+  return invoke("prepare_local_onboarding_sources", { root: optional(root), project, selection });
+}
+
 /** Recompile a captured plan against current selected-project inputs, without writes. */
 export function reviewOnboarding(root: string, project: string, packetJson: string, planJson: string): Promise<import("./onboarding-types").OnboardingReview> {
   return invoke("review_local_onboarding", { root: optional(root), project, packetJson, planJson });

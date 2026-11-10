@@ -72,8 +72,9 @@ describe("local scene and shared editor integration", () => {
     }, identities: null, excerpts: [] }));
     let finishPublication!: (result: unknown) => void;
     const publishOnboarding = vi.fn(() => new Promise(resolve => { finishPublication = resolve; }));
+    const prepareOnboardingSources = vi.fn(async () => ({ root: "/resolved/root", project: "example", packet_json: "{}", identities: { slots: [] }, excerpts: [], sampled_sources: [], coverage: null }));
     vi.doMock("./api", () => ({
-      loadLibraryWithRecovery, reviewOnboarding, publishOnboarding, loadDocumentWithRecovery, saveDocument, searchProject,
+      loadLibraryWithRecovery, prepareOnboardingSources, reviewOnboarding, publishOnboarding, loadDocumentWithRecovery, saveDocument, searchProject,
       loadLocalNavigation, saveLocalNavigation, inspectLibrarian, followLibrarianSource,
     }));
     vi.doMock("./scene", () => ({ mountLibraryScene: vi.fn(async () => ({
@@ -172,7 +173,11 @@ describe("local scene and shared editor integration", () => {
     dialog.showModal = () => { dialog.open = true; };
     dialog.close = () => { dialog.open = false; };
     click("#onboarding-toggle"); expect(dialog.open).toBe(true);
-    expect(document.activeElement).toBe(dialog.querySelector('[name="packet"]'));
+    const sourcePaths = dialog.querySelector<HTMLTextAreaElement>('[name="source-paths"]')!;
+    expect(document.activeElement).toBe(sourcePaths);
+    sourcePaths.value = "src"; sourcePaths.dispatchEvent(new Event("input")); click("[data-prepare-sources]");
+    await vi.waitFor(() => expect(dialog.textContent).toContain("Sources ready"));
+    expect(prepareOnboardingSources).toHaveBeenCalledWith("/resolved/root", "example", { mode: "discover", paths: ["src"], focus: [], sample_large_files: false });
     for (const name of ["packet", "plan"]) {
       const input = dialog.querySelector<HTMLInputElement>(`[name="${name}"]`)!;
       const content = name === "packet" ? "{}" : JSON.stringify({ schema_version: 3, notes: [{ name: "new", evidence: [{ kind: "unknown", claim: "Unknown", rationale: "Not captured", sources: [] }] }] });

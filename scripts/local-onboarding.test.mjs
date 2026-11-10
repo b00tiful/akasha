@@ -35,6 +35,71 @@ function slottedReply(input) {
   }] };
 }
 
+test("captured desktop packets use fresh host planning without rediscovery and publish cited memory", async t => {
+  const f = fixture(t), packetPath = join(f.directory, "desktop-packet.json"), saved = join(f.directory, "captured-draft");
+  const preparation = run(f, ["--json", "local-onboarding-prepare", "--source", "src/lib.rs"]);
+  assert.equal(preparation.status, 0, preparation.stderr);
+  const packet = JSON.parse(preparation.stdout); writeFileSync(packetPath, JSON.stringify(packet), { mode: 0o600 });
+  const before = snapshot(f.root), code = snapshot(f.repository); let calls = 0;
+  // Added unrelated eligible sources must not enlarge an already selected packet.
+  writeFileSync(join(f.repository, "src/unselected.rs"), "pub const UNSELECTED: usize = 91;\n");
+  const result = await draftLocalOnboarding({ root: f.root, project: "first-run", packet: packetPath, json: true, saveInputs: saved }, async input => {
+    calls++; assert.equal(input.planned_note.role, "implementation");
+    assert.deepEqual(input.sources.map(source => source.path), ["src/lib.rs"]);
+    const window = packet.sources[0].excerpts[0];
+    assert.equal(input.sources[0].excerpts[0].text, Buffer.from(packet.sources[0].text).subarray(window.byte_start, window.byte_end).toString("utf8"));
+    return { answer: JSON.stringify(slottedReply(input)) };
+  });
+  assert.equal(calls, 1); assert.deepEqual(JSON.parse(readFileSync(join(saved, "packet.json"))), packet);
+  assert.deepEqual(snapshot(f.root), before); const draft = JSON.parse(result.output);
+  assert.equal(draft.proposal.notes.length, 1); assert(draft.proposal.notes[0].source.includes("unreviewed"));
+  const applied = run(f, ["--json", "local-onboarding-apply", "--packet", join(saved, "packet.json"), "--proposal", join(saved, "proposal.json"), "--approved-preview-id", draft.preview.preview_id]);
+  assert.equal(applied.status, 0, applied.stderr);
+  const retrieved = run(f, ["--json", "librarian-prepare", "FlightPath waypoints"]);
+  assert.equal(retrieved.status, 0, retrieved.stderr); assert(retrieved.stdout.includes("FlightPath stores waypoints"));
+  rmSync(join(f.repository, "src/unselected.rs")); assert.deepEqual(snapshot(f.repository), code);
+});
+
+test("captured packet drift, foreign binding and tampering refuse before any inference or capture writes", async t => {
+  const f = fixture(t); const packet = JSON.parse(run(f, ["--json", "local-onboarding-prepare", "--source", "src/lib.rs"]).stdout);
+  const packetPath = join(f.directory, "packet.json"); const saved = join(f.directory, "must-not-exist");
+  let calls = 0; const complete = async () => { calls++; throw new Error("must not infer"); };
+  const generate = () => draftLocalOnboarding({ root: f.root, project: "first-run", packet: packetPath, json: true, saveInputs: saved }, complete);
+  const before = snapshot(f.root);
+  const altered = structuredClone(packet); altered.sources[0].text += "// injected\n";
+  writeFileSync(packetPath, JSON.stringify(altered)); await assert.rejects(generate(), /stale or altered/);
+  const foreign = structuredClone(packet); foreign.preparation.project = "foreign";
+  writeFileSync(packetPath, JSON.stringify(foreign)); await assert.rejects(generate(), /stale or altered/);
+  writeFileSync(packetPath, JSON.stringify(packet)); writeFileSync(join(f.repository, "src/lib.rs"), "// changed source\n");
+  await assert.rejects(generate(), /stale or altered/);
+  assert.equal(calls, 0); assert(!existsSync(saved)); assert.deepEqual(snapshot(f.root), before);
+});
+
+test("captured packets refuse conflicting selection controls and unsafe or oversized input files", async t => {
+  const f = fixture(t); const packet = JSON.parse(run(f, ["--json", "local-onboarding-prepare", "--source", "src/lib.rs"]).stdout);
+  const packetPath = join(f.directory, "packet.json"); writeFileSync(packetPath, JSON.stringify(packet));
+  const base = { root: f.root, project: "first-run", packet: packetPath, json: true };
+  let calls = 0; const complete = async () => { calls++; throw new Error("must not infer"); };
+  for (const extra of [{ sources: ["src/lib.rs"] }, { discover: ["src"] }, { components: [] }, { focus: ["waypoints"] }, { sampleLargeFiles: true }]) await assert.rejects(draftLocalOnboarding({ ...base, ...extra }, complete), /Choose|retain/);
+  const link = join(f.directory, "linked-packet.json"); symlinkSync(packetPath, link);
+  await assert.rejects(draftLocalOnboarding({ ...base, packet: link }, complete), /ELOOP/);
+  await assert.rejects(draftLocalOnboarding({ ...base, packet: f.directory }, complete), /regular JSON file/);
+  writeFileSync(packetPath, "x".repeat(16_001)); await assert.rejects(draftLocalOnboarding(base, complete), /16000 bytes/);
+  writeFileSync(packetPath, Buffer.from([0xff])); await assert.rejects(draftLocalOnboarding(base, complete), /encoded data/);
+  assert.equal(calls, 0);
+});
+
+test("captured packet source drift during generation refuses the resulting plan", async t => {
+  const f = fixture(t); const packetPath = join(f.directory, "packet.json");
+  writeFileSync(packetPath, run(f, ["--json", "local-onboarding-prepare", "--source", "src/lib.rs"]).stdout);
+  const before = snapshot(f.root);
+  await assert.rejects(draftLocalOnboarding({ root: f.root, project: "first-run", packet: packetPath, json: true }, async input => {
+    writeFileSync(join(f.repository, "src/lib.rs"), "// changed during inference\n");
+    return { answer: JSON.stringify(slottedReply(input)) };
+  }), /stale or altered/);
+  assert.deepEqual(snapshot(f.root), before);
+});
+
 test("plain coverage names missing implementation groups without executing terminal controls", async t => {
   const f = fixture(t);
   const directory = "src/missing\x1b[2J\u202e";

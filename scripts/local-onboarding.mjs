@@ -2,7 +2,8 @@
 // Optional development adapter. Rust owns input scope, schema/evidence checks and previews.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { chmod, mkdir, mkdtemp, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { availableParallelism, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,7 +53,8 @@ export function componentSources(components) {
 
 export async function draftLocalOnboarding(options, complete = localCompletion) {
   const started = performance.now();
-  if ([options.components, options.sources, options.discover].filter(value => value !== undefined).length !== 1) throw new Error("Choose sources or components or discover directories");
+  if ([options.components, options.sources, options.discover, options.packet].filter(value => value !== undefined).length !== 1) throw new Error("Choose sources or components or discover directories or a captured packet");
+  if (options.packet !== undefined && (typeof options.packet !== "string" || !options.packet || options.focus !== undefined || options.sampleLargeFiles === true)) throw new Error("Captured packets retain their exact focus/sampling controls; do not supply replacements");
   const sources = options.components === undefined ? options.sources : componentSources(options.components);
   if (options.sampleLargeFiles !== undefined && typeof options.sampleLargeFiles !== "boolean") throw new Error("Invalid sample-large-files control");
   if (options.workerSession !== undefined && typeof options.workerSession !== "boolean") throw new Error("Invalid worker-session control");
@@ -74,7 +76,22 @@ export async function draftLocalOnboarding(options, complete = localCompletion) 
   if (options.focus !== undefined && (!Array.isArray(options.focus) || !options.focus.length || !options.focus.every(term => typeof term === "string"))) throw new Error("Invalid focus terms");
   const samplingFlags = [...(options.sampleLargeFiles ? ["--sample-large-files"] : []), ...(options.focus ?? []).flatMap(term => ["--focus", term])];
   const discovery = options.discover === undefined ? undefined : JSON.parse(await run(["--json", "local-onboarding-discover", ...samplingFlags, ...options.discover.flatMap(path => ["--directory", path])]));
-  const packet = discovery?.packet ?? JSON.parse(await run(["--json", "local-onboarding-prepare", ...samplingFlags, ...sources.flatMap(path => ["--source", path])]));
+  let packet;
+  if (options.packet !== undefined) {
+    // Snapshot a bounded regular UTF-8 input. Rust's planner rebuilds it exactly before inference.
+    const file = await open(options.packet, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const stat = await file.stat();
+      if (!stat.isFile() || stat.size > 16_000) throw new Error("Captured packet must be a regular JSON file of at most 16000 bytes");
+      const bytes = Buffer.alloc(16_001); let length = 0;
+      while (length < bytes.length) {
+        const { bytesRead } = await file.read(bytes, length, bytes.length - length, null);
+        if (!bytesRead) break; length += bytesRead;
+      }
+      if (length > 16_000) throw new Error("Captured packet exceeds 16000 bytes");
+      packet = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length)));
+    } finally { await file.close(); }
+  } else packet = discovery?.packet ?? JSON.parse(await run(["--json", "local-onboarding-prepare", ...samplingFlags, ...sources.flatMap(path => ["--source", path])]));
   if (![2, 3, 4].includes(packet.schema_version)) throw new Error("Rebuild the CLI for excerpt-based onboarding packets");
   for (const source of packet.sources) {
     if (!source.excerpts.length) throw new Error(`Source ${source.path} has no complete excerpt catalog (empty or a line exceeds 2048 bytes)`);
@@ -83,7 +100,7 @@ export async function draftLocalOnboarding(options, complete = localCompletion) 
     if (component.note_type !== undefined && !Object.hasOwn(packet.preparation.note_types, component.note_type)) throw new Error("Unknown configured component note_type");
   }
   let identityPlan, components = options.components;
-  if (options.autoPlan) {
+  if (options.autoPlan || options.packet !== undefined) {
     const temporary = await mkdtemp(join(tmpdir(), "akasha-onboarding-plan-"));
     try {
       await chmod(temporary, 0o700);
@@ -224,7 +241,7 @@ export async function draftLocalOnboarding(options, complete = localCompletion) 
 async function main() {
   const { values } = parseArgs({ options: {
     "save-inputs": { type: "string" }, components: { type: "string" }, "worker-session": { type: "boolean", default: false },
-    root: { type: "string" }, project: { type: "string" }, source: { type: "string", multiple: true },
+    root: { type: "string" }, project: { type: "string" }, source: { type: "string", multiple: true }, packet: { type: "string" },
     discover: { type: "string", multiple: true }, "sample-large-files": { type: "boolean", default: false },
     "auto-plan": { type: "boolean", default: false }, focus: { type: "string", multiple: true },
     server: { type: "string" }, model: { type: "string" }, "model-sha256": { type: "string" },
@@ -235,7 +252,7 @@ async function main() {
   for (const key of ["root", "project", "server", "model", "model-sha256"]) {
     if (!values[key]) throw new Error(`Required --${key}; see docs/local-onboarding.md`);
   }
-  if ([values.source, values.components, values.discover].filter(Boolean).length !== 1) throw new Error("Choose --source or --components or --discover DIRECTORY");
+  if ([values.source, values.components, values.discover, values.packet].filter(Boolean).length !== 1) throw new Error("Choose --source or --components or --discover DIRECTORY or --packet FILE");
   let components;
   if (values.components) {
     const file = await readFile(values.components);
@@ -247,7 +264,7 @@ async function main() {
   const cancel = () => controller.abort(new Error("Local onboarding cancelled"));
   process.once("SIGINT", cancel); process.once("SIGTERM", cancel);
   try {
-    const result = await draftLocalOnboarding({ root: values.root, project: values.project, sources: values.source, discover: values.discover, focus: values.focus, components, autoPlan: values["auto-plan"], saveInputs: values["save-inputs"], workerSession: values["worker-session"], sampleLargeFiles: values["sample-large-files"],
+    const result = await draftLocalOnboarding({ root: values.root, project: values.project, sources: values.source, discover: values.discover, packet: values.packet, focus: values.focus, components, autoPlan: values["auto-plan"], saveInputs: values["save-inputs"], workerSession: values["worker-session"], sampleLargeFiles: values["sample-large-files"],
       server: values.server, model: values.model, modelSha256: values["model-sha256"], maxContext: Number(values["max-context"]),
       gpuLayers: values["gpu-layers"] === "auto" ? "auto" : Number(values["gpu-layers"]),
       fitTargetMiB: values["fit-target-mib"] === undefined ? undefined : Number(values["fit-target-mib"]), threads: Number(values.threads), json: values.json, signal: controller.signal });

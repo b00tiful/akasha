@@ -2,8 +2,8 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { OnboardingPanel } from "./onboarding";
 import type { OnboardingResult, OnboardingReview } from "./onboarding-types";
-const { review, publish } = vi.hoisted(() => ({ review: vi.fn(), publish: vi.fn() }));
-vi.mock("./api", () => ({ reviewOnboarding: review, publishOnboarding: publish }));
+const { review, publish, prepare } = vi.hoisted(() => ({ review: vi.fn(), publish: vi.fn(), prepare: vi.fn() }));
+vi.mock("./api", () => ({ reviewOnboarding: review, publishOnboarding: publish, prepareOnboardingSources: prepare }));
 const binding = { root: "/resolved/root", project: "alpha" };
 const id = "sha256:" + "a".repeat(64);
 const plan = { schema_version: 5, notes: [{ slot: 1, evidence: [{ kind: "fact", claim: "The limit is 37.", sources: [{ source: 1, excerpt: 1 }] }] }] };
@@ -36,7 +36,7 @@ function setup() {
   const ready = async () => { files(); load(); await vi.waitFor(() => expect(host.textContent).toContain("Fresh preview ready")); };
   return { host, panel, published, files, load, approval, approve, apply, ready };
 }
-beforeEach(() => { review.mockReset(); publish.mockReset(); review.mockResolvedValue(response()); });
+beforeEach(() => { review.mockReset(); publish.mockReset(); prepare.mockReset(); review.mockResolvedValue(response()); });
 it("renders literal source, metadata and gaps and requires full-ID explicit publication", async () => {
   const { host, ready, approve, apply, published } = setup();
   expect(review).not.toHaveBeenCalled(); expect(publish).not.toHaveBeenCalled(); await ready();
@@ -69,7 +69,7 @@ it("enforces claim bounds and clears citations when a claim becomes unknown", as
   const remove = () => [...host.querySelectorAll<HTMLButtonElement>("button")].filter(button => button.textContent === "Remove claim");
   expect(remove()[0]!.disabled).toBe(true); add().click(); add().click(); add().click(); expect(add().disabled).toBe(true);
   expect(host.querySelectorAll(".onboarding-claim")).toHaveLength(4); remove()[3]!.click(); expect(host.querySelectorAll(".onboarding-claim")).toHaveLength(3);
-  const kind = host.querySelector<HTMLSelectElement>("select")!; kind.value = "unknown"; kind.dispatchEvent(new Event("change"));
+  const kind = host.querySelector<HTMLSelectElement>('[aria-label="Evidence kind"]')!; kind.value = "unknown"; kind.dispatchEvent(new Event("change"));
   load(); await vi.waitFor(() => expect(review).toHaveBeenCalledTimes(2)); expect(JSON.parse(review.mock.calls[1]![3]).notes[0].evidence[0].sources).toEqual([]);
 });
 it("suppresses late previews after replacement, close, dirty edits and project changes", async () => {
@@ -117,4 +117,69 @@ it("binds metadata and paths to slot identities when the imported notes are reor
   expect(notes[0]!.textContent).not.toContain("src/limits.rs");
   expect(notes[1]!.querySelector("h3")!.textContent).toBe("limits.md");
   expect(notes[1]!.textContent).not.toContain("tests/outside.rs");
+});
+
+function prepared() {
+  return { ...binding, packet_json: '{"captured":"exact 世界"}', identities: { slots: [{ slot: 1, role: "implementation", path: "limits.md", sources: [1], fields: { status: "draft" }, unresolved_fields: [] }] }, excerpts: response().excerpts.slice(0, 2), sampled_sources: [{ omitted_lines: [{ line_start: 3, line_end: 100 }] }], coverage: { directories: ["src"], entries_inspected: 12, candidates: 3, selected: [{ path: "src/limits.rs", role: "implementation" }], implementation_groups: [{ directory: "src/missing", candidates: 2, selected: 0 }], omitted: [{ path: "src/missing/other.rs", reason: "source count budget" }], excluded_entries: 1, excluded_examples: [{ path: ".secret", reason: "excluded" }] } };
+}
+function sourceControls(host: HTMLElement) {
+  const paths = host.querySelector<HTMLTextAreaElement>('[name="source-paths"]')!;
+  const inspect = host.querySelector<HTMLButtonElement>("[data-prepare-sources]")!;
+  const set = (value: string) => { paths.value = value; paths.dispatchEvent(new Event("input")); };
+  return { paths, inspect, set };
+}
+it("starts from native sources, exposes omissions and retains the exact packet for plan-only import", async () => {
+  prepare.mockResolvedValue(prepared());
+  const { host, load, approve, apply } = setup(); const { set, inspect } = sourceControls(host);
+  expect(prepare).not.toHaveBeenCalled(); set("src\n tests\n");
+  const focus = host.querySelector<HTMLTextAreaElement>('[name="source-focus"]')!; focus.value = "lease\n deadline ";
+  host.querySelector<HTMLInputElement>('[name="source-sampling"]')!.checked = true; inspect.click();
+  await vi.waitFor(() => expect(host.textContent).toContain("Sources ready"));
+  expect(prepare).toHaveBeenCalledWith(binding.root, binding.project, { mode: "discover", paths: ["src", "tests"], focus: ["lease", "deadline"], sample_large_files: true });
+  expect(host.textContent).toContain("Missing implementation group: src/missing");
+  expect(host.textContent).toContain("source count budget"); expect(host.textContent).toContain("omitted_lines");
+  expect(host.querySelector("script")).toBeNull();
+  expect(host.querySelector<HTMLTextAreaElement>('[aria-label="Exact source packet"]')!.value).toBe(prepared().packet_json);
+  const input = host.querySelector<HTMLInputElement>('[name="plan"]')!;
+  Object.defineProperty(input, "files", { value: [{ size: 500, text: async () => JSON.stringify(plan) }] }); input.dispatchEvent(new Event("change"));
+  load(); await vi.waitFor(() => expect(host.textContent).toContain("Fresh preview ready"));
+  expect(review).toHaveBeenCalledWith(binding.root, binding.project, prepared().packet_json, JSON.stringify(plan));
+  approve(); expect(apply.disabled).toBe(false); set("src/other.rs"); expect(apply.disabled).toBe(true);
+  expect(host.querySelector(".onboarding-claim")).toBeNull(); expect(host.querySelector('[aria-label="Exact source packet"]')).toBeNull();
+});
+it("replaces directory coverage with an editable explicit file selection and clears previous approval", async () => {
+  prepare.mockResolvedValue(prepared()); const { host } = setup(); const { set, inspect, paths } = sourceControls(host);
+  set("src"); inspect.click(); await vi.waitFor(() => expect(host.textContent).toContain("Sources ready"));
+  [...host.querySelectorAll<HTMLButtonElement>("button")].find(value => value.textContent === "Use selected paths as an editable file list")!.click();
+  expect(paths.value).toBe("src/limits.rs"); expect(host.querySelector<HTMLSelectElement>('[name="source-mode"]')!.value).toBe("files");
+  expect(host.textContent).not.toContain("Missing implementation group");
+  prepare.mockResolvedValue({ ...prepared(), coverage: null }); inspect.click();
+  await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(2));
+  expect(prepare.mock.calls[1]![2].mode).toBe("files");
+  await vi.waitFor(() => expect(host.textContent).toContain("Explicit file selection. No directory inventory"));
+});
+it("suppresses late native inspections after cancellation, close, input replacement and project switch", async () => {
+  for (const action of ["cancel", "close", "packet", "plan", "project"]) {
+    let finish!: (value: ReturnType<typeof prepared>) => void;
+    prepare.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const { host, panel, files } = setup(); const { set, inspect } = sourceControls(host); set("src"); inspect.click();
+    if (action === "cancel") host.querySelector<HTMLButtonElement>("[data-cancel-sources]")!.click();
+    if (action === "close") panel.suspend();
+    if (action === "packet") files();
+    if (action === "plan") host.querySelector<HTMLInputElement>('[name="plan"]')!.dispatchEvent(new Event("change"));
+    if (action === "project") panel.bind({ ...binding, project: "beta" });
+    finish(prepared()); await Promise.resolve(); await Promise.resolve();
+    expect(host.querySelector('[aria-label="Exact source packet"]')).toBeNull();
+  }
+});
+it("refuses foreign preparation results and locks source selection during publication", async () => {
+  prepare.mockResolvedValue({ ...prepared(), root: "/other" });
+  const { host, ready, approve, apply } = setup(); const { set, inspect, paths } = sourceControls(host); set("src"); inspect.click();
+  await vi.waitFor(() => expect(host.textContent).toContain("Sources belong to another project"));
+  expect(host.querySelector('[aria-label="Exact source packet"]')).toBeNull();
+  await ready(); approve(); let finish!: (value: OnboardingResult) => void;
+  publish.mockImplementation(() => new Promise(resolve => { finish = resolve; })); apply.click();
+  expect(paths.disabled).toBe(true); expect(inspect.disabled).toBe(true);
+  finish({ ...binding, created_notes: [], unchanged_notes: [], updated_projections: [], state: "state" });
+  await vi.waitFor(() => expect(paths.disabled).toBe(false));
 });

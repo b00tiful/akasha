@@ -28,3 +28,20 @@ export interface OnboardingResult {
   root: string; project: string; created_notes: string[]; unchanged_notes: string[];
   updated_projections: string[]; state: string;
 }
+
+export interface OnboardingSelection {
+  mode: "discover" | "files"; paths: string[]; focus: string[]; sample_large_files: boolean;
+}
+export interface OnboardingSources {
+  root: string; project: string; packet_json: string;
+  identities: { slots: Array<{ slot: number; role: string; sources: number[]; path: string; fields: Record<string, string>; unresolved_fields?: string[] }> };
+  excerpts: OnboardingReview["excerpts"];
+  sampled_sources: unknown[];
+  coverage: {
+    directories: string[]; entries_inspected: number; candidates: number;
+    selected: Array<{ path: string; role: string; matched_terms?: string[] }>;
+    implementation_groups: Array<{ directory: string; candidates: number; selected: number }>;
+    omitted: Array<{ path: string; reason: string }>;
+    excluded_entries: number; excluded_examples: Array<{ path: string; reason: string }>;
+  } | null;
+}

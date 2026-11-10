@@ -5,7 +5,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use akasha_core::ResolveRequest;
 use akasha_core::onboarding_local::{plan_local_onboarding, prepare_local_onboarding};
-use akasha_desktop::onboarding::{publish_onboarding_plan, review_onboarding_plan};
+use akasha_desktop::onboarding::{
+    DesktopSourceSelection, prepare_onboarding_sources, publish_onboarding_plan,
+    review_onboarding_plan,
+};
 use akasha_desktop::{inspect_librarian_sources, open_librarian_source};
 use serde_json::{Value, json};
 
@@ -278,4 +281,214 @@ fn desktop_refuses_project_drift_invalid_claims_and_symlinked_sources() {
         std::os::unix::fs::symlink(fixture.base.join("real.rs"), source).unwrap();
         assert!(fixture.review().is_err());
     }
+}
+
+fn selection(mode: &str, paths: &[&str], focus: &[&str], sampling: bool) -> DesktopSourceSelection {
+    DesktopSourceSelection {
+        mode: mode.into(),
+        paths: paths.iter().map(|s| (*s).into()).collect(),
+        focus: focus.iter().map(|s| (*s).into()).collect(),
+        sample_large_files: sampling,
+    }
+}
+
+#[test]
+fn desktop_selects_exact_sources_and_discovery_exposes_gaps_without_writes() {
+    let fixture = Fixture::new(5);
+    let repo = fixture.base.join("repository");
+    for index in 0..10 {
+        fs::create_dir(repo.join(format!("component-{index}"))).unwrap();
+        fs::write(
+            repo.join(format!("component-{index}/lib.rs")),
+            format!("pub const ID: usize = {index};\n"),
+        )
+        .unwrap();
+    }
+    fs::write(repo.join(".secret.rs"), "secret example\n").unwrap();
+    let before = snapshot(&fixture.root);
+    let code_before = snapshot(&repo);
+    let discovered = prepare_onboarding_sources(
+        Some(fixture.root.clone()),
+        "example".into(),
+        selection("discover", &["."], &[], false),
+    )
+    .unwrap();
+    assert_eq!(discovered.root, fixture.root);
+    let coverage = discovered.coverage.unwrap();
+    assert!(!coverage.omitted.is_empty());
+    assert!(
+        coverage
+            .implementation_groups
+            .iter()
+            .any(|group| group.selected == 0)
+    );
+    assert!(
+        coverage
+            .excluded_examples
+            .iter()
+            .any(|entry| entry.path == ".secret.rs")
+    );
+    assert!(
+        !discovered
+            .excerpts
+            .iter()
+            .any(|excerpt| excerpt.path == ".secret.rs")
+    );
+    assert!(discovered.packet_json.len() <= 16_000);
+    let prepared = prepare_onboarding_sources(
+        Some(fixture.root.clone()),
+        "example".into(),
+        selection("files", &["limits.rs"], &[], false),
+    )
+    .unwrap();
+    assert!(prepared.coverage.is_none());
+    assert!(prepared.sampled_sources.is_empty());
+    assert_eq!(prepared.packet_json, fixture.packet);
+    assert_eq!(prepared.excerpts[0].line_start, 1);
+    assert_eq!(prepared.identities.slots.len(), 1);
+    let reviewed = review_onboarding_plan(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &prepared.packet_json,
+        &fixture.plan.to_string(),
+    )
+    .unwrap();
+    assert_eq!(reviewed.excerpts[0].text, prepared.excerpts[0].text);
+    assert_eq!(snapshot(&fixture.root), before);
+    assert_eq!(snapshot(&repo), code_before);
+    publish_onboarding_plan(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &prepared.packet_json,
+        &fixture.plan.to_string(),
+        &reviewed.draft.preview.preview_id,
+    )
+    .unwrap();
+    assert!(
+        !inspect_librarian_sources(
+            Some(fixture.root.clone()),
+            "example".into(),
+            "capacity",
+            true
+        )
+        .unwrap()
+        .review
+        .sources
+        .matches
+        .is_empty()
+    );
+}
+
+#[test]
+fn desktop_source_selection_preserves_focused_sampling_and_refuses_changed_packet() {
+    let fixture = Fixture::new(5);
+    let repo = fixture.base.join("repository");
+    let text = (1..=500)
+        .map(|line| {
+            if line == 82 {
+                "pub const LEASE_SECONDS: usize = 37; // deadline\r\n".into()
+            } else {
+                format!("// ordinary multilingual 世界 filler {line}\r\n")
+            }
+        })
+        .collect::<String>();
+    fs::write(repo.join("limits.rs"), text).unwrap();
+    let before = snapshot(&fixture.root);
+    assert!(
+        prepare_onboarding_sources(
+            Some(fixture.root.clone()),
+            "example".into(),
+            selection("files", &["limits.rs"], &[], false)
+        )
+        .is_err()
+    );
+    let prepared = prepare_onboarding_sources(
+        Some(fixture.root.clone()),
+        "example".into(),
+        selection("files", &["limits.rs"], &["deadline"], true),
+    )
+    .unwrap();
+    let packet: Value = serde_json::from_str(&prepared.packet_json).unwrap();
+    assert_eq!(packet["schema_version"], 4);
+    assert_eq!(packet["focus"]["terms"], json!(["deadline"]));
+    assert_eq!(prepared.sampled_sources.len(), 1);
+    assert!(
+        !prepared.sampled_sources[0]
+            .sampling
+            .omitted_lines
+            .is_empty()
+    );
+    assert!(
+        prepared
+            .excerpts
+            .iter()
+            .any(|excerpt| excerpt.line_start <= 82
+                && excerpt.line_end >= 82
+                && excerpt.text.contains("LEASE_SECONDS"))
+    );
+    assert_eq!(snapshot(&fixture.root), before);
+    fs::write(repo.join("limits.rs"), "// changed omitted lines\n").unwrap();
+    assert!(
+        review_onboarding_plan(
+            Some(fixture.root.clone()),
+            "example".into(),
+            &prepared.packet_json,
+            &fixture.plan.to_string()
+        )
+        .is_err()
+    );
+    assert_eq!(snapshot(&fixture.root), before);
+}
+
+#[test]
+fn desktop_source_selection_refuses_scope_modes_limits_and_symlinks() {
+    let fixture = Fixture::new(5);
+    let before = snapshot(&fixture.root);
+    for input in [
+        selection("files", &["../outside.rs"], &[], false),
+        selection("discover", &[".."], &[], false),
+        selection("discover", &[".", "component"], &[], false),
+        selection("invalid", &["limits.rs"], &[], false),
+        selection("files", &[], &[], false),
+        selection("files", &["limits.rs"; 9], &[], false),
+        selection("files", &["limits.rs"], &[""], false),
+    ] {
+        assert!(
+            prepare_onboarding_sources(Some(fixture.root.clone()), "example".into(), input)
+                .is_err()
+        );
+    }
+    assert!(
+        prepare_onboarding_sources(
+            Some(fixture.root.clone()),
+            "foreign".into(),
+            selection("files", &["limits.rs"], &[], false)
+        )
+        .is_err()
+    );
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(
+            fixture.base.join("repository"),
+            fixture.base.join("repository/linked"),
+        )
+        .unwrap();
+        assert!(
+            prepare_onboarding_sources(
+                Some(fixture.root.clone()),
+                "example".into(),
+                selection("discover", &["linked"], &[], false)
+            )
+            .is_err()
+        );
+        assert!(
+            prepare_onboarding_sources(
+                Some(fixture.root.clone()),
+                "example".into(),
+                selection("files", &["linked/limits.rs"], &[], false)
+            )
+            .is_err()
+        );
+    }
+    assert_eq!(snapshot(&fixture.root), before);
 }

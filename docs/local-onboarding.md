@@ -1,26 +1,47 @@
 # Local onboarding draft pilot
 
-The desktop now provides **Review local onboarding** (toolbar **＋**) for captured drafts:
+The desktop provides **Review local onboarding** (toolbar **＋**) for source selection and reviewed publication:
 
-1. Load the configured root/project, choose **Review local onboarding**, then select the saved
-   `packet.json` and `plan.json` (or an exported corrected plan). Each file is limited to 16,000 bytes.
-2. Choose **Load / preview changes**. Rust checks current project/source identities before showing
+1. Load the configured root/project and choose **Review local onboarding**. Enter repository-relative
+   directories or exact files, one per line, then **Inspect selected sources**. Nothing is scanned
+   automatically. Optional literal focus and partial large-file windows use the existing core bounds.
+   Inspect selected excerpts, omitted/excluded paths and missing implementation groups. Use
+   **Use selected paths as an editable file list** to replace the selection; inspect again afterwards.
+   A manual list has no automatic repository-coverage claim.
+2. Save the displayed exact packet as a private `packet.json` and run the existing local generator
+   with `--packet packet.json` as shown below. Select only its resulting `plan.json`: the desktop
+   retains the selected packet. Alternatively import both files from an earlier capture. Each input
+   is limited to 16,000 bytes. New source selection clears previous claims and approval.
+3. Choose **Load / preview changes**. Rust checks current project/source identities before showing
    the captured excerpt catalog, metadata and claims. Supported excerpt-plan versions are 3/4/5.
-3. Correct claim wording, kind, rationale and source choices. Browse captured excerpts to add a
+4. Correct claim wording, kind, rationale and source choices. Browse captured excerpts to add a
    missing claim, or remove one within the existing bounds. Metadata and note identities stay fixed.
-4. Preview again. Inspect exact proposed note/index/roadmap Markdown, affected actions and current
-   citation/sampling/focus gaps. Separate discovery candidate/directory omissions remain in the
-   capture's `discovery.json`; this import does not rescan or claim complete coverage.
-5. Save or Discard unsaved note edits, paste the full displayed preview ID, and choose
+5. Preview again. Inspect exact proposed note/index/roadmap Markdown, affected actions and current
+   citation/sampling/focus gaps. Current desktop discovery displays its bounded inventory. Imported
+   captures keep separate discovery omissions in `discovery.json`; imports do not rescan.
+6. Save or Discard unsaved note edits, paste the full displayed preview ID, and choose
    **Publish reviewed notes**. Rust recompiles and rechecks the exact approval before publication.
    Wait for the result: the modal prevents close/project changes during publication. Failed checks
    never retry or refresh approval automatically; an interrupted writer uses normal recovery.
-6. The library reloads after success. Open **Librarian sources** to inspect saved passages,
+7. The library reloads after success. Open **Librarian sources** to inspect saved passages,
    optional recorded code and freshly checked full notes. Recorded draft/unreviewed status remains.
 
 Corrections stay in memory until library reload/project change. Closing the review clears approval
-but preserves those edits in the same binding. Model generation/discovery and model provisioning
-still use the development runner below; no model process is installed by this review feature.
+but preserves those edits in the same binding. Source-inspection cancellation suppresses obsolete
+results; bounded native reads may finish. Generation and model provisioning still use the existing
+development runner; no model process is installed by this feature.
+
+For a desktop-selected packet, replace all `--source`/`--discover`/`--components` options in the
+command below with `--packet /private/path/packet.json`. The runner snapshots a regular non-symlink
+UTF-8 JSON file within the existing byte bound, automatically uses host-owned note planning and
+asks Rust to rebuild the entire packet before inference. It does not rediscover sources, refresh
+stale input or accept replacement `--focus`/`--sample-large-files` controls. Unknown required metadata
+still refuses before inference. Use `--save-inputs` to retain the private generated `plan.json` for
+desktop review. Source changes during generation still refuse compilation; approval is never inferred.
+
+[Interactive recorded demonstration](../akasha/Research/evidence/2026-11-10-desktop-source-selection/demo.html)
+and [live source-to-librarian acceptance](../akasha/Research/desktop_source_selection.md) distinguish
+actual native/model results from the offline replay's simulated publication.
 
 
 The development adapter can draft initial project knowledge with an explicit local GGUF model

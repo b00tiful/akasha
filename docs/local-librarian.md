@@ -16,7 +16,9 @@ editor. Stale/altered packets or pending journals refuse without recovery or wri
 uses saved files even with unsaved edits; choose Save or Discard before opening another note.
 Cancel, query edits, closing or changing projects suppress obsolete results immediately; already
 running bounded native reads may finish. Query/results and repository preference are not persisted.
-Captured onboarding drafts can now be corrected and explicitly published through desktop **Review local onboarding**; see [the workflow](local-onboarding.md). Model-backed chat and installed generation remain separate work.
+Desktop **Review local onboarding** now prepares scoped repository sources, retains their exact
+packet for local CLI generation, and corrects/publishes the resulting draft into this librarian;
+see [the workflow](local-onboarding.md). Model-backed chat and installed generation remain separate work.
 [Interactive offline demonstration](../akasha/Research/evidence/2026-11-10-desktop-librarian/demo.html)
 uses the actual component with saved native-adapter results.
 
