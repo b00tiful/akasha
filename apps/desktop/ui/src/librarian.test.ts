@@ -4,8 +4,8 @@ import { LibrarianPanel } from "./librarian";
 import type { DesktopLibrarianReview } from "./librarian-types";
 import type { LinkedLibraryDocument } from "./types";
 
-const { inspect, follow } = vi.hoisted(() => ({ inspect: vi.fn(), follow: vi.fn() }));
-vi.mock("./api", () => ({ inspectLibrarian: inspect, followLibrarianSource: follow }));
+const { inspect, follow, setupModel, reserve, cancel, assist } = vi.hoisted(() => ({ inspect: vi.fn(), follow: vi.fn(), setupModel: vi.fn(), reserve: vi.fn(), cancel: vi.fn(), assist: vi.fn() }));
+vi.mock("./api", () => ({ inspectLibrarian: inspect, followLibrarianSource: follow, localInferenceAvailability: setupModel, reserveLocalGeneration: reserve, cancelLocalGeneration: cancel, assistLibrarian: assist }));
 const binding = { root: "/resolved/root", project: "alpha" };
 const id = "Projects/alpha/entities/core.md";
 function result(): DesktopLibrarianReview {
@@ -38,7 +38,12 @@ function panel() {
   const open = () => host.querySelector<HTMLButtonElement>("article > button")!.click();
   return { host, panel, question, submit, open, activate };
 }
-beforeEach(() => { inspect.mockReset(); follow.mockReset(); });
+beforeEach(() => {
+  for (const mock of [inspect, follow, setupModel, reserve, cancel, assist]) mock.mockReset();
+  cancel.mockResolvedValue(undefined);
+  reserve.mockResolvedValue("reserved-local-id");
+  setupModel.mockResolvedValue({ supported: true, model_present: true, vulkan_present: true, cpu_present: false, model: "Qwen9B", location: "/installed" });
+});
 
 it("shows all checked passages, physical ranges, status, omissions and code without executing source markup", async () => {
   inspect.mockResolvedValue(result());
@@ -157,4 +162,93 @@ it("rejects cross-project responses, changed packets on open and identity mismat
   follow.mockResolvedValueOnce({ id: "Global/entities/foreign.md", source: "foreign", links: [] }); open();
   await vi.waitFor(() => expect(host.textContent).toContain("does not match its citation"));
   expect(activate).not.toHaveBeenCalled();
+});
+
+async function readyAssistance(host: HTMLElement) {
+  expect(host.querySelector<HTMLButtonElement>("[data-assisted]")!.disabled).toBe(true);
+  host.querySelector<HTMLButtonElement>("[data-model-setup]")!.click();
+  await vi.waitFor(() => expect(host.querySelector<HTMLButtonElement>("[data-assisted]")!.disabled).toBe(false));
+}
+function assistedResult() {
+  const initial = result(), expanded = result();
+  expanded.packet.terms = ["capacity", "容量"];
+  const extra = { ...expanded.packet.evidence[0]!, citation: 2, id: "Projects/alpha/entities/worker.md", excerpt: "Retry limit 3." };
+  expanded.packet.evidence.push(extra);
+  expanded.review.sources.matches.push({ ...expanded.review.sources.matches[0]!, ...extra, quote: extra.excerpt });
+  return { initial, expanded, terms: expanded.packet.terms, raw_expansion: '{"terms":["capacity","容量"]}', metrics: {} };
+}
+
+it("explicitly assists with the installed model, retains initial results and binds additional navigation to its own packet", async () => {
+  const response = assistedResult(); assist.mockResolvedValue(response);
+  const { host, activate } = panel();
+  await readyAssistance(host);
+  host.querySelector<HTMLButtonElement>("[data-assisted]")!.click();
+  await vi.waitFor(() => expect(host.querySelectorAll("article")).toHaveLength(2));
+  expect(assist).toHaveBeenCalledWith("reserved-local-id", binding.root, binding.project, "core", false, "vulkan");
+  expect(inspect).not.toHaveBeenCalled();
+  expect(host.textContent).toContain("Local search words: capacity, 容量");
+  expect(host.textContent).toContain("Original search");
+  expect(host.textContent).toContain("Additional local search");
+  const document = { id: response.expanded.packet.evidence[1]!.id, source: "Retry limit 3.", links: [] };
+  follow.mockResolvedValue(document);
+  host.querySelectorAll<HTMLButtonElement>("article > button")[1]!.click();
+  await vi.waitFor(() => expect(activate).toHaveBeenCalledWith(document));
+  expect(follow).toHaveBeenCalledWith(binding.root, binding.project, response.expanded.packet, 2);
+  expect(cancel).toHaveBeenCalledWith("reserved-local-id");
+});
+
+it("cancels late reservations without starting a worker and suppresses cancelled completions on project replacement", async () => {
+  let reserved!: (id: string) => void;
+  reserve.mockImplementationOnce(() => new Promise<string>(done => { reserved = done; }));
+  const { host, panel: view } = panel();
+  await readyAssistance(host);
+  host.querySelector<HTMLButtonElement>("[data-assisted]")!.click();
+  host.querySelector<HTMLButtonElement>("[data-cancel]")!.click();
+  reserved("late-reservation");
+  await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith("late-reservation"));
+  expect(assist).not.toHaveBeenCalled();
+  let finish!: (value: ReturnType<typeof assistedResult>) => void;
+  assist.mockImplementation(() => new Promise(done => { finish = done; }));
+  host.querySelector<HTMLButtonElement>("[data-assisted]")!.click();
+  await vi.waitFor(() => expect(assist).toHaveBeenCalledTimes(1));
+  view.bind({ ...binding, project: "beta" });
+  expect(cancel).toHaveBeenCalledWith("reserved-local-id");
+  finish(assistedResult()); await Promise.resolve();
+  expect(host.querySelector("article")).toBeNull();
+  expect(host.textContent).toContain("beta");
+});
+
+it("keeps literal searching available when setup or assistance fails and never hides missing support", async () => {
+  const { host, question, submit } = panel();
+  await readyAssistance(host);
+  question.value = "a".repeat(161); question.dispatchEvent(new Event("input"));
+  expect(host.querySelector<HTMLButtonElement>("[data-assisted]")!.disabled).toBe(true);
+  expect(host.querySelector<HTMLButtonElement>('[type="submit"]')!.disabled).toBe(false);
+  question.value = "core"; question.dispatchEvent(new Event("input"));
+  assist.mockRejectedValueOnce({ message: "Another local generation is still active" });
+  host.querySelector<HTMLButtonElement>("[data-assisted]")!.click();
+  await vi.waitFor(() => expect(host.textContent).toContain("still active"));
+  const response = assistedResult(); response.expanded = null as unknown as typeof response.expanded; response.terms = [];
+  assist.mockResolvedValueOnce(response);
+  host.querySelector<HTMLButtonElement>("[data-assisted]")!.click();
+  await vi.waitFor(() => expect(host.textContent).toContain("none; literal results retained"));
+  expect(host.textContent).toContain("do not establish an answer");
+  inspect.mockResolvedValueOnce(result()); submit();
+  await vi.waitFor(() => expect(inspect).toHaveBeenCalledTimes(1));
+});
+
+it("repairs suggested vocabulary with an explicit model-free search while retaining the question", async () => {
+  assist.mockResolvedValueOnce(assistedResult());
+  const { host, submit, panel: view } = panel();
+  await readyAssistance(host);
+  host.querySelector<HTMLButtonElement>("[data-assisted]")!.click();
+  await vi.waitFor(() => expect(host.querySelectorAll("article")).toHaveLength(2));
+  const terms = host.querySelector<HTMLTextAreaElement>('[name="librarian-terms"]')!;
+  expect(terms.value).toBe("capacity\n容量");
+  terms.value = "lease\n retry "; terms.dispatchEvent(new Event("input"));
+  expect(host.querySelector<HTMLButtonElement>("article > button")!.disabled).toBe(true);
+  inspect.mockResolvedValueOnce(result()); submit();
+  await vi.waitFor(() => expect(inspect).toHaveBeenCalledWith(binding.root, binding.project, "core", false, ["lease", "retry"]));
+  expect(assist).toHaveBeenCalledTimes(1);
+  view.bind({ ...binding, project: "beta" }); expect(terms.value).toBe("");
 });

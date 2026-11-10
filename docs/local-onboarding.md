@@ -28,7 +28,10 @@ The desktop provides **Review local onboarding** (toolbar **＋**) for source se
    Wait for the result: the modal prevents close/project changes during publication. Failed checks
    never retry or refresh approval automatically; an interrupted writer uses normal recovery.
 7. The library reloads after success. Open **Librarian sources** to inspect saved passages,
-   optional recorded code and freshly checked full notes. Recorded draft/unreviewed status remains.
+   optional recorded code and freshly checked full notes. Its optional **Find with local model**
+   proposes search words from the question alone; **Refine search words** repairs vocabulary
+   misses without more inference. [Librarian guide](local-librarian.md). Recorded draft/unreviewed
+   status remains; generated-answer and automatic semantic-coverage gates remain open.
 
 Corrections stay in memory until library reload/project change. Closing the review clears approval
 but preserves those edits in the same binding. Source-inspection cancellation suppresses obsolete

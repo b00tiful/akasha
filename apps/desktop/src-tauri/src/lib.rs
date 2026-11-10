@@ -1,4 +1,5 @@
 pub mod inference;
+pub mod librarian_expansion;
 pub mod onboarding;
 pub mod onboarding_generation;
 
@@ -59,8 +60,19 @@ pub fn inspect_librarian_sources(
     question: &str,
     provenance: bool,
 ) -> Result<DesktopLibrarianReview, DesktopError> {
+    inspect_librarian_sources_with_terms(root, project, question, provenance, &[])
+}
+
+/// Explicit operator vocabulary uses the existing core literal-term interface.
+pub fn inspect_librarian_sources_with_terms(
+    root: Option<PathBuf>,
+    project: String,
+    question: &str,
+    provenance: bool,
+    terms: &[String],
+) -> Result<DesktopLibrarianReview, DesktopError> {
     let request = request(root, Some(project))?;
-    let packet = prepare_librarian(&request, question, &[], None).map_err(librarian_error)?;
+    let packet = prepare_librarian(&request, question, terms, None).map_err(librarian_error)?;
     let selection = r#"{"selections":[]}"#;
     let review = if provenance {
         review_librarian_provenance(&request, &packet, selection)
@@ -95,9 +107,16 @@ async fn inspect_librarian(
     project: String,
     question: String,
     provenance: bool,
+    terms: Option<Vec<String>>,
 ) -> Result<DesktopLibrarianReview, DesktopError> {
     tauri::async_runtime::spawn_blocking(move || {
-        inspect_librarian_sources(root, project, &question, provenance)
+        inspect_librarian_sources_with_terms(
+            root,
+            project,
+            &question,
+            provenance,
+            &terms.unwrap_or_default(),
+        )
     })
     .await
     .map_err(|error| DesktopError {
@@ -659,6 +678,7 @@ pub fn run() {
         follow_document_backlink,
         search_project,
         inspect_librarian,
+        librarian_expansion::assist_librarian_sources,
         onboarding::prepare_local_onboarding_sources,
         onboarding_generation::local_inference_availability,
         onboarding_generation::reserve_local_generation,
@@ -683,6 +703,7 @@ pub fn run() {
         follow_document_backlink,
         search_project,
         inspect_librarian,
+        librarian_expansion::assist_librarian_sources,
         onboarding::prepare_local_onboarding_sources,
         onboarding_generation::local_inference_availability,
         onboarding_generation::reserve_local_generation,

@@ -636,3 +636,269 @@ async fn native_main_model_generates_reviewed_memory_and_librarian_navigation() 
         evidence.display()
     );
 }
+
+#[tokio::test]
+async fn native_assistance_refuses_invalid_or_cancelled_requests_before_artifact_access() {
+    use akasha_desktop::inference::{Cancellation, Profile};
+    use akasha_desktop::librarian_expansion::assist_librarian;
+    let missing = Some(PathBuf::from("/does-not-exist/native-assistance"));
+    let invalid = assist_librarian(
+        missing.clone(),
+        "foreign".into(),
+        " ".into(),
+        false,
+        Profile::Vulkan,
+        Cancellation::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(invalid.message.contains("1..160"));
+    let cancelled = Cancellation::new();
+    cancelled.cancel();
+    let failure = assist_librarian(
+        missing,
+        "foreign".into(),
+        "queue".into(),
+        false,
+        Profile::Vulkan,
+        cancelled,
+    )
+    .await
+    .unwrap_err();
+    assert!(failure.message.contains("cancelled"));
+}
+
+/// Frozen multilingual/paraphrase coverage, one unchanged question-only completion per case.
+#[tokio::test]
+#[ignore = "requires installed selected Qwen9B, host loopback and Vulkan device"]
+async fn native_librarian_recovers_multilingual_memory_after_reviewed_onboarding() {
+    use akasha_desktop::inference::{Cancellation, Profile};
+    use akasha_desktop::librarian_expansion::assist_librarian;
+    let mut fixture = Fixture::new(3);
+    let repo = fixture.base.join("repository");
+    let sources = [
+        (
+            "limits.rs",
+            "pub const CAPACITY: usize = 37;\npub fn enqueue(ids: &mut Vec<u64>, id: u64) -> Result<(), &'static str> {\n    if ids.contains(&id) { return Err(\"duplicate\"); }\n    if ids.len() >= CAPACITY { return Err(\"full\"); }\n    ids.push(id); Ok(())\n}\n",
+        ),
+        (
+            "worker.rs",
+            "pub const LEASE_SECONDS: u64 = 45;\npub const RETRY_LIMIT: u32 = 3;\n",
+        ),
+        (
+            "README.md",
+            "# Parcel service\nCI runs cargo fmt, cargo clippy, and cargo test before integration.\n",
+        ),
+    ];
+    for (name, source) in sources {
+        fs::write(repo.join(name), source).unwrap();
+    }
+    let request =
+        ResolveRequest::from_process(Some(fixture.root.clone()), Some("example".into())).unwrap();
+    let packet = prepare_local_onboarding(
+        &request,
+        &["limits.rs".into(), "worker.rs".into(), "README.md".into()],
+    )
+    .unwrap();
+    fixture.packet = serde_json::to_string(&packet).unwrap();
+    fixture.plan = json!({"schema_version":3,"notes":[
+        {"name":"parcel-queue","note_type":"entity","fields":{"entity":"parcel-queue","kind":"source-group","status":"draft","reviewed":"unreviewed"},"evidence":[{"kind":"fact","claim":"The queue capacity is 37; enqueue rejects duplicate IDs before checking whether the queue is full.","sources":[{"source":1,"excerpt":1}]}]},
+        {"name":"parcel-worker","note_type":"entity","fields":{"entity":"parcel-worker","kind":"source-group","status":"draft","reviewed":"unreviewed"},"evidence":[{"kind":"fact","claim":"The configured lease expires after 45 seconds and the retry limit is 3.","sources":[{"source":2,"excerpt":1}]}]},
+        {"name":"parcel-checks","note_type":"entity","fields":{"entity":"parcel-checks","kind":"source-group","status":"draft","reviewed":"unreviewed"},"evidence":[{"kind":"fact","claim":"The README says CI runs cargo fmt, cargo clippy, and cargo test before integration.","sources":[{"source":3,"excerpt":1}]}]}
+    ]});
+    // Reviewer-authored memory, independently checked against source; no inference approval.
+    // Constants alone describe configuration, not enforcement by a missing worker implementation.
+    let review = fixture.review().unwrap();
+    let published = fixture.apply(&review.draft.preview.preview_id).unwrap();
+    let before = snapshot(&fixture.root);
+    let code_before = snapshot(&repo);
+    let evidence = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../akasha/Research/evidence/2026-11-10-native-librarian");
+    let criteria: Value =
+        serde_json::from_slice(&fs::read(evidence.join("criteria.json")).unwrap()).unwrap();
+    fs::write(
+        evidence.join("reviewed-onboarding.json"),
+        serde_json::to_vec_pretty(
+            &json!({"packet":packet,"plan":fixture.plan,"review":review,"published":published}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let mut results = Vec::new();
+    for case in criteria["cases"].as_array().unwrap() {
+        let started = std::time::Instant::now();
+        let question = case["question"].as_str().unwrap();
+        let found = assist_librarian(
+            Some(fixture.root.clone()),
+            "example".into(),
+            question.into(),
+            true,
+            Profile::Vulkan,
+            Cancellation::new(),
+        )
+        .await
+        .unwrap();
+        let initial = found
+            .initial
+            .review
+            .sources
+            .matches
+            .iter()
+            .map(|p| p.quote.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let expanded = found
+            .expanded
+            .as_ref()
+            .map(|p| {
+                p.review
+                    .sources
+                    .matches
+                    .iter()
+                    .map(|p| p.quote.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        let spans = case["required"].as_array().unwrap();
+        let initial_hit = spans.iter().all(|s| initial.contains(s.as_str().unwrap()));
+        let retained = format!("{initial}\n{expanded}");
+        let assisted_hit = spans.iter().all(|s| retained.contains(s.as_str().unwrap()));
+        let mut opened = Vec::new();
+        for span in spans {
+            let span = span.as_str().unwrap();
+            if let Some((report, passage)) = std::iter::once(&found.initial)
+                .chain(found.expanded.as_ref())
+                .find_map(|r| {
+                    r.review
+                        .sources
+                        .matches
+                        .iter()
+                        .find(|p| p.quote.contains(span))
+                        .map(|p| (r, p))
+                })
+            {
+                let document = open_librarian_source(
+                    Some(fixture.root.clone()),
+                    "example".into(),
+                    &report.packet,
+                    passage.citation,
+                )
+                .unwrap();
+                assert!(document.document.source.contains(span));
+                assert_eq!(passage.status.as_deref(), Some("draft"));
+                opened.push(serde_json::to_value(document).unwrap());
+            }
+        }
+        assert_eq!(snapshot(&fixture.root), before);
+        assert_eq!(snapshot(&repo), code_before);
+        let row = json!({"id":case["id"],"initial_hit":initial_hit,"assisted_hit":assisted_hit,"ms":started.elapsed().as_millis(),"terms":found.terms,"opened":opened.len()});
+        println!("{row}");
+        fs::write(
+            evidence.join(format!("{}.json", case["id"].as_str().unwrap())),
+            serde_json::to_vec_pretty(
+                &json!({"case":case,"score":row,"result":found,"opened":opened}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        results.push(row);
+    }
+    let recovered = results[..6]
+        .iter()
+        .filter(|r| r["initial_hit"] == false && r["assisted_hit"] == true)
+        .count();
+    let supported = results[..8]
+        .iter()
+        .filter(|r| r["assisted_hit"] == true)
+        .count();
+    let summary = json!({"results":results,"paraphrases_recovered":recovered,"supported_cases":supported,"source_snapshots_unchanged":true,"initial_packets_preserved":true});
+    fs::write(
+        evidence.join("summary.json"),
+        serde_json::to_vec_pretty(&summary).unwrap(),
+    )
+    .unwrap();
+    println!("{summary}");
+    assert!(
+        recovered >= 4,
+        "frozen recovery gate failed; preserve raw results, do not tune/retry"
+    );
+    assert_eq!(supported, 8);
+}
+
+/// Explicit model-free replay of the preserved live misses; no inference call or tuning.
+#[test]
+#[ignore = "requires the preserved native librarian live acceptance capture"]
+fn native_librarian_repairs_recorded_misses_with_reviewed_search_words() {
+    use akasha_desktop::inspect_librarian_sources_with_terms;
+    let evidence = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../akasha/Research/evidence/2026-11-10-native-librarian");
+    let saved: Value =
+        serde_json::from_slice(&fs::read(evidence.join("reviewed-onboarding.json")).unwrap())
+            .unwrap();
+    let mut fixture = Fixture::new(3);
+    let repo = fixture.base.join("repository");
+    let mut paths = Vec::new();
+    for source in saved["packet"]["sources"].as_array().unwrap() {
+        let path = source["path"].as_str().unwrap();
+        fs::write(repo.join(path), source["text"].as_str().unwrap()).unwrap();
+        paths.push(path.to_string());
+    }
+    let request =
+        ResolveRequest::from_process(Some(fixture.root.clone()), Some("example".into())).unwrap();
+    fixture.packet =
+        serde_json::to_string(&prepare_local_onboarding(&request, &paths).unwrap()).unwrap();
+    fixture.plan = saved["plan"].clone();
+    fixture
+        .apply(&fixture.review().unwrap().draft.preview.preview_id)
+        .unwrap();
+    let before = snapshot(&fixture.root);
+    let code_before = snapshot(&repo);
+    let mut repairs = Vec::new();
+    for (case, term, span) in [
+        ("lease-en", "lease", "lease expires after 45 seconds"),
+        ("retry-ru", "retry", "retry limit is 3"),
+    ] {
+        let raw: Value =
+            serde_json::from_slice(&fs::read(evidence.join(format!("{case}.json"))).unwrap())
+                .unwrap();
+        assert_eq!(raw["score"]["assisted_hit"], false);
+        let question = raw["case"]["question"].as_str().unwrap();
+        let report = inspect_librarian_sources_with_terms(
+            Some(fixture.root.clone()),
+            "example".into(),
+            question,
+            true,
+            &[term.into()],
+        )
+        .unwrap();
+        assert_eq!(report.packet.question, question);
+        assert_eq!(report.packet.terms, vec![term]);
+        let passage = report
+            .review
+            .sources
+            .matches
+            .iter()
+            .find(|p| p.quote.contains(span))
+            .unwrap();
+        let opened = open_librarian_source(
+            Some(fixture.root.clone()),
+            "example".into(),
+            &report.packet,
+            passage.citation,
+        )
+        .unwrap();
+        assert!(opened.document.source.contains(span));
+        assert_eq!(snapshot(&fixture.root), before);
+        assert_eq!(snapshot(&repo), code_before);
+        repairs.push(json!({"id":case,"operator_terms":[term],"question":question,"report":report,"opened":opened}));
+    }
+    fs::write(
+        evidence.join("manual-repairs.json"),
+        serde_json::to_vec_pretty(
+            &json!({"model_calls":0,"source_snapshots_unchanged":true,"repairs":repairs}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+}

@@ -1,9 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { DesktopLibrarianReview, LibrarianPacket } from "./librarian-types";
+import type { AssistedLibrarianReview, DesktopLibrarianReview, LibrarianPacket } from "./librarian-types";
 
 /** Read-only, selected-project saved sources; repository inspection is explicit. */
-export function inspectLibrarian(root: string, project: string, question: string, provenance: boolean): Promise<DesktopLibrarianReview> {
-  return invoke("inspect_librarian", { root: optional(root), project, question, provenance });
+export function inspectLibrarian(root: string, project: string, question: string, provenance: boolean, terms: string[] = []): Promise<DesktopLibrarianReview> {
+  return invoke("inspect_librarian", { root: optional(root), project, question, provenance, terms });
+}
+
+export function assistLibrarian(requestId: string, root: string, project: string, question: string, provenance: boolean, profile: "vulkan" | "cpu"): Promise<AssistedLibrarianReview> {
+  return invoke("assist_librarian_sources", { requestId, root: optional(root), project, question, provenance, profile });
 }
 
 export function followLibrarianSource(root: string, project: string, packet: LibrarianPacket, citation: number): Promise<LinkedLibraryDocument> {

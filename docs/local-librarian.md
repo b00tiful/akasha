@@ -3,7 +3,7 @@
 Reviewed notes can now originate from native Linux desktop generation: **Review local onboarding**
 → select sources → **Inspect model setup** → **Generate draft locally** → review claims → fresh
 preview/full-ID publication. [Native onboarding guide](local-onboarding.md) describes the selected
-installed profiles. Librarian source navigation remains deterministic; model-backed desktop answers
+installed profiles. Librarian source navigation defaults to deterministic retrieval; model-backed desktop answers
 retain their separate quality gate.
 
 The desktop now includes **Librarian sources** (the `§` toolbar button, also available in the note
@@ -11,6 +11,26 @@ inspector). Open a configured root/project, enter specific names or words record
 and choose **Find sources**. The panel shows exact bounded passages with physical lines, recorded
 status, partial-body flags and retrieval omissions. It uses deterministic saved-memory retrieval
 and needs no model installation. No match is explicit; try more specific recorded terms.
+
+For optional local vocabulary assistance on Linux, expand **Optional local search assistance**,
+choose **Inspect model setup**, select the installed GPU/CPU profile, then **Find with local model**.
+The selected Qwen9B sees only your question (up to 160 characters) and suggests search words.
+It receives no notes or repository data. Original results stay visible alongside additional
+checked passages; exact duplicates appear once. Each search reports its own retrieval omissions.
+The worker closes before results return; Cancel/close/query/project changes stop and invalidate
+its request. It shares the native job slot with onboarding, so wait for cleanup before another run.
+Nothing is downloaded; use the [existing installed-profile setup](local-onboarding.md).
+
+**Refine search words** lets you edit those suggestions, then choose **Find sources** to search
+without running the model. Use one literal word or phrase per line, up to eight phrases of 128
+characters. The original question remains recorded, while these explicit words replace automatic
+question-word matching. Clear them to restore ordinary matching. Model suggestions can miss known
+vocabulary; entering `lease` or `retry` repairs the two preserved example misses. Search results
+are passages to inspect, not answers or proof that knowledge is absent. Optional assistance remains
+experimental because its frozen automatic-recall gate failed; CPU/device budgets also remain open.
+[Actual-component replay](../akasha/Research/evidence/2026-11-10-native-librarian/demo.html) shows
+all captured questions and both explicit corrections; [acceptance](../akasha/Research/native_librarian_expansion.md)
+distinguishes actual native/model checks from the offline replay's simulated native calls.
 
 Enable **Inspect recorded repository evidence** to see onboarding claims' fact/inference/unknown
 labels, rationales and original code windows. This explicitly reads recorded references in the
@@ -23,8 +43,8 @@ uses saved files even with unsaved edits; choose Save or Discard before opening 
 Cancel, query edits, closing or changing projects suppress obsolete results immediately; already
 running bounded native reads may finish. Query/results and repository preference are not persisted.
 Desktop **Review local onboarding** now prepares scoped repository sources, retains their exact
-packet for local CLI generation, and corrects/publishes the resulting draft into this librarian;
-see [the workflow](local-onboarding.md). Model-backed chat and installed generation remain separate work.
+packet for native Linux or development CLI generation, and corrects/publishes the resulting draft
+into this librarian; see [the workflow](local-onboarding.md). Generated-answer chat remains gated.
 [Interactive offline demonstration](../akasha/Research/evidence/2026-11-10-desktop-librarian/demo.html)
 uses the actual component with saved native-adapter results.
 

@@ -45,3 +45,11 @@ export interface DesktopLibrarianReview {
     provenance?: { association: string; notes: LibrarianNoteProvenance[] };
   };
 }
+
+export interface AssistedLibrarianReview {
+  initial: DesktopLibrarianReview;
+  expanded: DesktopLibrarianReview | null;
+  terms: string[];
+  raw_expansion: string;
+  metrics: import("./onboarding-types").GeneratedOnboarding["metrics"][number];
+}
