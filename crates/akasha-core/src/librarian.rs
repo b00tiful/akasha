@@ -115,6 +115,18 @@ pub struct CheckedLibrarianSources {
     pub matches: Vec<LibrarianSourcePassage>,
 }
 
+/// All prepared passages remain visible; highlights are guidance, not an answerability verdict.
+#[derive(Debug, Serialize)]
+pub struct LibrarianSourceReview {
+    pub schema_version: u32,
+    pub kind: &'static str,
+    pub highlighted_citations: Vec<usize>,
+    pub scanned_notes: usize,
+    pub matched_notes: usize,
+    pub omitted_notes: usize,
+    pub sources: CheckedLibrarianSources,
+}
+
 fn automatic_term(word: &str) -> bool {
     word.chars().count() >= 3
         && !matches!(
@@ -573,6 +585,60 @@ pub fn check_librarian_answer(
         answer,
         evidence: packet.evidence.clone(),
     })
+}
+
+/// Check the complete bounded packet, preserving highlights without allowing source omission.
+/// This deliberately accepts citation-only selections: every displayed quote is a full excerpt.
+pub fn review_librarian_sources(
+    request: &ResolveRequest,
+    packet: &LibrarianPacket,
+    selection: &str,
+) -> Result<LibrarianSourceReview, NoteLinksError> {
+    if selection.len() > MAX_LIBRARIAN_ANSWER_BYTES {
+        return Err(invalid(
+            &request.cwd,
+            "source selection exceeds 16000 bytes",
+        ));
+    }
+    let selected: LibrarianSourceSelection = serde_json::from_str(selection)
+        .map_err(|_| invalid(&request.cwd, "invalid librarian source-selection JSON"))?;
+    if selected.selections.len() > MAX_SOURCES || packet.evidence.len() > MAX_SOURCES {
+        return Err(invalid(&request.cwd, "select at most six source passages"));
+    }
+    let mut highlighted_citations = Vec::new();
+    for item in selected.selections {
+        if item.quote.is_some()
+            || highlighted_citations.contains(&item.citation)
+            || !packet.evidence.iter().any(|e| e.citation == item.citation)
+        {
+            return Err(invalid(
+                &request.cwd,
+                "complete source review requires unique known citation IDs without narrower quotes",
+            ));
+        }
+        highlighted_citations.push(item.citation);
+    }
+    let all = serde_json::json!({ "selections": packet.evidence.iter()
+        .map(|item| serde_json::json!({ "citation": item.citation })).collect::<Vec<_>>() });
+    // One ordinary fresh-packet check owns scope, bytes, physical lines, status and links.
+    let sources = check_librarian_sources(request, packet, &all.to_string())?;
+    let review = LibrarianSourceReview {
+        schema_version: 1,
+        kind: "source_review",
+        highlighted_citations,
+        scanned_notes: packet.scanned_notes,
+        matched_notes: packet.matched_notes,
+        omitted_notes: packet.omitted_notes,
+        sources,
+    };
+    if serde_json::to_vec(&review)
+        .expect("serializable source review")
+        .len()
+        > 65_536
+    {
+        return Err(invalid(&request.cwd, "source review exceeds 65536 bytes"));
+    }
+    Ok(review)
 }
 
 /// Verify selected source bytes and derive links, without accepting generated factual claims.

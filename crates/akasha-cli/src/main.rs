@@ -144,6 +144,9 @@ enum Command {
         /// Inspect recorded repository evidence and freshness (additional read-only scope).
         #[arg(long)]
         provenance: bool,
+        /// Show every prepared passage, keeping the selection as highlights only.
+        #[arg(long, conflicts_with = "provenance")]
+        all_sources: bool,
     },
     /// Show validated cross-project metrics in project-name order.
     Status {
@@ -623,6 +626,7 @@ fn run(cli: Cli) -> Result<(), u8> {
             packet,
             selection,
             provenance,
+            all_sources,
         } => {
             let request = ResolveRequest::from_process(root, project).map_err(report_resolution)?;
             let packet_text = read_librarian_input(&packet)?;
@@ -631,6 +635,15 @@ fn run(cli: Cli) -> Result<(), u8> {
                 4
             })?;
             let selection = read_librarian_input(&selection)?;
+            if all_sources {
+                let review =
+                    akasha_core::librarian::review_librarian_sources(&request, &packet, &selection)
+                        .map_err(|error| {
+                            eprintln!("akasha: {error}");
+                            error.exit_code()
+                        })?;
+                return finish_output(render::render_librarian_source_review(&review, output));
+            }
             if provenance {
                 let checked = akasha_core::librarian_provenance::inspect_librarian_provenance(
                     &request, &packet, &selection,

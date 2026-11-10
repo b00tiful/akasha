@@ -206,6 +206,111 @@ fn source_selection(citation: usize, quote: Option<&str>) -> String {
 }
 
 #[test]
+fn complete_review_preserves_unhighlighted_sources_and_checks_their_freshness() {
+    use akasha_core::librarian::review_librarian_sources;
+    let f = fixture("complete-source-review");
+    append_link_source(
+        &f.root,
+        "Projects/alpha/entities/core.md",
+        "\nPublication uses checked previews. 🌍\n",
+    );
+    append_link_source(
+        &f.root,
+        "Projects/alpha/records/tasks/ship-mvp.md",
+        "\nPublication rejects stale previews.\n",
+    );
+    refresh(&f);
+    let packet = prepare_librarian(&f.request, "Publication", &[], None).unwrap();
+    assert_eq!(packet.evidence.len(), 2);
+    let before = link_fixture_snapshot(&f.root);
+    for selection in [source_selection(2, None), r#"{"selections":[]}"#.into()] {
+        let review = review_librarian_sources(&f.request, &packet, &selection).unwrap();
+        assert_eq!(review.kind, "source_review");
+        assert_eq!(review.sources.matches.len(), packet.evidence.len());
+        for (passage, evidence) in review.sources.matches.iter().zip(&packet.evidence) {
+            assert_eq!(passage.quote, evidence.excerpt);
+            assert_eq!(passage.fingerprint, evidence.fingerprint);
+            assert_eq!(passage.status, evidence.status);
+            assert_eq!(
+                (passage.line_start, passage.line_end),
+                (evidence.line_start, evidence.line_end)
+            );
+        }
+        assert_eq!(review.omitted_notes, packet.omitted_notes);
+        assert_eq!(
+            review.highlighted_citations,
+            if selection.contains("citation") {
+                vec![2]
+            } else {
+                vec![]
+            }
+        );
+    }
+    assert_eq!(before, link_fixture_snapshot(&f.root));
+    // The omitted source must still refuse when it changes after inference.
+    append_link_source(
+        &f.root,
+        &packet.evidence[0].id,
+        "\nChanged unhighlighted source.\n",
+    );
+    refresh(&f);
+    assert_eq!(
+        review_librarian_sources(&f.request, &packet, &source_selection(2, None))
+            .unwrap_err()
+            .exit_code(),
+        5
+    );
+}
+
+#[test]
+fn complete_review_rejects_invalid_highlights_forged_packets_and_pending_recovery() {
+    use akasha_core::librarian::review_librarian_sources;
+    let f = fixture("complete-source-review-refusals");
+    let packet = prepare_librarian(&f.request, "core", &[], None).unwrap();
+    for bad in [
+        source_selection(0, None),
+        source_selection(8, None),
+        source_selection(1, Some("core")),
+        r#"{"selections":[{"citation":1},{"citation":1}]}"#.into(),
+        r#"{"selections":[{"citation":1,"explanation":"claim"}]}"#.into(),
+        r#"{"selections":[],"answer":"claim"}"#.into(),
+        "x".repeat(16_001),
+    ] {
+        assert_eq!(
+            review_librarian_sources(&f.request, &packet, &bad)
+                .unwrap_err()
+                .exit_code(),
+            4
+        );
+    }
+    let mut forged = packet.clone();
+    forged.omitted_notes += 1;
+    assert_eq!(
+        review_librarian_sources(&f.request, &forged, r#"{"selections":[]}"#)
+            .unwrap_err()
+            .exit_code(),
+        5
+    );
+    let empty = prepare_librarian(&f.request, "unfindableword", &[], None).unwrap();
+    assert!(empty.evidence.is_empty());
+    assert!(
+        review_librarian_sources(&f.request, &empty, r#"{"selections":[]}"#)
+            .unwrap()
+            .sources
+            .matches
+            .is_empty()
+    );
+    fs::write(
+        f.root
+            .join("Projects/alpha")
+            .join(akasha_core::NOTE_EDIT_JOURNAL_FILE),
+        "pending",
+    )
+    .unwrap();
+    assert!(review_librarian_sources(&f.request, &packet, r#"{"selections":[]}"#).is_err());
+}
+
+#[test]
 fn source_passages_are_exact_unicode_text_with_derived_status_and_lines() {
     use akasha_core::librarian::check_librarian_sources;
     let f = fixture("source-passages-unicode");

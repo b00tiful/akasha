@@ -359,6 +359,8 @@ export async function askLibrarian(options, complete) {
   const commandStarted = performance.now();
   if (options.answer !== undefined && typeof options.answer !== "boolean") throw new Error("Invalid answer control");
   if (options.provenance !== undefined && typeof options.provenance !== "boolean") throw new Error("Invalid provenance control");
+  if (options.allSources !== undefined && typeof options.allSources !== "boolean") throw new Error("Invalid all-sources control");
+  if (options.allSources && (options.answer || options.provenance)) throw new Error("Use --all-sources separately from --answer and --provenance");
   if (options.answer && options.provenance) throw new Error("Use --provenance with source passages; --answer is a separate experimental protocol");
   const signal = AbortSignal.any([options.signal ?? new AbortController().signal, AbortSignal.timeout(120_000)]);
   const cli = resolve(options.cli ?? join(workspace, "target/debug/akasha"));
@@ -390,8 +392,9 @@ export async function askLibrarian(options, complete) {
     await writeFile(answerPath, result.answer, { mode: 0o600, flag: "wx" });
     const checkStarted = performance.now();
     output = await run([...(options.json ? ["--json"] : []), options.answer ? "librarian-check" : "librarian-check-sources",
-      "--packet", packetPath, options.answer ? "--answer" : "--selection", answerPath, ...(options.provenance ? ["--provenance"] : [])]);
-    metrics = { ...result.metrics, mode: options.answer ? "answer" : options.provenance ? "provenance" : "sources", core_prepare_ms: prepareMs, core_check_ms: performance.now() - checkStarted };
+      "--packet", packetPath, options.answer ? "--answer" : "--selection", answerPath,
+      ...(options.provenance ? ["--provenance"] : []), ...(options.allSources ? ["--all-sources"] : [])]);
+    metrics = { ...result.metrics, mode: options.allSources ? "source_review" : options.answer ? "answer" : options.provenance ? "provenance" : "sources", core_prepare_ms: prepareMs, core_check_ms: performance.now() - checkStarted };
   } finally {
     if (temporary) await rm(temporary, { recursive: true, force: true });
   }
@@ -409,6 +412,7 @@ async function main() {
     note: { type: "string" }, term: { type: "string", multiple: true, default: [] }, json: { type: "boolean", default: false },
     answer: { type: "boolean", default: false },
     provenance: { type: "boolean", default: false },
+    "all-sources": { type: "boolean", default: false },
   } });
   for (const key of ["root", "project", "question", "server", "model", "model-sha256"]) {
     if (!values[key]) throw new Error(`Required --${key}; see docs/local-librarian.md`);
@@ -417,7 +421,7 @@ async function main() {
   const cancel = () => controller.abort(new Error("Librarian cancelled"));
   process.once("SIGINT", cancel); process.once("SIGTERM", cancel);
   try {
-    const result = await askLibrarian({ ...values, terms: values.term, modelSha256: values["model-sha256"],
+    const result = await askLibrarian({ ...values, allSources: values["all-sources"], terms: values.term, modelSha256: values["model-sha256"],
       maxContext: Number(values["max-context"]), gpuLayers: values["gpu-layers"] === "auto" ? "auto" : Number(values["gpu-layers"]),
       fitTargetMiB: values["fit-target-mib"] === undefined ? undefined : Number(values["fit-target-mib"]), threads: Number(values.threads), signal: controller.signal });
     process.stdout.write(result.output);

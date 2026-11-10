@@ -1,5 +1,34 @@
 # Local librarian: source passages and cited answers
 
+Use `--all-sources` for a complete review of the bounded retrieval packet. The original model
+shortlist becomes **highlights**; Rust also checks and displays every other prepared passage in
+an **Additional retrieved sources** section. A valid empty shortlist still shows retrieved
+sources. This prevents selection from hiding evidence already in the packet, including the
+previously reproduced publication omission. It adds no model completion or larger input.
+
+Add the flag to the ordinary source-selection command below. Plain output keeps exact quotes,
+source identities, physical lines, recorded statuses, partial-body flags and scoped links.
+`--json --all-sources` returns experimental version-1 `kind: "source_review"`, with
+`highlighted_citations`, `scanned_notes`, `matched_notes`, `omitted_notes` and `sources` (the existing
+checked source-passage object containing all prepared sources, once each, in packet order).
+The plain view groups highlights first. Neither section is an answer or a verdict of support;
+additional sources can be irrelevant. Matching notes outside the packet and partial bodies
+remain explicit. Missing retrieval and factual errors in saved memory remain possible.
+
+For model-free inspection of a saved packet, supply a citation-only selection (use
+`{"selections":[]}` for no highlights):
+
+```sh
+target/debug/akasha --root /path/to/memory --project example \
+  librarian-check-sources --packet packet.json --selection selection.json --all-sources
+```
+
+The core rebuilds the packet and refuses observed drift in any source, including unhighlighted
+ones. Invalid/duplicate/unknown IDs and narrower quote selections refuse; complete review always
+uses full prepared excerpts. `--all-sources` is separate from `--answer` and `--provenance`.
+Omitting it preserves existing output and selection behavior. [Acceptance and demonstration](
+../akasha/Research/complete_librarian_source_review.md).
+
 Experimental `--answer` uses the selected main Qwen3.5-9B model in two steps: split the
 question into independent parts, then copy exact supporting quotations for each part. The
 source-only default remains the normal navigation path: the frozen acceptance still fails database
