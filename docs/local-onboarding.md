@@ -396,11 +396,23 @@ appears beside its exact source excerpts with physical line numbers. You can edi
 change fact/inference/unknown type and rationale, and choose different excerpt handles. Core-planned
 source groups constrain the available choices. Metadata stays visible and read-only.
 
+Use **Browse all captured source excerpts for this note** to inspect windows the model did not
+cite. **Add claim citing this excerpt** creates a blank fact with that exact handle selected;
+write the supported behavior in its claim field. **Add missing claim** starts without a source
+so you can choose evidence or record an explicit unknown with a rationale. The page never
+generates claim wording. You can **Remove claim** and **Undo removal** (the latest removal in
+each note). The existing 1–4 claims per note still applies: at four claims, remove one before
+adding another; the final claim cannot be removed. Other edits survive additions/removals.
+New claims use the same type/rationale/source editor as original claims, and Rust compilation
+remains authoritative for all content, source, size and schema checks.
+
 The original core coverage report highlights uncited sources, sampled omissions and uncited focus
 windows. It remains labeled as original while you edit: compile your export to obtain fresh checks.
 Click **Export correction plan** to download `reviewed-plan.json`. Changes stay in the page until
-exported; closing with unsaved corrections prompts you to keep them. The page edits existing
-claims and preserves note identities, fields and recorded draft/unreviewed status.
+exported; closing with unsaved corrections prompts you to keep them. The page preserves note
+identities, fields and recorded draft/unreviewed status. Browsing only exposes the captured
+packet; use a separate onboarding batch to inspect sources outside it. [Omitted-claim repair
+demonstration](../akasha/Research/evidence/2026-11-10-onboarding-claim-repair/demo.md).
 
 Turn the downloaded correction plan into a complete fresh review bundle with one model-free
 command. Choose a new output directory outside the memory root and repository:
