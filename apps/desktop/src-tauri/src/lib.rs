@@ -1,3 +1,5 @@
+pub mod onboarding;
+
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -655,6 +657,8 @@ pub fn run() {
         follow_document_backlink,
         search_project,
         inspect_librarian,
+        onboarding::review_local_onboarding,
+        onboarding::publish_local_onboarding,
         follow_librarian_source,
         save_document,
         load_local_navigation,
@@ -672,6 +676,8 @@ pub fn run() {
         follow_document_backlink,
         search_project,
         inspect_librarian,
+        onboarding::review_local_onboarding,
+        onboarding::publish_local_onboarding,
         follow_librarian_source,
         save_document,
         load_local_navigation,

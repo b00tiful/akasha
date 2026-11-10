@@ -118,3 +118,13 @@ export function loadLocalNavigation(
 export function saveLocalNavigation(state: LocalNavigationState): Promise<void> {
   return invoke<void>("save_local_navigation", { state });
 }
+
+/** Recompile a captured plan against current selected-project inputs, without writes. */
+export function reviewOnboarding(root: string, project: string, packetJson: string, planJson: string): Promise<import("./onboarding-types").OnboardingReview> {
+  return invoke("review_local_onboarding", { root: optional(root), project, packetJson, planJson });
+}
+
+/** Explicit publication; shared core rechecks the exact plan, packet and approved ID. */
+export function publishOnboarding(root: string, project: string, packetJson: string, planJson: string, approvedPreviewId: string): Promise<import("./onboarding-types").OnboardingResult> {
+  return invoke("publish_local_onboarding", { root: optional(root), project, packetJson, planJson, approvedPreviewId });
+}

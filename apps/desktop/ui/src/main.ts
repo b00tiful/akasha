@@ -13,6 +13,7 @@ import {
 } from "./api";
 import { NoteViewer, type ViewerMode } from "./editor";
 import { BacklinkPanel, type BacklinkBinding } from "./backlinks";
+import { OnboardingPanel } from "./onboarding";
 import { LibrarianPanel } from "./librarian";
 import { renderFallback, renderLocalFallback } from "./fallback";
 import { localAkashaModel } from "./local-akasha-model";
@@ -84,6 +85,16 @@ const searchForm = required<HTMLFormElement>("search-form");
 const searchInput = required<HTMLInputElement>("search-input");
 const searchSummary = required<HTMLElement>("search-summary");
 const searchResults = required<HTMLElement>("search-results");
+const onboardingDialog = required<HTMLDialogElement>("onboarding-dialog");
+const onboardingToggle = required<HTMLButtonElement>("onboarding-toggle");
+const onboardingClose = required<HTMLButtonElement>("onboarding-close");
+const onboarding = new OnboardingPanel(required<HTMLElement>("onboarding-content"), async (result) => {
+  closeOnboarding();
+  const resolution = activeResolution;
+  if (resolution) await openLibrary(undefined, resolution);
+  if (!library) { onboardingDialog.showModal(); throw new Error("The library could not be reloaded; inspect the status and recovery guidance."); }
+  setStatus(`Published ${result.created_notes.length} notes in ${result.project}. Open Librarian sources to inspect saved memory.`, "success");
+});
 const librarianDrawer = required<HTMLElement>("librarian-panel");
 const librarianToggle = required<HTMLButtonElement>("librarian-toggle");
 const librarianClose = required<HTMLButtonElement>("librarian-close");
@@ -129,12 +140,27 @@ document.documentElement.classList.toggle("reduced-motion", reducedMotion.checke
 
 form.addEventListener("submit", (event) => {
   event.preventDefault();
+  if (onboarding.isPublishing) return;
   if (viewer.dirty) {
     requireDirtyDecision("opening another library");
     return;
   }
   void openLibrary();
 });
+
+onboardingToggle.addEventListener("click", () => {
+  if (!library || !activeResolution || onboarding.isPublishing) return;
+  closeLibrarian();
+  onboardingDialog.showModal();
+  onboarding.focus();
+});
+function closeOnboarding(): void {
+  if (!onboarding.suspend()) return;
+  onboardingDialog.close();
+  onboardingToggle.focus();
+}
+onboardingClose.addEventListener("click", closeOnboarding);
+onboardingDialog.addEventListener("cancel", (event) => { event.preventDefault(); closeOnboarding(); });
 
 previousShelf.addEventListener("click", () => moveShelfAim("left"));
 nextShelf.addEventListener("click", () => moveShelfAim("right"));
@@ -199,6 +225,10 @@ for (const button of modeButtons) {
 }
 
 window.addEventListener("keydown", (event) => {
+  if (onboardingDialog.open) {
+    if (event.key === "Escape") { event.preventDefault(); closeOnboarding(); }
+    return;
+  }
   if (!librarianDrawer.hidden) {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -280,6 +310,9 @@ async function openLibrary(
   preferredId?: string,
   requestedResolution = { root: rootInput.value, project: projectInput.value },
 ): Promise<void> {
+  if (onboarding.isPublishing) return;
+  onboarding.bind(null);
+  if (onboardingDialog.open) closeOnboarding();
   setStatus("Checking pending recovery and validating through Akasha Core…");
   documentRequest++;
   librarian.bind(null);
@@ -291,6 +324,7 @@ async function openLibrary(
     library = await loadLibraryWithRecovery(requestedResolution.root, requestedResolution.project);
     activeResolution = { root: library.projection.root, project: library.projection.selected_project };
     librarian.bind(activeResolution);
+    onboarding.bind(activeResolution);
     const navigationWarning = await hydrateLocalNavigation(library);
     rootInput.value = requestedResolution.root;
     projectInput.value = requestedResolution.project;
@@ -1086,6 +1120,7 @@ function updateEditActions(): void {
   if (!selectedId) backlinks.bind(null);
   backlinks.setDirty(viewer.dirty);
   librarian.setDirty(viewer.dirty);
+  onboarding.setDirty(viewer.dirty);
   saveButton.disabled = !viewer.editable || !viewer.dirty;
   discardButton.disabled = !viewer.dirty;
   editState.textContent = viewer.dirty ? "Unsaved changes" : "";

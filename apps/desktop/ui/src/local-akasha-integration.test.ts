@@ -63,8 +63,17 @@ describe("local scene and shared editor integration", () => {
     };
     const inspectLibrarian = vi.fn(async () => librarianResult);
     const followLibrarianSource = vi.fn(async () => ({ id: books[0]!.id, source: "# Checked first\n", links: [] }));
+    const loadLibraryWithRecovery = vi.fn(async () => library);
+    const previewId = "sha256:" + "a".repeat(64);
+    const reviewOnboarding = vi.fn(async (_root: string, _project: string, _packet: string, _plan: string) => ({ draft: {
+      preview: { root: "/resolved/root", project: "example", preview_id: previewId, notes: [], index_changed: true, roadmap_changed: true, state_changed: true },
+      proposal: { notes: [], index: "# Index", roadmap: "# Roadmap" },
+      review: { notes: [{ path: "new.md", fields: { status: "draft" } }], requires_review: true, uncited_sources: [], sampled_sources: [] },
+    }, identities: null, excerpts: [] }));
+    let finishPublication!: (result: unknown) => void;
+    const publishOnboarding = vi.fn(() => new Promise(resolve => { finishPublication = resolve; }));
     vi.doMock("./api", () => ({
-      loadLibraryWithRecovery: vi.fn(async () => library), loadDocumentWithRecovery, saveDocument, searchProject,
+      loadLibraryWithRecovery, reviewOnboarding, publishOnboarding, loadDocumentWithRecovery, saveDocument, searchProject,
       loadLocalNavigation, saveLocalNavigation, inspectLibrarian, followLibrarianSource,
     }));
     vi.doMock("./scene", () => ({ mountLibraryScene: vi.fn(async () => ({
@@ -158,6 +167,33 @@ describe("local scene and shared editor integration", () => {
     await vi.waitFor(() => expect(document.querySelector("#dashboard-title")!.textContent).toBe("Library status"));
     expect(document.querySelector("#dashboard-compact")!.textContent).toContain("Open tasks99");
     expect(document.querySelector("#dashboard-projects")!.textContent).toContain("other");
+    // Native modal keeps the selected resolution and prevents uncertain publication switches.
+    const dialog = document.querySelector<HTMLDialogElement>("#onboarding-dialog")!;
+    dialog.showModal = () => { dialog.open = true; };
+    dialog.close = () => { dialog.open = false; };
+    click("#onboarding-toggle"); expect(dialog.open).toBe(true);
+    expect(document.activeElement).toBe(dialog.querySelector('[name="packet"]'));
+    for (const name of ["packet", "plan"]) {
+      const input = dialog.querySelector<HTMLInputElement>(`[name="${name}"]`)!;
+      const content = name === "packet" ? "{}" : JSON.stringify({ schema_version: 3, notes: [{ name: "new", evidence: [{ kind: "unknown", claim: "Unknown", rationale: "Not captured", sources: [] }] }] });
+      Object.defineProperty(input, "files", { configurable: true, value: [{ size: content.length, text: async () => content }] });
+      input.dispatchEvent(new Event("change"));
+    }
+    click("[data-preview]"); await vi.waitFor(() => expect(dialog.textContent).toContain("Fresh preview ready"));
+    expect(reviewOnboarding.mock.calls[0]!.slice(0, 2)).toEqual(["/resolved/root", "example"]);
+    const approval = dialog.querySelector<HTMLInputElement>('[name="approval"]')!;
+    approval.value = previewId; approval.dispatchEvent(new Event("input"));
+    click("[data-publish]"); expect(publishOnboarding).toHaveBeenCalledOnce();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", cancelable: true })); expect(dialog.open).toBe(true);
+    click("#onboarding-close"); expect(dialog.open).toBe(true);
+    const callsBefore = loadLibraryWithRecovery.mock.calls.length;
+    const rootInput = document.querySelector<HTMLInputElement>("#root-input")!; rootInput.value = "/unresolved/edit";
+    document.querySelector("#library-form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(loadLibraryWithRecovery).toHaveBeenCalledTimes(callsBefore);
+    finishPublication({ root: "/resolved/root", project: "example", created_notes: ["new.md"], unchanged_notes: [], updated_projections: [], state: "state" });
+    await vi.waitFor(() => expect(document.querySelector("#status")!.textContent).toContain("Published 1 notes"));
+    expect(loadLibraryWithRecovery).toHaveBeenLastCalledWith("/resolved/root", "example");
+    expect(dialog.open).toBe(false);
     viewer.destroy();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();

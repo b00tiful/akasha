@@ -1,5 +1,28 @@
 # Local onboarding draft pilot
 
+The desktop now provides **Review local onboarding** (toolbar **＋**) for captured drafts:
+
+1. Load the configured root/project, choose **Review local onboarding**, then select the saved
+   `packet.json` and `plan.json` (or an exported corrected plan). Each file is limited to 16,000 bytes.
+2. Choose **Load / preview changes**. Rust checks current project/source identities before showing
+   the captured excerpt catalog, metadata and claims. Supported excerpt-plan versions are 3/4/5.
+3. Correct claim wording, kind, rationale and source choices. Browse captured excerpts to add a
+   missing claim, or remove one within the existing bounds. Metadata and note identities stay fixed.
+4. Preview again. Inspect exact proposed note/index/roadmap Markdown, affected actions and current
+   citation/sampling/focus gaps. Separate discovery candidate/directory omissions remain in the
+   capture's `discovery.json`; this import does not rescan or claim complete coverage.
+5. Save or Discard unsaved note edits, paste the full displayed preview ID, and choose
+   **Publish reviewed notes**. Rust recompiles and rechecks the exact approval before publication.
+   Wait for the result: the modal prevents close/project changes during publication. Failed checks
+   never retry or refresh approval automatically; an interrupted writer uses normal recovery.
+6. The library reloads after success. Open **Librarian sources** to inspect saved passages,
+   optional recorded code and freshly checked full notes. Recorded draft/unreviewed status remains.
+
+Corrections stay in memory until library reload/project change. Closing the review clears approval
+but preserves those edits in the same binding. Model generation/discovery and model provisioning
+still use the development runner below; no model process is installed by this review feature.
+
+
 The development adapter can draft initial project knowledge with an explicit local GGUF model
 and return a Rust-validated proposal and preview. It shares the librarian's owned llama.cpp
 transport. Existing external-agent onboarding (`akasha onboard`) remains available.

@@ -1592,3 +1592,16 @@ kbd {
     transition-duration: 0.01ms !important;
   }
 }
+
+.onboarding-dialog { position: fixed; inset: 0; margin: auto; width: min(1100px, 94vw); max-height: 90vh; overflow: auto; padding: 24px; color: var(--paper); background: #09090d; border: 1px solid #aaa6b4; }
+.onboarding-dialog::backdrop { background: #000b; }
+.onboarding-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.onboarding-dialog label { display: block; margin: 12px 0; overflow-wrap: anywhere; }
+.onboarding-dialog input[type="file"], .onboarding-dialog input[type="text"], .onboarding-dialog textarea, .onboarding-dialog select { width: 100%; padding: 10px; margin-top: 6px; background: #14131a; color: inherit; border: 1px solid #77727e; font: inherit; }
+.onboarding-dialog input[type="checkbox"] { width: auto; }
+.onboarding-dialog textarea { resize: vertical; }
+.onboarding-dialog button { margin: 6px 0; }
+.onboarding-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 400px; overflow: auto; background: #15141a; padding: 12px; }
+.onboarding-dialog summary { cursor: pointer; padding: 10px 0; }
+.onboarding-note, .onboarding-claim { border-top: 1px solid #514b59; padding: 14px 0; margin-top: 16px; }
+.onboarding-dialog [data-status] { line-height: 1.6; }
