@@ -122,6 +122,12 @@ can still select an irrelevant passage or miss synonyms. A term beyond the visib
 a clipped long line cannot win passage selection. Regenerate older disposable evidence packets
 when selection changes; the wire schema and normal checking commands are unchanged.
 
+At equal lexical strength, filenames containing fewer non-query words rank first. This keeps
+a focused component such as `delivery-queue.md` ahead of repeated `delivery-queue-log-01.md`
+notes without merging their different values or recorded statuses. Exact note and neighbor
+priorities, query diversity and source limits still apply. Filename specificity is a heuristic;
+it cannot establish relevance or truth.
+
 The worker returns only `{"selections":[{"citation":1}]}` using a grammar restricted to supplied
 citation IDs. Rust rebuilds the packet, rejects drift/duplicate/unknown IDs and supplies each
 selected excerpt. The independent checker also accepts an optional narrower `quote`, which must

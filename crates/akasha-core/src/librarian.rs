@@ -251,6 +251,7 @@ fn ranked_excerpt(body: &str, needles: &BTreeSet<String>, automatic: bool) -> (u
 struct SourceCandidate {
     priority: u8,
     lexical: usize,
+    filename_noise: usize,
     terms: u32,
     evidence: LibrarianEvidence,
 }
@@ -261,6 +262,7 @@ fn retain_candidates(candidates: &mut Vec<SourceCandidate>) {
     candidates.sort_by(|a, b| {
         (b.priority, b.lexical)
             .cmp(&(a.priority, a.lexical))
+            .then_with(|| a.filename_noise.cmp(&b.filename_noise))
             .then_with(|| a.evidence.id.cmp(&b.evidence.id))
     });
     let mut counts = [0usize; 32];
@@ -295,6 +297,7 @@ fn select_candidates(mut candidates: Vec<SourceCandidate>) -> Vec<LibrarianEvide
                         (candidate.terms & !covered).count_ones()
                     },
                     candidate.lexical,
+                    std::cmp::Reverse(candidate.filename_noise),
                 )
             };
             if rank(&candidates[index]) > rank(&candidates[best]) {
@@ -422,6 +425,23 @@ pub fn prepare_librarian(
         };
         let lexical =
             hits(&folded) + hits(&folded_id) + 3 * hits(&filename) + 4 * hits(&folded_status);
+        // At equal lexical strength prefer a focused filename over a more decorated
+        // one. Keep every distinct note: run numbers/status differences are evidence,
+        // so similar text must never be treated as interchangeable duplicates.
+        let filename_noise = if hits(&filename) == 0 {
+            usize::MAX
+        } else {
+            filename
+                .split(|ch: char| !ch.is_alphanumeric())
+                .filter(|word| {
+                    !word.is_empty()
+                        && !needles.iter().any(|term| {
+                            matches_term(word, term, terms.is_empty())
+                                || matches_term(term, word, terms.is_empty())
+                        })
+                })
+                .count()
+        };
         let priority = if note == Some(id.as_str()) {
             2
         } else {
@@ -461,6 +481,7 @@ pub fn prepare_librarian(
         best.push(SourceCandidate {
             priority,
             lexical,
+            filename_noise,
             terms: visible_terms,
             evidence,
         });
@@ -739,6 +760,7 @@ mod retrieval_tests {
             candidates.push(SourceCandidate {
                 priority: 0,
                 lexical: index,
+                filename_noise: 0,
                 terms: 1 << (index % 32),
                 evidence: LibrarianEvidence {
                     citation: 0,

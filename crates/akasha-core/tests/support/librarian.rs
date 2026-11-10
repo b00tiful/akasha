@@ -733,3 +733,69 @@ fn librarian_clipped_long_line_cannot_claim_invisible_query_coverage() {
     assert_eq!(packet.evidence[0].excerpt, visible);
     assert!(packet.evidence[0].excerpt_truncated);
 }
+
+#[test]
+fn librarian_focused_filenames_survive_crowded_ties_without_deduplicating_values() {
+    let f = fixture("librarian-filename-ties");
+    let header = "---\nschema_version: 1\nentity: sample\nkind: subsystem\nstatus: draft\nreviewed: 2026-11-07\n---\n\n";
+    let mut entities = vec!["entities/core.md".to_owned()];
+    for index in 0..24 {
+        let path = format!("entities/upload-retry-run-{index:02}.md");
+        fs::write(
+            f.root.join("Projects/alpha").join(&path),
+            format!("{header}Upload retry limit was checked in run {index}.\n"),
+        )
+        .unwrap();
+        entities.push(path);
+    }
+    for (name, body, status) in [
+        ("upload-retry", "Upload retry limit is 7.\n", "draft"),
+        (
+            "upload-retry-old",
+            "Upload retry limit is 3.\n",
+            "superseded",
+        ),
+        ("editor", "Editor storage uses Markdown.\n", "draft"),
+    ] {
+        let path = format!("entities/{name}.md");
+        fs::write(
+            f.root.join("Projects/alpha").join(&path),
+            format!(
+                "{}{body}",
+                header.replace("status: draft", &format!("status: {status}"))
+            ),
+        )
+        .unwrap();
+        entities.push(path);
+    }
+    support::write_project_state(
+        &f.root.join("Projects/alpha"),
+        &[],
+        &entities.iter().map(String::as_str).collect::<Vec<_>>(),
+        &["records/tasks/ship-mvp.md"],
+    );
+    let before = link_fixture_snapshot(&f.root);
+    let question = "What is the upload retry limit and editor storage?";
+    let packet = prepare_librarian(&f.request, question, &[], None).unwrap();
+    assert!(packet.evidence[0].id.ends_with("/upload-retry.md"));
+    assert!(packet.evidence[1].id.ends_with("/editor.md"));
+    assert!(
+        packet
+            .evidence
+            .iter()
+            .any(|source| source.excerpt.contains("limit is 3.")
+                && source.status.as_deref() == Some("superseded"))
+    );
+    assert_eq!(packet.evidence.len(), 6);
+    assert_eq!(packet.omitted_notes, packet.matched_notes - 6);
+    assert_eq!(
+        packet,
+        prepare_librarian(&f.request, question, &[], None).unwrap()
+    );
+    // A longer exact selected identity still outranks filename specificity.
+    let anchor = "Projects/alpha/entities/upload-retry-run-23.md";
+    let anchored = prepare_librarian(&f.request, question, &[], Some(anchor)).unwrap();
+    assert_eq!(anchored.evidence[0].id, anchor);
+    assert!(anchored.evidence[0].excerpt.contains("run 23"));
+    assert_eq!(before, link_fixture_snapshot(&f.root));
+}
