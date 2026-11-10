@@ -360,7 +360,7 @@ export async function askLibrarian(options, complete) {
   if (options.answer !== undefined && typeof options.answer !== "boolean") throw new Error("Invalid answer control");
   if (options.provenance !== undefined && typeof options.provenance !== "boolean") throw new Error("Invalid provenance control");
   if (options.allSources !== undefined && typeof options.allSources !== "boolean") throw new Error("Invalid all-sources control");
-  if (options.allSources && (options.answer || options.provenance)) throw new Error("Use --all-sources separately from --answer and --provenance");
+  if (options.allSources && options.answer) throw new Error("Use --all-sources separately from --answer");
   if (options.answer && options.provenance) throw new Error("Use --provenance with source passages; --answer is a separate experimental protocol");
   const signal = AbortSignal.any([options.signal ?? new AbortController().signal, AbortSignal.timeout(120_000)]);
   const cli = resolve(options.cli ?? join(workspace, "target/debug/akasha"));
@@ -394,7 +394,7 @@ export async function askLibrarian(options, complete) {
     output = await run([...(options.json ? ["--json"] : []), options.answer ? "librarian-check" : "librarian-check-sources",
       "--packet", packetPath, options.answer ? "--answer" : "--selection", answerPath,
       ...(options.provenance ? ["--provenance"] : []), ...(options.allSources ? ["--all-sources"] : [])]);
-    metrics = { ...result.metrics, mode: options.allSources ? "source_review" : options.answer ? "answer" : options.provenance ? "provenance" : "sources", core_prepare_ms: prepareMs, core_check_ms: performance.now() - checkStarted };
+    metrics = { ...result.metrics, mode: options.allSources ? (options.provenance ? "source_review_provenance" : "source_review") : options.answer ? "answer" : options.provenance ? "provenance" : "sources", core_prepare_ms: prepareMs, core_check_ms: performance.now() - checkStarted };
   } finally {
     if (temporary) await rm(temporary, { recursive: true, force: true });
   }

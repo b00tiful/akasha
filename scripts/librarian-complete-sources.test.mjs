@@ -44,6 +44,7 @@ test("onboarded memory remains visible after a model selects nothing; highlights
   const f = await fixture(t, "empty"), memory = snapshot(f.root), repository = snapshot(f.repository);
   const result = await askLibrarian(f.options), review = JSON.parse(result.output);
   assert.equal(review.kind, "source_review"); assert.equal(result.metrics.mode, "source_review");
+  assert(!("provenance" in review)); // existing opt-in review wire shape stays compatible
   assert.deepEqual(review.highlighted_citations, []);
   assert.equal(review.sources.matches.length, 1);
   const passage = review.sources.matches[0];
@@ -82,10 +83,10 @@ test("highlighted source is rendered once and empty retrieval skips the worker",
   assert.deepEqual(JSON.parse(other.output).sources.matches, []);
   assert.equal(other.metrics.skipped, true);
   await assert.rejects(askLibrarian({ ...f.options, allSources: "yes" }), /Invalid all-sources/);
-  for (const mode of ["answer", "provenance"]) await assert.rejects(askLibrarian({ ...f.options, [mode]: true }), /separately/);
+  await assert.rejects(askLibrarian({ ...f.options, answer: true }), /separately/);
 });
 
-test("complete-source CLI rejects invalid selection, altered packet and conflicting controls without stdout", async t => {
+test("complete-source CLI rejects invalid selection and altered packet without stdout", async t => {
   const f = await fixture(t), memory = snapshot(f.root);
   const packet = JSON.parse(f.run(["--json", "librarian-prepare", f.options.question]).stdout);
   const packetPath = join(f.directory, "packet.json"), selectionPath = join(f.directory, "selection.json");
@@ -107,6 +108,7 @@ test("complete-source CLI rejects invalid selection, altered packet and conflict
 
 test("complete-source requests cancel with owned cleanup", async t => {
   const f = await fixture(t, "hang"), memory = snapshot(f.root);
+  f.options.provenance = true;
   const controller = new AbortController();
   const request = askLibrarian({ ...f.options, signal: controller.signal });
   const refused = assert.rejects(request, /cancelled|abort/iu);
@@ -121,4 +123,41 @@ test("complete-source requests cancel with owned cleanup", async t => {
   assert(!existsSync(dirname(started.args[started.args.indexOf("--api-key-file") + 1])));
   await assert.rejects(askLibrarian({ ...f.options, signal: AbortSignal.abort() }));
   assert.deepEqual(snapshot(f.root), memory);
+});
+
+test("complete review traces even an empty model shortlist to code and warns after drift", async t => {
+  const f = await fixture(t, "empty"), memory = snapshot(f.root), repository = snapshot(f.repository);
+  const options = { ...f.options, provenance: true };
+  const response = await askLibrarian(options), review = JSON.parse(response.output);
+  assert.equal(response.metrics.mode, "source_review_provenance");
+  assert.deepEqual(review.highlighted_citations, []);
+  assert.equal(review.sources.matches.length, 1);
+  assert(review.sources.matches[0].quote.includes(fact));
+  assert.equal(review.provenance.notes.length, 1);
+  assert.equal(review.provenance.notes[0].claims[0].sources[0].freshness, "unchanged");
+  const plain = (await askLibrarian({ ...options, json: false })).output;
+  assert(plain.includes("Additional retrieved sources (not highlighted):\n[1]"));
+  assert(plain.includes("Repository source: \"src/lib.rs\""));
+  assert(plain.includes("Freshness: unchanged"));
+  assert.equal(plain.split("[1] Projects/").length, 2); // no duplicate source passage
+  assert.deepEqual(snapshot(f.root), memory); assert.deepEqual(snapshot(f.repository), repository);
+  writeFileSync(join(f.repository, "src/lib.rs"), "// changed source\n");
+  const packetPath = join(f.directory, "combined-packet.json"), selectionPath = join(f.directory, "combined-selection.json");
+  writeFileSync(packetPath, f.run(["--json", "librarian-prepare", options.question]).stdout);
+  writeFileSync(selectionPath, '{"selections":[]}');
+  const args = ["librarian-check-sources", "--packet", packetPath, "--selection", selectionPath, "--all-sources", "--provenance"];
+  const changed = JSON.parse(f.run(["--json", ...args]).stdout);
+  const source = changed.provenance.notes[0].claims[0].sources[0];
+  assert.equal(source.freshness, "changed"); assert.equal(source.excerpt, null);
+  assert(f.run(args).stdout.includes("Freshness: changed"));
+  writeFileSync(selectionPath, '{"selections":[{"citation":1,"quote":"FlightPath"}]}');
+  const refused = f.run(args, false);
+  assert.notEqual(refused.status, 0); assert.equal(refused.stdout, "");
+  assert.deepEqual(snapshot(f.root), memory);
+  const events = readFileSync(f.model + ".events", "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(events.filter(e => e.path === "/completion").length, 2);
+  for (const start of events.filter(e => e.start)) assert.throws(() => process.kill(start.start, 0), { code: "ESRCH" });
+  const empty = await askLibrarian({ ...options, question: "unfindable", server: "/missing", model: "/missing" });
+  assert.equal(empty.metrics.skipped, true);
+  assert.deepEqual(JSON.parse(empty.output).provenance.notes, []);
 });

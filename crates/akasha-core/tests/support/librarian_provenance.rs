@@ -1,6 +1,8 @@
 use super::*;
 use akasha_core::librarian::prepare_librarian;
-use akasha_core::librarian_provenance::{LibrarianProvenance, inspect_librarian_provenance};
+use akasha_core::librarian_provenance::{
+    LibrarianProvenance, inspect_librarian_provenance, review_librarian_provenance,
+};
 use serde_json::{Value, json};
 use sha2::Digest;
 
@@ -266,6 +268,13 @@ fn provenance_report_budget_refuses_repeated_large_windows_without_partial_outpu
             .to_string()
             .contains("65536 bytes")
     );
+    let packet = prepare_librarian(&f.request, "core", &[], Some(ID)).unwrap();
+    assert!(
+        review_librarian_provenance(&f.request, &packet, r#"{"selections":[]}"#)
+            .unwrap_err()
+            .to_string()
+            .contains("65536 bytes")
+    );
 }
 
 #[test]
@@ -303,6 +312,58 @@ fn provenance_total_file_claim_and_reference_limits_fail_before_display() {
                 .to_string()
                 .contains("provenance exceeds")
         );
+        let packet = prepare_librarian(&f.request, "core", &[], Some(ID)).unwrap();
+        assert!(
+            review_librarian_provenance(&f.request, &packet, r#"{"selections":[]}"#)
+                .unwrap_err()
+                .to_string()
+                .contains("provenance exceeds")
+        );
         assert_eq!(before, link_fixture_snapshot(&f.root));
     }
+}
+
+#[test]
+fn complete_review_inspects_unhighlighted_claims_and_refuses_stale_or_invalid_inputs() {
+    let f = fixture("complete-review-provenance");
+    let text = "const LIMIT: usize = 37;\n";
+    fs::write(f.request.cwd.join("limits.rs"), text).unwrap();
+    record(
+        &f,
+        Some(json!([
+            {"kind":"fact", "claim":"The limit is 37.", "sources":[reference("limits.rs", text.as_bytes(), 1, 1)]},
+            {"kind":"unknown", "claim":"Deployment is unspecified.", "rationale":"No deployment evidence.", "sources":[]}
+        ])),
+        "The limit is 37. Deployment is unspecified.",
+    );
+    let packet = prepare_librarian(&f.request, "core", &[], Some(ID)).unwrap();
+    let before = link_fixture_snapshot(&f.root);
+    let empty = r#"{"selections":[]}"#;
+    let review = review_librarian_provenance(&f.request, &packet, empty).unwrap();
+    assert!(review.highlighted_citations.is_empty());
+    assert_eq!(review.sources.matches.len(), packet.evidence.len());
+    assert_eq!(review.omitted_notes, packet.omitted_notes);
+    let provenance = review.provenance.unwrap();
+    assert_eq!(provenance.notes.len(), packet.evidence.len());
+    let claim = &provenance.notes[0].claims[0];
+    assert_eq!(claim.recorded_kind, "fact");
+    assert_eq!(claim.sources[0].excerpt.as_deref(), Some(text));
+    assert_eq!(provenance.notes[0].claims[1].recorded_kind, "unknown");
+    assert!(provenance.notes[0].claims[1].sources.is_empty());
+    for selection in [
+        r#"{"selections":[{"citation":99}]}"#,
+        r#"{"selections":[{"citation":1},{"citation":1}]}"#,
+        r#"{"selections":[{"citation":1,"quote":"The limit"}]}"#,
+    ] {
+        assert!(review_librarian_provenance(&f.request, &packet, selection).is_err());
+    }
+    fs::write(f.request.cwd.join("limits.rs"), "changed\n").unwrap();
+    let review = review_librarian_provenance(&f.request, &packet, empty).unwrap();
+    let reference = &review.provenance.unwrap().notes[0].claims[0].sources[0];
+    assert_eq!(reference.freshness, "changed");
+    assert!(reference.excerpt.is_none());
+    let mut altered = packet;
+    altered.evidence[0].excerpt.push_str("forged");
+    assert!(review_librarian_provenance(&f.request, &altered, empty).is_err());
+    assert_eq!(before, link_fixture_snapshot(&f.root));
 }

@@ -538,6 +538,9 @@ pub(crate) fn render_librarian_source_review(
     text.push_str(
         "Link scope: complete wikilinks in these quotes targeting this evidence packet.\n",
     );
+    if let Some(provenance) = &review.provenance {
+        append_librarian_provenance(&mut text, &provenance.notes);
+    }
     write_stdout(&text)
 }
 
@@ -598,10 +601,18 @@ pub(crate) fn render_librarian_provenance(
         return write_stdout(&json_line(serde_json::to_string_pretty(report))?);
     }
     let mut text = librarian_sources_text(&report.sources);
+    append_librarian_provenance(&mut text, &report.notes);
+    write_stdout(&text)
+}
+
+fn append_librarian_provenance(
+    text: &mut String,
+    notes: &[akasha_core::librarian_provenance::LibrarianNoteProvenance],
+) {
     text.push_str(
         "\nRecorded repository evidence — unchanged bytes do not establish factual support.\n",
     );
-    for note in &report.notes {
+    for note in notes {
         let _ = writeln!(
             text,
             "[{}] Evidence: {}; {} recorded claims outside/ambiguous in this quote.",
@@ -647,7 +658,6 @@ pub(crate) fn render_librarian_provenance(
             }
         }
     }
-    write_stdout(&text)
 }
 
 fn librarian_display(value: &str) -> String {

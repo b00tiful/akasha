@@ -23,9 +23,22 @@ target/debug/akasha --root /path/to/memory --project example \
   librarian-check-sources --packet packet.json --selection selection.json --all-sources
 ```
 
+Combine **`--all-sources --provenance`** to retain every retrieved passage and inspect its
+recorded repository evidence in the same request. This includes sources the model did not
+highlight, even an empty shortlist. Plain output includes the existing highlight/additional
+sections followed by recorded claim kinds, original code lines and freshness warnings.
+The version-1 `source_review` JSON adds `provenance: {association, notes}` only with both flags;
+source passages are not duplicated. Metrics use mode `source_review_provenance`.
+
+The explicit provenance flag authorizes the same bounded repository reads as standalone
+provenance. All retained passages share its existing file/claim/reference limits and the whole
+combined report stays within 65,536 serialized bytes. Overflow refuses without partial stdout;
+narrow retrieval with terms or a selected note. Changed files show warnings and withhold stale
+code. Ordinary notes can lack recorded evidence. This adds no model completion or semantic verdict.
+
 The core rebuilds the packet and refuses observed drift in any source, including unhighlighted
 ones. Invalid/duplicate/unknown IDs and narrower quote selections refuse; complete review always
-uses full prepared excerpts. `--all-sources` is separate from `--answer` and `--provenance`.
+uses full prepared excerpts. `--all-sources` remains separate from `--answer`.
 Omitting it preserves existing output and selection behavior. [Acceptance and demonstration](
 ../akasha/Research/complete_librarian_source_review.md).
 

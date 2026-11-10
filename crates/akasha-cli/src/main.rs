@@ -145,7 +145,7 @@ enum Command {
         #[arg(long)]
         provenance: bool,
         /// Show every prepared passage, keeping the selection as highlights only.
-        #[arg(long, conflicts_with = "provenance")]
+        #[arg(long)]
         all_sources: bool,
     },
     /// Show validated cross-project metrics in project-name order.
@@ -636,12 +636,15 @@ fn run(cli: Cli) -> Result<(), u8> {
             })?;
             let selection = read_librarian_input(&selection)?;
             if all_sources {
-                let review =
-                    akasha_core::librarian::review_librarian_sources(&request, &packet, &selection)
-                        .map_err(|error| {
-                            eprintln!("akasha: {error}");
-                            error.exit_code()
-                        })?;
+                let inspect = if provenance {
+                    akasha_core::librarian_provenance::review_librarian_provenance
+                } else {
+                    akasha_core::librarian::review_librarian_sources
+                };
+                let review = inspect(&request, &packet, &selection).map_err(|error| {
+                    eprintln!("akasha: {error}");
+                    error.exit_code()
+                })?;
                 return finish_output(render::render_librarian_source_review(&review, output));
             }
             if provenance {

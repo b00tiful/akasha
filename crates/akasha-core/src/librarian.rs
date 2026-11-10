@@ -125,6 +125,8 @@ pub struct LibrarianSourceReview {
     pub matched_notes: usize,
     pub omitted_notes: usize,
     pub sources: CheckedLibrarianSources,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<crate::librarian_provenance::LibrarianReviewProvenance>,
 }
 
 fn automatic_term(word: &str) -> bool {
@@ -630,6 +632,7 @@ pub fn review_librarian_sources(
         matched_notes: packet.matched_notes,
         omitted_notes: packet.omitted_notes,
         sources,
+        provenance: None,
     };
     if serde_json::to_vec(&review)
         .expect("serializable source review")

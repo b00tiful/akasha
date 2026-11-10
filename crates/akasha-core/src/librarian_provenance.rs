@@ -7,7 +7,10 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::ResolveRequest;
-use crate::librarian::{CheckedLibrarianSources, LibrarianPacket, check_librarian_sources};
+use crate::librarian::{
+    CheckedLibrarianSources, LibrarianPacket, LibrarianSourceReview, check_librarian_sources,
+    review_librarian_sources,
+};
 use crate::note_links::{NoteLinksError, read_checked_source};
 use crate::onboarding::{
     MAX_ONBOARDING_EVIDENCE_CLAIMS, MAX_ONBOARDING_EVIDENCE_SOURCES, PersistentEvidenceClaim,
@@ -32,6 +35,42 @@ pub struct LibrarianProvenance {
     pub association: &'static str,
     pub sources: CheckedLibrarianSources,
     pub notes: Vec<LibrarianNoteProvenance>,
+}
+
+/// Repository observations for all retained passages, without duplicating their source text.
+#[derive(Debug, Serialize)]
+pub struct LibrarianReviewProvenance {
+    pub association: &'static str,
+    pub notes: Vec<LibrarianNoteProvenance>,
+}
+
+/// Highlights never restrict repository inspection in a complete source review.
+pub fn review_librarian_provenance(
+    request: &ResolveRequest,
+    packet: &LibrarianPacket,
+    selection: &str,
+) -> Result<LibrarianSourceReview, NoteLinksError> {
+    // Validate the original citation-only highlights before any repository inspection.
+    let mut review = review_librarian_sources(request, packet, selection)?;
+    let all = serde_json::json!({ "selections": review.sources.matches.iter()
+        .map(|item| serde_json::json!({ "citation": item.citation })).collect::<Vec<_>>() });
+    let report = inspect_librarian_provenance(request, packet, &all.to_string())?;
+    review.sources = report.sources;
+    review.provenance = Some(LibrarianReviewProvenance {
+        association: report.association,
+        notes: report.notes,
+    });
+    if serde_json::to_vec(&review)
+        .expect("serializable source review provenance")
+        .len()
+        > MAX_REPORT_BYTES
+    {
+        return Err(invalid(
+            &request.cwd,
+            "source review provenance exceeds 65536 bytes; narrow the retrieval",
+        ));
+    }
+    Ok(review)
 }
 
 #[derive(Debug, Serialize)]
