@@ -492,3 +492,147 @@ fn desktop_source_selection_refuses_scope_modes_limits_and_symlinks() {
     }
     assert_eq!(snapshot(&fixture.root), before);
 }
+
+/// Explicit host acceptance: uses only synthetic memory/repository and the already installed
+/// selected main model. Never runs as part of unattended workspace tests.
+#[tokio::test]
+#[ignore = "requires installed selected Qwen9B, host loopback and Vulkan device"]
+async fn native_main_model_generates_reviewed_memory_and_librarian_navigation() {
+    use akasha_desktop::inference::{Cancellation, Profile};
+    use akasha_desktop::onboarding_generation::generate_onboarding;
+    let fixture = Fixture::new(5);
+    let repo = fixture.base.join("repository");
+    fs::create_dir(repo.join("tests")).unwrap();
+    fs::write(repo.join("README.md"), "# Parcel queue\nA bounded queue for local parcel dispatch.\nDuplicates are rejected before the capacity check.\n").unwrap();
+    fs::write(repo.join("limits.rs"), "pub const CAPACITY: usize = 37;\npub fn enqueue(ids: &mut Vec<u64>, id: u64) -> Result<(), &'static str> {\n    if ids.contains(&id) { return Err(\"duplicate\"); }\n    if ids.len() >= CAPACITY { return Err(\"full\"); }\n    ids.push(id);\n    Ok(())\n}\n").unwrap();
+    fs::write(repo.join("tests/queue.rs"), "#[test]\nfn rejects_duplicate_before_full() {\n    let mut ids = vec![5; 37];\n    assert_eq!(enqueue(&mut ids, 5), Err(\"duplicate\"));\n    assert_eq!(enqueue(&mut ids, 7), Err(\"full\"));\n}\n").unwrap();
+    let source = prepare_onboarding_sources(
+        Some(fixture.root.clone()),
+        "example".into(),
+        selection(
+            "files",
+            &["README.md", "limits.rs", "tests/queue.rs"],
+            &[],
+            false,
+        ),
+    )
+    .unwrap();
+    let before = snapshot(&fixture.root);
+    let code_before = snapshot(&repo);
+    let generated = generate_onboarding(
+        Some(fixture.root.clone()),
+        "example".into(),
+        source.packet_json.clone(),
+        Profile::Vulkan,
+        Cancellation::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(generated.metrics.len(), 3);
+    assert_eq!(generated.review.draft.proposal.notes.len(), 3);
+    assert_eq!(snapshot(&fixture.root), before);
+    assert_eq!(snapshot(&repo), code_before);
+    // Preserve raw model output. Correct and publish separately after direct source review.
+    let mut corrected: Value = serde_json::from_str(&generated.plan_json).unwrap();
+    for note in corrected["notes"].as_array_mut().unwrap() {
+        let slot = source
+            .identities
+            .slots
+            .iter()
+            .find(|s| s.slot == note["slot"].as_u64().unwrap() as usize)
+            .unwrap();
+        let (claim, handle) = match slot.role.as_str() {
+            "context" => (
+                "The README describes a bounded queue for local parcel dispatch.",
+                1,
+            ),
+            "implementation" => (
+                "The queue capacity is 37; enqueue rejects duplicate IDs before checking whether the queue is full.",
+                2,
+            ),
+            "verification" => (
+                "The test fills 37 entries with ID 5, then expects duplicate for ID 5 and full for ID 7.",
+                3,
+            ),
+            _ => panic!("unknown role"),
+        };
+        note["evidence"] =
+            json!([{"kind":"fact","claim":claim,"sources":[{"source":handle,"excerpt":1}]}]);
+    }
+    let plan = corrected.to_string();
+    let review = review_onboarding_plan(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &source.packet_json,
+        &plan,
+    )
+    .unwrap();
+    assert_eq!(snapshot(&fixture.root), before);
+    assert!(
+        publish_onboarding_plan(
+            Some(fixture.root.clone()),
+            "example".into(),
+            &source.packet_json,
+            &plan,
+            "sha256:stale"
+        )
+        .is_err()
+    );
+    let published = publish_onboarding_plan(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &source.packet_json,
+        &plan,
+        &review.draft.preview.preview_id,
+    )
+    .unwrap();
+    assert_eq!(published.created_notes.len(), 3);
+    let after = snapshot(&fixture.root);
+    let found = inspect_librarian_sources(
+        Some(fixture.root.clone()),
+        "example".into(),
+        "queue capacity duplicate",
+        true,
+    )
+    .unwrap();
+    let passage = found
+        .review
+        .sources
+        .matches
+        .iter()
+        .find(|source| source.quote.contains("queue capacity is 37"))
+        .unwrap();
+    let opened = open_librarian_source(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &found.packet,
+        passage.citation,
+    )
+    .unwrap();
+    assert!(opened.document.source.contains("queue capacity is 37"));
+    assert_eq!(passage.status.as_deref(), Some("draft"));
+    assert_eq!(snapshot(&fixture.root), after);
+    assert_eq!(snapshot(&repo), code_before);
+    let evidence =
+        std::env::temp_dir().join(format!("akasha-native-acceptance-{}", std::process::id()));
+    fs::create_dir(&evidence).unwrap();
+    for (name, value) in [
+        ("sources", serde_json::to_value(source).unwrap()),
+        ("generated", serde_json::to_value(generated).unwrap()),
+        ("corrected-plan", corrected),
+        ("review", serde_json::to_value(review).unwrap()),
+        ("published", serde_json::to_value(published).unwrap()),
+        ("librarian", serde_json::to_value(found).unwrap()),
+        ("opened", serde_json::to_value(opened).unwrap()),
+    ] {
+        fs::write(
+            evidence.join(format!("{name}.json")),
+            serde_json::to_vec_pretty(&value).unwrap(),
+        )
+        .unwrap();
+    }
+    println!(
+        "Native onboarding → reviewed publication → librarian PASS; evidence {}",
+        evidence.display()
+    );
+}

@@ -14,6 +14,10 @@ runtime-probe = ["desktop"]
 akasha-core = { path = "../../../crates/akasha-core" }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+getrandom = "=0.4.3"
+reqwest = { version = "=0.13.4", default-features = false, features = ["json"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "process", "io-util", "sync", "fs"] }
 tauri = { workspace = true, optional = true }
 
 [build-dependencies]

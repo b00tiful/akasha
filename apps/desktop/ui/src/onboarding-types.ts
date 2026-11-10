@@ -45,3 +45,12 @@ export interface OnboardingSources {
     excluded_entries: number; excluded_examples: Array<{ path: string; reason: string }>;
   } | null;
 }
+
+export interface InferenceAvailability {
+  supported: boolean; model_present: boolean; vulkan_present: boolean; cpu_present: boolean;
+  location: string; model: string;
+}
+export interface GeneratedOnboarding {
+  plan_json: string; review: OnboardingReview;
+  metrics: Array<{ context: number; prompt_tokens: number; model_sha256: string; server_sha256: string; profile: "vulkan" | "cpu"; worker_starts: number }>;
+}

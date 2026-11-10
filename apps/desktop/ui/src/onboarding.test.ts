@@ -2,8 +2,8 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { OnboardingPanel } from "./onboarding";
 import type { OnboardingResult, OnboardingReview } from "./onboarding-types";
-const { review, publish, prepare } = vi.hoisted(() => ({ review: vi.fn(), publish: vi.fn(), prepare: vi.fn() }));
-vi.mock("./api", () => ({ reviewOnboarding: review, publishOnboarding: publish, prepareOnboardingSources: prepare }));
+const { review, publish, prepare, availability, reserve, cancel, generate } = vi.hoisted(() => ({ review: vi.fn(), publish: vi.fn(), prepare: vi.fn(), availability: vi.fn(), reserve: vi.fn(), cancel: vi.fn(), generate: vi.fn() }));
+vi.mock("./api", () => ({ reviewOnboarding: review, publishOnboarding: publish, prepareOnboardingSources: prepare, localInferenceAvailability: availability, reserveLocalGeneration: reserve, cancelLocalGeneration: cancel, generateOnboarding: generate }));
 const binding = { root: "/resolved/root", project: "alpha" };
 const id = "sha256:" + "a".repeat(64);
 const plan = { schema_version: 5, notes: [{ slot: 1, evidence: [{ kind: "fact", claim: "The limit is 37.", sources: [{ source: 1, excerpt: 1 }] }] }] };
@@ -36,7 +36,7 @@ function setup() {
   const ready = async () => { files(); load(); await vi.waitFor(() => expect(host.textContent).toContain("Fresh preview ready")); };
   return { host, panel, published, files, load, approval, approve, apply, ready };
 }
-beforeEach(() => { review.mockReset(); publish.mockReset(); prepare.mockReset(); review.mockResolvedValue(response()); });
+beforeEach(() => { review.mockReset(); publish.mockReset(); prepare.mockReset(); review.mockResolvedValue(response()); availability.mockReset(); reserve.mockReset(); cancel.mockReset(); generate.mockReset(); cancel.mockResolvedValue(undefined); });
 it("renders literal source, metadata and gaps and requires full-ID explicit publication", async () => {
   const { host, ready, approve, apply, published } = setup();
   expect(review).not.toHaveBeenCalled(); expect(publish).not.toHaveBeenCalled(); await ready();
@@ -182,4 +182,48 @@ it("refuses foreign preparation results and locks source selection during public
   expect(paths.disabled).toBe(true); expect(inspect.disabled).toBe(true);
   finish({ ...binding, created_notes: [], unchanged_notes: [], updated_projections: [], state: "state" });
   await vi.waitFor(() => expect(paths.disabled).toBe(false));
+});
+
+async function nativeReady(host: HTMLElement) {
+  prepare.mockResolvedValue(prepared());
+  const controls = sourceControls(host); controls.set("src"); controls.inspect.click();
+  await vi.waitFor(() => expect(host.textContent).toContain("Sources ready"));
+  availability.mockResolvedValue({ supported: true, model_present: true, vulkan_present: true, cpu_present: false, location: "/local/inference", model: "Qwen9B" });
+  host.querySelector<HTMLButtonElement>("[data-inference-setup]")!.click();
+  await vi.waitFor(() => expect(host.textContent).toContain("Exact SHA-256 checks"));
+  return host.querySelector<HTMLButtonElement>("[data-generate]")!;
+}
+it("generates from exact selected packet and still requires fresh preview and explicit approval", async () => {
+  const { host, load, approve, apply } = setup(); const start = await nativeReady(host);
+  reserve.mockResolvedValue("native-1"); generate.mockResolvedValue({ plan_json: JSON.stringify(plan), review: response(), metrics: [{}] });
+  start.click(); await vi.waitFor(() => expect(host.textContent).toContain("Worker stopped"));
+  expect(generate).toHaveBeenCalledWith("native-1", binding.root, binding.project, prepared().packet_json, "vulkan");
+  expect(host.querySelector('[aria-label="Note 1 claim 1"]')).not.toBeNull();
+  approve(); expect(apply.disabled).toBe(true); expect(publish).not.toHaveBeenCalled();
+  load(); await vi.waitFor(() => expect(host.textContent).toContain("Fresh preview ready")); approve(); expect(apply.disabled).toBe(false);
+});
+it("cancels an active native worker on close and discards a late generated draft", async () => {
+  const { host, panel } = setup(); const start = await nativeReady(host); reserve.mockResolvedValue("native-close");
+  let finish!: (value: unknown) => void; generate.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  start.click(); await vi.waitFor(() => expect(generate).toHaveBeenCalled());
+  expect(sourceControls(host).inspect.disabled).toBe(true); panel.suspend();
+  expect(cancel).toHaveBeenCalledWith("native-close"); finish({ plan_json: JSON.stringify(plan), review: response(), metrics: [{}] });
+  await vi.waitFor(() => expect(host.querySelector('[data-native-generation]')!.getAttribute("aria-busy")).toBe("false"));
+  expect(host.querySelector('[aria-label="Note 1 claim 1"]')).toBeNull(); expect(publish).not.toHaveBeenCalled();
+});
+it("cancels a reservation that returns after a project switch, before starting a worker", async () => {
+  const { host, panel } = setup(); const start = await nativeReady(host);
+  let reserved!: (id: string) => void; reserve.mockImplementation(() => new Promise(resolve => { reserved = resolve; }));
+  start.click(); panel.bind({ ...binding, project: "beta" }); reserved("obsolete-reservation");
+  await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith("obsolete-reservation")); expect(generate).not.toHaveBeenCalled();
+});
+it("keeps generation unavailable for missing artifacts and reports native refusals without publication", async () => {
+  const { host } = setup(); const start = await nativeReady(host);
+  host.querySelector<HTMLSelectElement>('[name="inference-profile"]')!.value = "cpu";
+  host.querySelector('[name="inference-profile"]')!.dispatchEvent(new Event("change")); expect(start.disabled).toBe(true);
+  host.querySelector<HTMLSelectElement>('[name="inference-profile"]')!.value = "vulkan";
+  host.querySelector('[name="inference-profile"]')!.dispatchEvent(new Event("change"));
+  reserve.mockResolvedValue("refused"); generate.mockRejectedValue({message:"Model SHA-256 mismatch"}); start.click();
+  await vi.waitFor(() => expect(host.textContent).toContain("Generation unavailable: Model SHA-256 mismatch"));
+  expect(cancel).toHaveBeenCalledWith("refused"); expect(publish).not.toHaveBeenCalled();
 });

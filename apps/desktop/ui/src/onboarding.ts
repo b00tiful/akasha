@@ -1,5 +1,6 @@
 import { publishOnboarding, reviewOnboarding } from "./api";
 import type { OnboardingPlan, OnboardingResult, OnboardingReview } from "./onboarding-types";
+import { OnboardingGenerator } from "./onboarding-generation";
 import { OnboardingSourcePicker } from "./onboarding-sources";
 
 type Binding = { root: string; project: string };
@@ -14,6 +15,7 @@ export class OnboardingPanel {
   private packetJson = "";
   private preparedPacketJson = "";
   private readonly sources: OnboardingSourcePicker;
+  private readonly generator: OnboardingGenerator;
   private plan: OnboardingPlan | null = null;
   private review: OnboardingReview | null = null;
   private approvedPlan: string | null = null;
@@ -27,8 +29,8 @@ export class OnboardingPanel {
   private readonly preview: HTMLElement;
 
   constructor(private readonly host: HTMLElement, private readonly published: (result: OnboardingResult) => Promise<void>) {
-    host.innerHTML = `<div data-source-picker></div><h3>3. Review and publish a draft</h3>
-      <p>Choose plan.json generated from the selected sources above, or import both files from an earlier capture. Review claims beside captured code, then preview and approve the exact changes. Notes retain their recorded draft metadata. Corrections stay in memory until the library is reloaded or changed.</p>
+    host.innerHTML = `<div data-source-picker></div><div data-native-generation></div><h3>3. Review and publish a draft</h3>
+      <p>Generate a draft above, choose a matching plan.json, or import both files from an earlier capture. Review claims beside captured code, then preview and approve the exact changes. Notes retain their recorded draft metadata. Corrections stay in memory until the library is reloaded or changed.</p>
       <label>Earlier source packet (optional when sources are selected above) <input name="packet" type="file" accept=".json,application/json"></label>
       <label>Claim plan <input name="plan" type="file" accept=".json,application/json"></label>
       <button type="button" data-preview>Load / preview changes</button>
@@ -43,15 +45,25 @@ export class OnboardingPanel {
     this.message = host.querySelector('[data-status]')!;
     this.editor = host.querySelector('[data-editor]')!;
     this.preview = host.querySelector('[data-proposal]')!;
+    this.generator = new OnboardingGenerator(host.querySelector('[data-native-generation]')!, running => {
+      this.busy = running;
+      if (running) { this.generation++; this.plan = null; this.review = null; this.editor.replaceChildren(); this.invalidate("Local generation is running. Publication requires a fresh preview afterwards."); }
+      this.controls();
+    }, result => {
+      this.packetJson = this.preparedPacketJson; this.plan = JSON.parse(result.plan_json) as OnboardingPlan; this.review = result.review;
+      this.renderEditor(); this.invalidate("Local draft ready for source review. Correct claims, then preview the exact changes before approval.");
+    });
     this.sources = new OnboardingSourcePicker(host.querySelector('[data-source-picker]')!, result => {
       this.generation++; this.busy = false; this.plan = null; this.review = null;
       this.preparedPacketJson = result?.packet_json ?? ""; this.packetJson = this.preparedPacketJson;
+      this.generator.setPacket(this.preparedPacketJson);
       this.packetInput.value = ""; this.planInput.value = ""; this.editor.replaceChildren();
-      this.invalidate(result ? "Selected source packet retained. Choose its generated plan.json to review." : "Source selection changed. Prepare fresh sources and a matching draft.");
+      this.invalidate(result ? "Selected source packet retained. Generate locally or choose its matching plan.json to review." : "Source selection changed. Prepare fresh sources and a matching draft.");
     });
     for (const input of [this.packetInput, this.planInput]) input.addEventListener("change", () => {
       if (this.publishing) return;
-      if (input === this.packetInput) { this.preparedPacketJson = ""; this.sources.clear(); }
+      this.generator.cancel();
+      if (input === this.packetInput) { this.preparedPacketJson = ""; this.generator.setPacket(""); this.sources.clear(); }
       else this.sources.suspend();
       this.generation++; this.busy = false; this.plan = null; this.review = null; this.packetJson = this.preparedPacketJson;
       this.editor.replaceChildren(); this.invalidate("Inputs changed. Load a fresh source review.");
@@ -66,6 +78,7 @@ export class OnboardingPanel {
   bind(binding: Binding | null): void {
     if (this.publishing) return; // Shell prevents project changes until publication completes.
     if (this.binding?.root === binding?.root && this.binding?.project === binding?.project) return;
+    this.generator.bind(binding);
     this.binding = binding; this.generation++; this.busy = false;
     this.packetJson = ""; this.preparedPacketJson = ""; this.plan = null; this.review = null;
     this.sources.bind(binding);
@@ -75,11 +88,12 @@ export class OnboardingPanel {
   }
   setDirty(dirty: boolean): void {
     this.dirty = dirty;
-    if (dirty && !this.publishing) { this.generation++; this.busy = false; this.invalidate("Save or Discard editor changes before publishing. Preview again afterwards."); }
+    if (dirty && !this.publishing) { this.generator.cancel(); this.generation++; this.busy = false; this.invalidate("Save or Discard editor changes before publishing. Preview again afterwards."); }
     this.controls();
   }
   suspend(): boolean {
     if (this.publishing) return false;
+    this.generator.cancel();
     this.generation++; this.busy = false;
     this.sources.suspend();
     this.invalidate("Review closed. Corrections remain in memory; preview again before publishing.");
@@ -92,6 +106,7 @@ export class OnboardingPanel {
   }
   private controls(): void {
     this.sources?.setDisabled(this.busy);
+    this.generator?.setDisabled(this.busy);
     this.inspect.disabled = !this.binding || this.busy;
     for (const input of [this.packetInput, this.planInput]) input.disabled = this.busy;
     this.approval.disabled = this.busy || !this.approvedPlan;
@@ -203,7 +218,7 @@ export class OnboardingPanel {
     try {
       const result = await publishOnboarding(binding.root, binding.project, this.packetJson, planJson, previewId);
       this.publishing = false; this.busy = false;
-      this.plan = null; this.review = null; this.packetJson = ""; this.preparedPacketJson = ""; this.sources.clear();
+      this.plan = null; this.review = null; this.packetJson = ""; this.preparedPacketJson = ""; this.generator.setPacket(""); this.sources.clear();
       this.editor.replaceChildren(); this.packetInput.value = ""; this.planInput.value = "";
       this.invalidate(`Published ${result.created_notes.length} notes. Reloading the library…`);
       try { await this.published(result); }

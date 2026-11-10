@@ -1,4 +1,6 @@
+pub mod inference;
 pub mod onboarding;
+pub mod onboarding_generation;
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -658,6 +660,10 @@ pub fn run() {
         search_project,
         inspect_librarian,
         onboarding::prepare_local_onboarding_sources,
+        onboarding_generation::local_inference_availability,
+        onboarding_generation::reserve_local_generation,
+        onboarding_generation::cancel_local_generation,
+        onboarding_generation::generate_local_onboarding,
         onboarding::review_local_onboarding,
         onboarding::publish_local_onboarding,
         follow_librarian_source,
@@ -678,6 +684,10 @@ pub fn run() {
         search_project,
         inspect_librarian,
         onboarding::prepare_local_onboarding_sources,
+        onboarding_generation::local_inference_availability,
+        onboarding_generation::reserve_local_generation,
+        onboarding_generation::cancel_local_generation,
+        onboarding_generation::generate_local_onboarding,
         onboarding::review_local_onboarding,
         onboarding::publish_local_onboarding,
         follow_librarian_source,
@@ -686,6 +696,7 @@ pub fn run() {
         save_local_navigation
     ]);
     builder
+        .manage(inference::InferenceJobs::default())
         .run(tauri::generate_context!())
         .expect("run Akasha desktop application");
 }

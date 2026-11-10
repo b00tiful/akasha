@@ -133,3 +133,12 @@ export function reviewOnboarding(root: string, project: string, packetJson: stri
 export function publishOnboarding(root: string, project: string, packetJson: string, planJson: string, approvedPreviewId: string): Promise<import("./onboarding-types").OnboardingResult> {
   return invoke("publish_local_onboarding", { root: optional(root), project, packetJson, planJson, approvedPreviewId });
 }
+
+export function localInferenceAvailability(): Promise<import("./onboarding-types").InferenceAvailability> {
+  return invoke("local_inference_availability");
+}
+export function reserveLocalGeneration(): Promise<string> { return invoke("reserve_local_generation"); }
+export function cancelLocalGeneration(requestId: string): Promise<void> { return invoke("cancel_local_generation", { requestId }); }
+export function generateOnboarding(requestId: string, root: string, project: string, packetJson: string, profile: "vulkan" | "cpu"): Promise<import("./onboarding-types").GeneratedOnboarding> {
+  return invoke("generate_local_onboarding", { requestId, root: optional(root), project, packetJson, profile });
+}

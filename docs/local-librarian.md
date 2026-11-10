@@ -1,5 +1,11 @@
 # Local librarian: source passages and cited answers
 
+Reviewed notes can now originate from native Linux desktop generation: **Review local onboarding**
+→ select sources → **Inspect model setup** → **Generate draft locally** → review claims → fresh
+preview/full-ID publication. [Native onboarding guide](local-onboarding.md) describes the selected
+installed profiles. Librarian source navigation remains deterministic; model-backed desktop answers
+retain their separate quality gate.
+
 The desktop now includes **Librarian sources** (the `§` toolbar button, also available in the note
 inspector). Open a configured root/project, enter specific names or words recorded in its notes,
 and choose **Find sources**. The panel shows exact bounded passages with physical lines, recorded

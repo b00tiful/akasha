@@ -59,10 +59,14 @@ name = "akasha-desktop"
 version = "0.1.0"
 dependencies = [
  "akasha-core",
+ "getrandom 0.4.3",
+ "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tauri",
  "tauri-build",
+ "tokio",
 ]
 
 [[package]]
@@ -3888,6 +3892,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",

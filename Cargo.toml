@@ -27,3 +27,8 @@ tokio = { version = "=1.51.3", default-features = false, features = ["macros", "
 
 [patch.crates-io]
 crossterm = { path = "vendor/crossterm" }
+
+# Native inference rehashes multi-gigabyte selected artifacts. Keep the cryptographic
+# implementation optimized in debug/test builds so verification fits the request deadline.
+[profile.dev.package.sha2]
+opt-level = 3

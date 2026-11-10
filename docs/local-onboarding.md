@@ -8,12 +8,16 @@ The desktop provides **Review local onboarding** (toolbar **＋**) for source se
    Inspect selected excerpts, omitted/excluded paths and missing implementation groups. Use
    **Use selected paths as an editable file list** to replace the selection; inspect again afterwards.
    A manual list has no automatic repository-coverage claim.
-2. Save the displayed exact packet as a private `packet.json` and run the existing local generator
-   with `--packet packet.json` as shown below. Select only its resulting `plan.json`: the desktop
-   retains the selected packet. Alternatively import both files from an earlier capture. Each input
-   is limited to 16,000 bytes. New source selection clears previous claims and approval.
-3. Choose **Load / preview changes**. Rust checks current project/source identities before showing
-   the captured excerpt catalog, metadata and claims. Supported excerpt-plan versions are 3/4/5.
+2. On Linux with the selected pinned artifacts installed, choose **Inspect model setup**, select
+   GPU automatic memory fitting or CPU, and **Generate draft locally**. The native desktop owns
+   the Qwen9B worker; its checked draft enters the claim editor directly. Nothing is downloaded.
+   **Cancel generation**, closing the dialog, or changing project stops the owned request and
+   discards late results. A new request waits for worker cleanup. The request has a fixed deadline.
+   Alternatively import a matching `plan.json` from the development generator, or both files from
+   an earlier capture. Each input is limited to 16,000 bytes; replacing sources clears old claims.
+3. Review generated claims immediately, or choose **Load / preview changes** for imported plans.
+   Rust checks current project/source identities before showing the excerpt catalog, metadata and
+   claims. Supported excerpt-plan versions are 3/4/5. Generation grants no publication approval.
 4. Correct claim wording, kind, rationale and source choices. Browse captured excerpts to add a
    missing claim, or remove one within the existing bounds. Metadata and note identities stay fixed.
 5. Preview again. Inspect exact proposed note/index/roadmap Markdown, affected actions and current
@@ -28,8 +32,19 @@ The desktop provides **Review local onboarding** (toolbar **＋**) for source se
 
 Corrections stay in memory until library reload/project change. Closing the review clears approval
 but preserves those edits in the same binding. Source-inspection cancellation suppresses obsolete
-results; bounded native reads may finish. Generation and model provisioning still use the existing
-development runner; no model process is installed by this feature.
+results; bounded native reads may finish. Native generation currently supports Linux and reuses
+operator-installed artifacts at `~/.local/share/akasha/local-inference/`:
+
+- `models/Qwen3.5-9B-UD-Q4_K_XL.gguf` with the accepted main-model SHA-256.
+- `runtimes/llama-b12110-vulkan/` or `runtimes/llama-b12110-cpu/`, retaining the complete official
+  package, its implementation libraries and exact relative symlinks.
+
+Setup reports file presence only. Generation checks the model and compiled package inventory in
+full before and after completions; missing, changed, extra-library or redirected-link packages
+refuse. No arbitrary model, executable, command, endpoint or path is accepted by this feature.
+GPU fitting uses a fixed free-memory margin; the CPU profile is available but its latency is not
+accepted across devices. Artifacts are not downloaded or distributed by Akasha yet. The optional
+Node development command below remains available and is not required by desktop generation.
 
 For a desktop-selected packet, replace all `--source`/`--discover`/`--components` options in the
 command below with `--packet /private/path/packet.json`. The runner snapshots a regular non-symlink
@@ -39,8 +54,8 @@ stale input or accept replacement `--focus`/`--sample-large-files` controls. Unk
 still refuses before inference. Use `--save-inputs` to retain the private generated `plan.json` for
 desktop review. Source changes during generation still refuse compilation; approval is never inferred.
 
-[Interactive recorded demonstration](../akasha/Research/evidence/2026-11-10-desktop-source-selection/demo.html)
-and [live source-to-librarian acceptance](../akasha/Research/desktop_source_selection.md) distinguish
+[Interactive native-generation replay](../akasha/Research/evidence/2026-11-10-native-onboarding/demo.html)
+and [live native source-to-librarian acceptance](../akasha/Research/native_desktop_onboarding.md) distinguish
 actual native/model results from the offline replay's simulated publication.
 
 

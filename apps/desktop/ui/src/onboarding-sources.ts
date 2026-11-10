@@ -72,7 +72,7 @@ export class OnboardingSourcePicker {
       if (generation !== this.generation || binding !== this.binding) return;
       if (result.root !== binding.root || result.project !== binding.project) throw new Error("Sources belong to another project or root.");
       this.render(result); this.replaced(result);
-      this.status.textContent = "Sources ready. Generate with this exact packet, then choose only the resulting plan.json below. A new source selection clears the old draft.";
+      this.status.textContent = "Sources ready. Generate a local draft below or import the plan for this exact packet. A new source selection clears the old draft.";
     } catch (error) {
       if (generation === this.generation) this.status.textContent = `Source inspection unavailable: ${message(error)}`;
     } finally { if (generation === this.generation) { this.busy = false; this.controls(); } }
