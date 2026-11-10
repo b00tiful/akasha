@@ -2,8 +2,8 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { OnboardingPanel } from "./onboarding";
 import type { OnboardingResult, OnboardingReview } from "./onboarding-types";
-const { review, publish, prepare, availability, reserve, cancel, generate } = vi.hoisted(() => ({ review: vi.fn(), publish: vi.fn(), prepare: vi.fn(), availability: vi.fn(), reserve: vi.fn(), cancel: vi.fn(), generate: vi.fn() }));
-vi.mock("./api", () => ({ reviewOnboarding: review, publishOnboarding: publish, prepareOnboardingSources: prepare, localInferenceAvailability: availability, reserveLocalGeneration: reserve, cancelLocalGeneration: cancel, generateOnboarding: generate }));
+const { review, publish, prepare, availability, reserve, cancel, generate, install, verify } = vi.hoisted(() => ({ review: vi.fn(), publish: vi.fn(), prepare: vi.fn(), availability: vi.fn(), reserve: vi.fn(), cancel: vi.fn(), generate: vi.fn(), install: vi.fn(), verify: vi.fn() }));
+vi.mock("./api", () => ({ reviewOnboarding: review, publishOnboarding: publish, prepareOnboardingSources: prepare, localInferenceAvailability: availability, reserveLocalGeneration: reserve, cancelLocalGeneration: cancel, generateOnboarding: generate, importInferenceAsset: install, verifyInferenceAsset: verify }));
 const binding = { root: "/resolved/root", project: "alpha" };
 const id = "sha256:" + "a".repeat(64);
 const plan = { schema_version: 5, notes: [{ slot: 1, evidence: [{ kind: "fact", claim: "The limit is 37.", sources: [{ source: 1, excerpt: 1 }] }] }] };
@@ -226,4 +226,22 @@ it("keeps generation unavailable for missing artifacts and reports native refusa
   reserve.mockResolvedValue("refused"); generate.mockRejectedValue({message:"Model SHA-256 mismatch"}); start.click();
   await vi.waitFor(() => expect(host.textContent).toContain("Generation unavailable: Model SHA-256 mismatch"));
   expect(cancel).toHaveBeenCalledWith("refused"); expect(publish).not.toHaveBeenCalled();
+});
+it("installs through shared setup, refreshes generation availability and cancels setup on project change", async () => {
+  const { host, panel } = setup(); prepare.mockResolvedValue(prepared());
+  const controls = sourceControls(host); controls.set("src"); controls.inspect.click();
+  await vi.waitFor(() => expect(host.textContent).toContain("Sources ready"));
+  reserve.mockResolvedValue("setup-import"); install.mockResolvedValue({ asset: "model", outcome: "installed", bytes: 5966095584, location: "/local/model" });
+  availability.mockResolvedValue({ supported: true, model_present: true, vulkan_present: true, cpu_present: false, location: "/local", model: "Qwen9B" });
+  const source = host.querySelector<HTMLInputElement>('[name="setup-source"]')!;
+  source.value = "/downloads/Qwen.gguf"; source.dispatchEvent(new Event("input"));
+  const start = host.querySelector<HTMLButtonElement>("[data-setup-import]")!; start.click();
+  expect(host.querySelector<HTMLButtonElement>("[data-generate]")!.disabled).toBe(true);
+  await vi.waitFor(() => expect(host.querySelector<HTMLButtonElement>("[data-generate]")!.disabled).toBe(false));
+  expect(install).toHaveBeenCalledWith("setup-import", "model", source.value); expect(generate).not.toHaveBeenCalled(); expect(publish).not.toHaveBeenCalled();
+  let finish!: (value: unknown) => void; install.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  start.click(); await vi.waitFor(() => expect(start.disabled).toBe(true));
+  await vi.waitFor(() => expect(install).toHaveBeenCalledTimes(2)); panel.bind({ ...binding, project: "beta" });
+  expect(cancel).toHaveBeenCalledWith("setup-import"); finish({ asset: "model", outcome: "installed", bytes: 1, location: "/obsolete" });
+  await vi.waitFor(() => expect(start.disabled).toBe(false)); expect(host.textContent).not.toContain("/obsolete");
 });

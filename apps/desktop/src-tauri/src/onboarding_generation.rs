@@ -26,7 +26,10 @@ pub struct GeneratedOnboarding {
 fn object(properties: Value) -> Value {
     json!({"type":"object", "additionalProperties":false, "required":properties.as_object().unwrap().keys().collect::<Vec<_>>(), "properties":properties})
 }
-fn group_input(packet: &LocalOnboardingPacket, slot: &LocalOnboardingSlot) -> (Value, Value) {
+pub(crate) fn group_input(
+    packet: &LocalOnboardingPacket,
+    slot: &LocalOnboardingSlot,
+) -> (Value, Value) {
     let sources = slot.sources.iter().enumerate().map(|(local, handle)| {
         let source = &packet.sources[handle - 1];
         let mut value = json!({"handle":local+1,"path":source.path,"excerpts": source.excerpts.iter().enumerate().map(|(index, excerpt)| json!({"handle":index+1,"line_start":excerpt.line_start,"line_end":excerpt.line_end,"text":source.text[excerpt.byte_start..excerpt.byte_end]})).collect::<Vec<_>>()});
@@ -53,7 +56,7 @@ fn group_input(packet: &LocalOnboardingPacket, slot: &LocalOnboardingSlot) -> (V
         ),
     )
 }
-fn remap(
+pub(crate) fn remap(
     answer: &str,
     slot: &LocalOnboardingSlot,
     packet: &LocalOnboardingPacket,

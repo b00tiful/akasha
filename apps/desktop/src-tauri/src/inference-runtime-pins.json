@@ -116,6 +116,9 @@
     },
     "llama-server": {
       "sha256": "eaf9c1c664cc0ae1f4dea4b171bb91aac8409fcfea0574c9b6bcc93792ce2400"
+    },
+    "LICENSE": {
+      "sha256": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d"
     }
   },
   "vulkan": {
@@ -238,6 +241,9 @@
     },
     "llama-server": {
       "sha256": "eaf9c1c664cc0ae1f4dea4b171bb91aac8409fcfea0574c9b6bcc93792ce2400"
+    },
+    "LICENSE": {
+      "sha256": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d"
     }
   }
 }

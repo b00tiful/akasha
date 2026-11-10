@@ -44,7 +44,7 @@ pub enum Profile {
     Cpu,
 }
 impl Profile {
-    fn folder(self) -> &'static str {
+    pub(crate) fn folder(self) -> &'static str {
         match self {
             Self::Vulkan => "llama-b12110-vulkan",
             Self::Cpu => "llama-b12110-cpu",
@@ -173,10 +173,10 @@ pub struct InferenceAvailability {
     pub location: String,
     pub model: &'static str,
 }
-fn installation() -> Result<PathBuf, DesktopError> {
-    if !cfg!(target_os = "linux") {
+pub(crate) fn installation() -> Result<PathBuf, DesktopError> {
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         return Err(error(
-            "Native local generation currently supports Linux only",
+            "Native local generation currently supports Linux x86-64 only",
         ));
     }
     let home = std::env::var_os("HOME")
@@ -191,7 +191,7 @@ pub fn availability() -> InferenceAvailability {
         fs::symlink_metadata(p).is_ok_and(|m| m.is_file() && !m.file_type().is_symlink())
     };
     InferenceAvailability {
-        supported: cfg!(target_os = "linux"),
+        supported: cfg!(all(target_os = "linux", target_arch = "x86_64")),
         model_present: regular(&base.join("models/Qwen3.5-9B-UD-Q4_K_XL.gguf")),
         vulkan_present: regular(&base.join("runtimes/llama-b12110-vulkan/llama-server")),
         cpu_present: regular(&base.join("runtimes/llama-b12110-cpu/llama-server")),
@@ -257,6 +257,13 @@ pub struct NativeInference {
 impl NativeInference {
     pub async fn open(profile: Profile, cancellation: Cancellation) -> Result<Self, DesktopError> {
         let base = installation()?;
+        Self::open_at(&base, profile, cancellation).await
+    }
+    pub(crate) async fn open_at(
+        base: &Path,
+        profile: Profile,
+        cancellation: Cancellation,
+    ) -> Result<Self, DesktopError> {
         let server = base
             .join("runtimes")
             .join(profile.folder())

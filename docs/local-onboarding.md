@@ -8,7 +8,9 @@ The desktop provides **Review local onboarding** (toolbar **＋**) for source se
    Inspect selected excerpts, omitted/excluded paths and missing implementation groups. Use
    **Use selected paths as an editable file list** to replace the selection; inspect again afterwards.
    A manual list has no automatic repository-coverage claim.
-2. On Linux with the selected pinned artifacts installed, choose **Inspect model setup**, select
+2. On Linux x86-64, use **Install or verify local model files** to import the selected model and
+   extracted pinned runtime from local files, or verify an existing installation.
+   [Setup instructions](local-inference-setup.md). Then choose **Inspect model setup**, select
    GPU automatic memory fitting or CPU, and **Generate draft locally**. The native desktop owns
    the Qwen9B worker; its checked draft enters the claim editor directly. Nothing is downloaded.
    **Cancel generation**, closing the dialog, or changing project stops the owned request and
@@ -36,17 +38,18 @@ The desktop provides **Review local onboarding** (toolbar **＋**) for source se
 Corrections stay in memory until library reload/project change. Closing the review clears approval
 but preserves those edits in the same binding. Source-inspection cancellation suppresses obsolete
 results; bounded native reads may finish. Native generation currently supports Linux and reuses
-operator-installed artifacts at `~/.local/share/akasha/local-inference/`:
+explicitly imported or operator-installed artifacts at `~/.local/share/akasha/local-inference/`:
 
 - `models/Qwen3.5-9B-UD-Q4_K_XL.gguf` with the accepted main-model SHA-256.
 - `runtimes/llama-b12110-vulkan/` or `runtimes/llama-b12110-cpu/`, retaining the complete official
-  package, its implementation libraries and exact relative symlinks.
+  pinned executable/library inventory, original `LICENSE` and exact relative symlinks.
 
 Setup reports file presence only. Generation checks the model and compiled package inventory in
 full before and after completions; missing, changed, extra-library or redirected-link packages
 refuse. No arbitrary model, executable, command, endpoint or path is accepted by this feature.
 GPU fitting uses a fixed free-memory margin; the CPU profile is available but its latency is not
-accepted across devices. Artifacts are not downloaded or distributed by Akasha yet. The optional
+accepted across devices. Offline import/verification is available; acquisition/extraction remain
+explicit operator steps. Artifacts are not downloaded or bundled by Akasha yet. The optional
 Node development command below remains available and is not required by desktop generation.
 
 For a desktop-selected packet, replace all `--source`/`--discover`/`--components` options in the

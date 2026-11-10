@@ -1,4 +1,5 @@
 pub mod inference;
+pub mod inference_setup;
 pub mod librarian_expansion;
 pub mod onboarding;
 pub mod onboarding_generation;
@@ -681,6 +682,8 @@ pub fn run() {
         librarian_expansion::assist_librarian_sources,
         onboarding::prepare_local_onboarding_sources,
         onboarding_generation::local_inference_availability,
+        inference_setup::import_local_inference_asset,
+        inference_setup::verify_local_inference_asset,
         onboarding_generation::reserve_local_generation,
         onboarding_generation::cancel_local_generation,
         onboarding_generation::generate_local_onboarding,
@@ -706,6 +709,8 @@ pub fn run() {
         librarian_expansion::assist_librarian_sources,
         onboarding::prepare_local_onboarding_sources,
         onboarding_generation::local_inference_availability,
+        inference_setup::import_local_inference_asset,
+        inference_setup::verify_local_inference_asset,
         onboarding_generation::reserve_local_generation,
         onboarding_generation::cancel_local_generation,
         onboarding_generation::generate_local_onboarding,

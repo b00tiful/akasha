@@ -19,7 +19,9 @@ It receives no notes or repository data. Original results stay visible alongside
 checked passages; exact duplicates appear once. Each search reports its own retrieval omissions.
 The worker closes before results return; Cancel/close/query/project changes stop and invalidate
 its request. It shares the native job slot with onboarding, so wait for cleanup before another run.
-Nothing is downloaded; use the [existing installed-profile setup](local-onboarding.md).
+**Install or verify local model files** imports the selected local GGUF and extracted runtime
+through the same checked setup used by onboarding. Nothing is downloaded;
+[offline setup instructions](local-inference-setup.md) cover acquisition, import, verification and cancellation.
 
 **Refine search words** lets you edit those suggestions, then choose **Find sources** to search
 without running the model. Use one literal word or phrase per line, up to eight phrases of 128

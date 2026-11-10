@@ -1,6 +1,7 @@
 import { inspectLibrarian, followLibrarianSource, assistLibrarian, localInferenceAvailability, reserveLocalGeneration, cancelLocalGeneration } from "./api";
 import type { DesktopLibrarianReview, LibrarianNoteProvenance } from "./librarian-types";
 import type { InferenceAvailability } from "./onboarding-types";
+import { LocalInferenceSetup } from "./inference-setup";
 import type { LinkedLibraryDocument } from "./types";
 
 interface Binding { root: string; project: string }
@@ -29,6 +30,7 @@ export class LibrarianPanel {
   private readonly setup: HTMLButtonElement;
   private readonly modelStatus: HTMLElement;
   private readonly terms: HTMLTextAreaElement;
+  private readonly localSetup: LocalInferenceSetup;
 
   constructor(readonly host: HTMLElement, private readonly activate: (document: LinkedLibraryDocument) => void | Promise<void>) {
     host.innerHTML = `<form class="librarian-form">
@@ -40,6 +42,7 @@ export class LibrarianPanel {
       <button type="button" data-model-setup>Inspect model setup</button>
       <label>Device <select name="librarian-profile"><option value="vulkan">GPU · automatic memory fitting</option><option value="cpu">CPU · slower</option></select></label>
       <button type="button" data-assisted>Find with local model</button><p data-model-status role="status">Off until explicitly requested. Nothing is downloaded.</p>
+      <div data-local-setup></div>
       <label>Refine search words<textarea name="librarian-terms" rows="3" maxlength="1100" placeholder="One literal word or phrase per line"></textarea></label>
       <p>Optional: edit suggested words, then choose Find sources. Up to eight phrases of 128 characters. This searches these words with your original question retained, without running the model. Clear to restore question matching. Local assistance always starts from the question alone.</p></details>
       </form><p data-message role="status"></p><p data-guidance></p><div class="librarian-results"></div>`;
@@ -56,6 +59,7 @@ export class LibrarianPanel {
     this.setup = host.querySelector("[data-model-setup]")!;
     this.modelStatus = host.querySelector("[data-model-status]")!;
     this.terms = host.querySelector('[name="librarian-terms"]')!;
+    this.localSetup = new LocalInferenceSetup(host.querySelector("[data-local-setup]")!, available => { this.availability = available; this.controls(); }, running => { this.busy = running; this.controls(); });
     this.setup.addEventListener("click", () => void this.inspectSetup());
     this.assist.addEventListener("click", () => void this.inspect(true));
     this.form.addEventListener("submit", event => { event.preventDefault(); void this.inspect(); });
@@ -91,6 +95,7 @@ export class LibrarianPanel {
   suspend(): void { this.invalidate("View closed. Find sources again to refresh."); }
 
   private invalidate(message: string): void {
+    this.localSetup.cancel();
     this.generation++;
     const id = this.requestId;
     this.requestId = null;
@@ -114,6 +119,7 @@ export class LibrarianPanel {
     const installed = available?.supported && available.model_present && (this.profile.value === "cpu" ? available.cpu_present : available.vulkan_present);
     this.assist.disabled = !this.binding || this.busy || !installed || !this.question.value.trim() || [...this.question.value].length > 160;
     this.setup.disabled = this.busy;
+    this.localSetup?.setDisabled(this.busy);
     this.host.setAttribute("aria-busy", String(this.busy));
     this.guidance.textContent = this.dirty
       ? "Unsaved changes: results describe saved files. Save or Discard before opening a source."

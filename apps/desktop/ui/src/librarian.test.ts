@@ -4,8 +4,8 @@ import { LibrarianPanel } from "./librarian";
 import type { DesktopLibrarianReview } from "./librarian-types";
 import type { LinkedLibraryDocument } from "./types";
 
-const { inspect, follow, setupModel, reserve, cancel, assist } = vi.hoisted(() => ({ inspect: vi.fn(), follow: vi.fn(), setupModel: vi.fn(), reserve: vi.fn(), cancel: vi.fn(), assist: vi.fn() }));
-vi.mock("./api", () => ({ inspectLibrarian: inspect, followLibrarianSource: follow, localInferenceAvailability: setupModel, reserveLocalGeneration: reserve, cancelLocalGeneration: cancel, assistLibrarian: assist }));
+const { inspect, follow, setupModel, reserve, cancel, assist, install, verify } = vi.hoisted(() => ({ inspect: vi.fn(), follow: vi.fn(), setupModel: vi.fn(), reserve: vi.fn(), cancel: vi.fn(), assist: vi.fn(), install: vi.fn(), verify: vi.fn() }));
+vi.mock("./api", () => ({ inspectLibrarian: inspect, followLibrarianSource: follow, localInferenceAvailability: setupModel, reserveLocalGeneration: reserve, cancelLocalGeneration: cancel, assistLibrarian: assist, importInferenceAsset: install, verifyInferenceAsset: verify }));
 const binding = { root: "/resolved/root", project: "alpha" };
 const id = "Projects/alpha/entities/core.md";
 function result(): DesktopLibrarianReview {
@@ -169,6 +169,15 @@ async function readyAssistance(host: HTMLElement) {
   host.querySelector<HTMLButtonElement>("[data-model-setup]")!.click();
   await vi.waitFor(() => expect(host.querySelector<HTMLButtonElement>("[data-assisted]")!.disabled).toBe(false));
 }
+
+it("enables optional assistance after explicit setup verification without starting inference", async () => {
+  const { host } = panel(); verify.mockResolvedValue({ asset: "vulkan", outcome: "verified", bytes: 42, location: "/local/runtime" });
+  host.querySelector<HTMLSelectElement>('[name="setup-asset"]')!.value = "vulkan";
+  host.querySelector<HTMLButtonElement>("[data-setup-verify]")!.click();
+  expect(host.querySelector<HTMLButtonElement>("[data-assisted]")!.disabled).toBe(true);
+  await vi.waitFor(() => expect(host.querySelector<HTMLButtonElement>("[data-assisted]")!.disabled).toBe(false));
+  expect(verify).toHaveBeenCalledWith("reserved-local-id", "vulkan"); expect(assist).not.toHaveBeenCalled(); expect(inspect).not.toHaveBeenCalled();
+});
 function assistedResult() {
   const initial = result(), expanded = result();
   expanded.packet.terms = ["capacity", "容量"];

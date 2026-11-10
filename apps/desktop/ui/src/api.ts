@@ -141,6 +141,12 @@ export function publishOnboarding(root: string, project: string, packetJson: str
 export function localInferenceAvailability(): Promise<import("./onboarding-types").InferenceAvailability> {
   return invoke("local_inference_availability");
 }
+export function importInferenceAsset(requestId: string, asset: import("./inference-setup").InferenceAsset, source: string): Promise<import("./inference-setup").InferenceSetupResult> {
+  return invoke("import_local_inference_asset", { requestId, asset, source });
+}
+export function verifyInferenceAsset(requestId: string, asset: import("./inference-setup").InferenceAsset): Promise<import("./inference-setup").InferenceSetupResult> {
+  return invoke("verify_local_inference_asset", { requestId, asset });
+}
 export function reserveLocalGeneration(): Promise<string> { return invoke("reserve_local_generation"); }
 export function cancelLocalGeneration(requestId: string): Promise<void> { return invoke("cancel_local_generation", { requestId }); }
 export function generateOnboarding(requestId: string, root: string, project: string, packetJson: string, profile: "vulkan" | "cpu"): Promise<import("./onboarding-types").GeneratedOnboarding> {

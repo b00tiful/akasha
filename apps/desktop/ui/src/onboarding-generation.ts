@@ -1,5 +1,6 @@
 import { cancelLocalGeneration, generateOnboarding, localInferenceAvailability, reserveLocalGeneration } from "./api";
 import type { GeneratedOnboarding, InferenceAvailability } from "./onboarding-types";
+import { LocalInferenceSetup } from "./inference-setup";
 type Binding = { root: string; project: string };
 
 /** Ephemeral controls for the native owned worker; no executable, URL or arbitrary model input. */
@@ -14,6 +15,7 @@ export class OnboardingGenerator {
   private availability: InferenceAvailability | null = null;
   private readonly status: HTMLElement;
   private readonly profile: HTMLSelectElement;
+  private readonly localSetup: LocalInferenceSetup;
   constructor(private readonly host: HTMLElement, private readonly busy: (running: boolean) => void, private readonly generated: (result: GeneratedOnboarding) => void) {
     host.innerHTML = `<h3>2. Generate a local draft</h3>
       <p>Optional local Qwen3.5-9B generation. Inspect model setup, choose a device, then generate from the selected sources. Claims still need your source review.</p>
@@ -21,9 +23,10 @@ export class OnboardingGenerator {
       <label>Device <select name="inference-profile"><option value="vulkan">GPU · automatic memory fitting</option><option value="cpu">CPU · slower</option></select></label>
       <button type="button" data-generate>Generate draft locally</button>
       <button type="button" data-cancel-generation>Cancel generation</button>
-      <p role="status" data-generation-status>Local generation is off until explicitly requested. Existing captured plans can still be imported.</p>`;
+      <p role="status" data-generation-status>Local generation is off until explicitly requested. Existing captured plans can still be imported.</p><div data-local-setup></div>`;
     this.status = host.querySelector("[data-generation-status]")!;
     this.profile = host.querySelector('[name="inference-profile"]')!;
+    this.localSetup = new LocalInferenceSetup(host.querySelector("[data-local-setup]")!, available => { this.availability = available; this.controls(); }, running => { this.checking = running; this.controls(); });
     host.querySelector("[data-inference-setup]")!.addEventListener("click", () => void this.inspect());
     host.querySelector("[data-generate]")!.addEventListener("click", () => void this.generate());
     host.querySelector("[data-cancel-generation]")!.addEventListener("click", () => this.cancel());
@@ -33,6 +36,7 @@ export class OnboardingGenerator {
   setPacket(packet: string): void { this.cancel(); this.packet = packet; this.controls(); }
   setDisabled(value: boolean): void { this.disabled = value; this.controls(); }
   cancel(): void {
+    this.localSetup.cancel();
     this.generation++;
     const id = this.requestId; this.requestId = null;
     if (id) void cancelLocalGeneration(id).catch(error => { this.status.textContent = `Cancellation could not be delivered: ${message(error)}. The native request deadline remains active.`; });
@@ -47,6 +51,7 @@ export class OnboardingGenerator {
     this.host.querySelector<HTMLButtonElement>("[data-cancel-generation]")!.disabled = !this.running;
     this.profile.disabled = this.running || this.disabled || this.checking;
     this.host.setAttribute("aria-busy", String(this.running || this.checking));
+    this.localSetup?.setDisabled(this.running || this.checking || this.disabled);
   }
   private async inspect(): Promise<void> {
     if (this.running || this.checking || this.disabled) return;
