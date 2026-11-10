@@ -1,5 +1,25 @@
 # Local librarian: source passages and cited answers
 
+The desktop now includes **Librarian sources** (the `§` toolbar button, also available in the note
+inspector). Open a configured root/project, enter specific names or words recorded in its notes,
+and choose **Find sources**. The panel shows exact bounded passages with physical lines, recorded
+status, partial-body flags and retrieval omissions. It uses deterministic saved-memory retrieval
+and needs no model installation. No match is explicit; try more specific recorded terms.
+
+Enable **Inspect recorded repository evidence** to see onboarding claims' fact/inference/unknown
+labels, rationales and original code windows. This explicitly reads recorded references in the
+selected project's registered repository; it defaults off. Changed or unavailable code is labeled
+and withheld. Exact bytes and matching hashes do not establish that a claim is correct.
+
+**Open** rechecks the citation packet and full note fingerprint before loading the existing
+editor. Stale/altered packets or pending journals refuse without recovery or writes. Inspection
+uses saved files even with unsaved edits; choose Save or Discard before opening another note.
+Cancel, query edits, closing or changing projects suppress obsolete results immediately; already
+running bounded native reads may finish. Query/results and repository preference are not persisted.
+Model-backed chat and installed onboarding correction/publication remain separate work.
+[Interactive offline demonstration](../akasha/Research/evidence/2026-11-10-desktop-librarian/demo.html)
+uses the actual component with saved native-adapter results.
+
 Use `--all-sources` for a complete review of the bounded retrieval packet. The original model
 shortlist becomes **highlights**; Rust also checks and displays every other prepared passage in
 an **Additional retrieved sources** section. A valid empty shortlist still shows retrieved

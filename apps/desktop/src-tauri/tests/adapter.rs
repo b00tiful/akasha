@@ -10,9 +10,9 @@ use std::os::unix::fs::PermissionsExt;
 use akasha_desktop::write_runtime_probe_report_file;
 use akasha_desktop::{
     LocalNavigationState, activate_document_backlink, activate_document_link, document_backlinks,
-    library_document_with_recovery, library_projection_with_recovery,
-    linked_library_document_with_recovery, load_local_navigation_file, recovery_inspection,
-    save_library_document, save_local_navigation_file, search_project_library,
+    inspect_librarian_sources, library_document_with_recovery, library_projection_with_recovery,
+    linked_library_document_with_recovery, load_local_navigation_file, open_librarian_source,
+    recovery_inspection, save_library_document, save_local_navigation_file, search_project_library,
 };
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -407,6 +407,176 @@ fn adapter_searches_only_the_selected_project_through_core() {
     let error = search_project_library(Some(fixture_root()), "example".to_owned(), "   ")
         .expect_err("blank query must retain core validation");
     assert_eq!(error.code, 4);
+}
+
+#[test]
+fn librarian_adapter_keeps_complete_sources_and_opens_only_fresh_packet_members() {
+    let temp = TempDir::new("librarian-navigation");
+    let root = temp.path().join("valid-root");
+    copy_tree(&fixture_root(), &root);
+    fs::create_dir_all(temp.path().join("repository")).unwrap();
+    let id = "Projects/example/entities/core.md";
+    let before = fs::read_to_string(root.join(id)).unwrap();
+    let state = fs::read(root.join("Projects/example/.akasha-state.toml")).unwrap();
+    let inspected =
+        inspect_librarian_sources(Some(root.clone()), "example".into(), "core", false).unwrap();
+    assert_eq!(
+        inspected.review.sources.matches.len(),
+        inspected.packet.evidence.len()
+    );
+    assert!(inspected.review.highlighted_citations.is_empty());
+    assert!(inspected.review.provenance.is_none());
+    assert!(
+        inspected
+            .packet
+            .evidence
+            .iter()
+            .all(|e| e.id.starts_with("Projects/example/"))
+    );
+    let citation = inspected
+        .packet
+        .evidence
+        .iter()
+        .find(|e| e.id == id)
+        .unwrap()
+        .citation;
+    let document = open_librarian_source(
+        Some(root.clone()),
+        "example".into(),
+        &inspected.packet,
+        citation,
+    )
+    .unwrap();
+    assert_eq!(document.document.source, before);
+    assert_eq!(document.document.id, id);
+    assert!(
+        open_librarian_source(Some(root.clone()), "example".into(), &inspected.packet, 99).is_err()
+    );
+    let mut forged = inspected.packet.clone();
+    forged.project = "foreign".into();
+    assert!(
+        open_librarian_source(Some(root.clone()), "example".into(), &forged, citation).is_err()
+    );
+    forged = inspected.packet.clone();
+    forged.evidence[0].id = "Global/entities/rust-pattern.md".into();
+    assert!(
+        open_librarian_source(Some(root.clone()), "example".into(), &forged, citation).is_err()
+    );
+    forged = inspected.packet.clone();
+    forged.evidence[0].excerpt = "x".repeat(16_001);
+    assert!(
+        open_librarian_source(Some(root.clone()), "example".into(), &forged, citation)
+            .unwrap_err()
+            .message
+            .contains("16000")
+    );
+    assert_eq!(fs::read_to_string(root.join(id)).unwrap(), before);
+    assert_eq!(
+        fs::read(root.join("Projects/example/.akasha-state.toml")).unwrap(),
+        state
+    );
+    save_library_document(
+        Some(root.clone()),
+        Some("example".into()),
+        id,
+        &before,
+        &(before.clone() + "\nFresh saved change.\n"),
+    )
+    .unwrap();
+    assert!(
+        open_librarian_source(
+            Some(root.clone()),
+            "example".into(),
+            &inspected.packet,
+            citation
+        )
+        .is_err()
+    );
+    let empty = inspect_librarian_sources(
+        Some(root.clone()),
+        "example".into(),
+        "zzzzunrecordedterm",
+        false,
+    )
+    .unwrap();
+    assert!(empty.review.sources.matches.is_empty());
+    assert!(inspect_librarian_sources(Some(root.clone()), "example".into(), " ", false).is_err());
+    let journal = root.join("Projects/example/.akasha-edit-journal.json");
+    fs::write(&journal, b"unfinished writer").unwrap();
+    for provenance in [false, true] {
+        assert_eq!(
+            inspect_librarian_sources(Some(root.clone()), "example".into(), "core", provenance)
+                .unwrap_err()
+                .code,
+            5
+        );
+    }
+    assert_eq!(
+        open_librarian_source(Some(root), "example".into(), &inspected.packet, citation)
+            .unwrap_err()
+            .code,
+        5
+    );
+    assert_eq!(fs::read(journal).unwrap(), b"unfinished writer");
+}
+
+#[test]
+fn librarian_adapter_retains_recorded_kinds_and_withholds_changed_code() {
+    let temp = TempDir::new("librarian-provenance");
+    let root = temp.path().join("valid-root");
+    copy_tree(&fixture_root(), &root);
+    let repository = temp.path().join("repository");
+    fs::create_dir_all(&repository).unwrap();
+    let code = "const LIMIT: usize = 37;\n";
+    fs::write(repository.join("limits.rs"), code).unwrap();
+    let id = "Projects/example/entities/core.md";
+    let before = fs::read_to_string(root.join(id)).unwrap();
+    let evidence = serde_json::json!([
+        {"kind":"fact", "claim":"The core limit is 37.", "sources":[{
+            "path":"limits.rs", "fingerprint":"sha256:2b832727bbead4ffc1b985256e6d03b34697555092376118dd48ff7ac1ab582a", "line_start":1, "line_end":1
+        }]},
+        {"kind":"unknown", "claim":"Core deployment is unspecified.", "rationale":"No deployment evidence.", "sources":[]}
+    ]);
+    let replacement = before.replacen("\n---\n", &format!("\nevidence: {evidence}\n---\n"), 1)
+        + "\nThe core limit is 37. Core deployment is unspecified.\n";
+    save_library_document(
+        Some(root.clone()),
+        Some("example".into()),
+        id,
+        &before,
+        &replacement,
+    )
+    .unwrap();
+    let state = fs::read(root.join("Projects/example/.akasha-state.toml")).unwrap();
+    let result =
+        inspect_librarian_sources(Some(root.clone()), "example".into(), "core", true).unwrap();
+    let notes = &result.review.provenance.unwrap().notes;
+    let claims = &notes
+        .iter()
+        .find(|note| !note.claims.is_empty())
+        .unwrap()
+        .claims;
+    assert_eq!(claims[0].recorded_kind, "fact");
+    assert_eq!(claims[1].recorded_kind, "unknown");
+    assert_eq!(claims[0].sources[0].excerpt.as_deref(), Some(code));
+    fs::write(repository.join("limits.rs"), "// changed\n").unwrap();
+    let result =
+        inspect_librarian_sources(Some(root.clone()), "example".into(), "core", true).unwrap();
+    let changed = result.review.provenance.unwrap();
+    let source = &changed
+        .notes
+        .iter()
+        .find(|note| !note.claims.is_empty())
+        .unwrap()
+        .claims[0]
+        .sources[0];
+    assert_eq!(source.freshness, "changed");
+    assert!(source.excerpt.is_none());
+    assert_eq!(fs::read_to_string(root.join(id)).unwrap(), replacement);
+    assert_eq!(
+        fs::read(root.join("Projects/example/.akasha-state.toml")).unwrap(),
+        state
+    );
 }
 
 #[test]

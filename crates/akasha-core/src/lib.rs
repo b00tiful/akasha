@@ -47,8 +47,9 @@ pub use context::{
     oversized_handoff, render_context_markdown, render_session_breadcrumb,
 };
 pub use document_links::{
-    LibraryDocumentLink, LinkedLibraryDocument, activate_library_backlink,
-    activate_library_document_link, inspect_library_backlinks, load_linked_library_document,
+    LibraryDocumentLink, LinkedLibraryDocument, activate_librarian_source,
+    activate_library_backlink, activate_library_document_link, inspect_library_backlinks,
+    load_linked_library_document,
 };
 pub use event::{
     EventCreationError, EventCreationForm, EventCreationPreview, EventCreationResult,

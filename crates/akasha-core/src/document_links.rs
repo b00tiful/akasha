@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 
 use serde::Serialize;
 
+use crate::librarian::{LibrarianPacket, check_librarian_sources};
 use crate::library::{
     LibraryDocument, LibraryProjection, build_library_projection, document_from_projection,
     vault_id,
@@ -14,6 +15,7 @@ use crate::note_links::{
 };
 use crate::project_validation::{ProjectValidationError, wikilink_target_path};
 use crate::resolution::{ResolveRequest, load_project_registry, load_root_config, resolve_project};
+use crate::state::content_fingerprint;
 use crate::validation::{ValidationError, parse_leading_frontmatter};
 use crate::wikilink::parse_wikilinks;
 
@@ -44,6 +46,33 @@ pub fn load_linked_library_document(
     let (projection, requests) = checked_projection(request)?;
     let document = linked_document(&projection, id)?;
     refuse_pending_journals(&requests)?;
+    Ok(document)
+}
+
+/// Open only a citation in a freshly revalidated selected-project librarian packet.
+/// Never recover or write; the returned full document must match the cited fingerprint.
+pub fn activate_librarian_source(
+    request: &ResolveRequest,
+    packet: &LibrarianPacket,
+    citation: usize,
+) -> Result<LinkedLibraryDocument, NoteLinksError> {
+    if serde_json::to_vec(packet)
+        .expect("serializable librarian packet")
+        .len()
+        > crate::librarian::MAX_LIBRARIAN_PACKET_BYTES
+    {
+        return Err(
+            invalid_link("librarian packet", "librarian packet exceeds 16000 bytes").into(),
+        );
+    }
+    let selection = serde_json::json!({"selections": [{"citation": citation}]}).to_string();
+    let checked = check_librarian_sources(request, packet, &selection)?;
+    let passage = &checked.matches[0];
+    let document = load_linked_library_document(request, &passage.id)?;
+    if content_fingerprint(document.document.source.as_bytes()) != passage.fingerprint {
+        return Err(NoteLinksError::StaleSource(passage.id.clone()));
+    }
+    check_librarian_sources(request, packet, &selection)?;
     Ok(document)
 }
 

@@ -17,6 +17,11 @@ use akasha_core::{
 };
 use serde::{Deserialize, Serialize};
 
+use akasha_core::librarian::{
+    LibrarianPacket, LibrarianSourceReview, prepare_librarian, review_librarian_sources,
+};
+use akasha_core::librarian_provenance::review_librarian_provenance;
+
 const LOCAL_NAVIGATION_VERSION: u8 = 1;
 const LOCAL_NAVIGATION_MAX_BYTES: u64 = 64 * 1024;
 const LOCAL_NAVIGATION_MAX_PAGE_ANCHORS: usize = 128;
@@ -35,6 +40,84 @@ pub struct DesktopLibrary {
 pub struct DesktopError {
     pub code: u8,
     pub message: String,
+}
+
+/// Ephemeral handoff only: the existing packet and checked report, never persisted.
+#[derive(Debug, Serialize)]
+pub struct DesktopLibrarianReview {
+    pub packet: LibrarianPacket,
+    pub review: LibrarianSourceReview,
+}
+
+pub fn inspect_librarian_sources(
+    root: Option<PathBuf>,
+    project: String,
+    question: &str,
+    provenance: bool,
+) -> Result<DesktopLibrarianReview, DesktopError> {
+    let request = request(root, Some(project))?;
+    let packet = prepare_librarian(&request, question, &[], None).map_err(librarian_error)?;
+    let selection = r#"{"selections":[]}"#;
+    let review = if provenance {
+        review_librarian_provenance(&request, &packet, selection)
+    } else {
+        review_librarian_sources(&request, &packet, selection)
+    }
+    .map_err(librarian_error)?;
+    Ok(DesktopLibrarianReview { packet, review })
+}
+
+pub fn open_librarian_source(
+    root: Option<PathBuf>,
+    project: String,
+    packet: &LibrarianPacket,
+    citation: usize,
+) -> Result<LinkedLibraryDocument, DesktopError> {
+    let request = request(root, Some(project))?;
+    akasha_core::activate_librarian_source(&request, packet, citation).map_err(librarian_error)
+}
+
+fn librarian_error(error: akasha_core::NoteLinksError) -> DesktopError {
+    DesktopError {
+        code: error.exit_code(),
+        message: error.to_string(),
+    }
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn inspect_librarian(
+    root: Option<PathBuf>,
+    project: String,
+    question: String,
+    provenance: bool,
+) -> Result<DesktopLibrarianReview, DesktopError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        inspect_librarian_sources(root, project, &question, provenance)
+    })
+    .await
+    .map_err(|error| DesktopError {
+        code: 3,
+        message: error.to_string(),
+    })?
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn follow_librarian_source(
+    root: Option<PathBuf>,
+    project: String,
+    packet: LibrarianPacket,
+    citation: usize,
+) -> Result<LinkedLibraryDocument, DesktopError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        open_librarian_source(root, project, &packet, citation)
+    })
+    .await
+    .map_err(|error| DesktopError {
+        code: 3,
+        message: error.to_string(),
+    })?
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -571,6 +654,8 @@ pub fn run() {
         inspect_document_backlinks,
         follow_document_backlink,
         search_project,
+        inspect_librarian,
+        follow_librarian_source,
         save_document,
         load_local_navigation,
         save_local_navigation,
@@ -586,6 +671,8 @@ pub fn run() {
         inspect_document_backlinks,
         follow_document_backlink,
         search_project,
+        inspect_librarian,
+        follow_librarian_source,
         save_document,
         load_local_navigation,
         save_local_navigation

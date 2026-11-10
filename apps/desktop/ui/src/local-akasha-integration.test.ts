@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import shell from "../index.html?raw";
+import type { DesktopLibrarianReview } from "./librarian-types";
 import type {
   DesktopLibrary,
   LibraryBook,
@@ -49,9 +50,22 @@ describe("local scene and shared editor integration", () => {
       truncated: false, hits: [{ id: books[1]!.id, label: books[1]!.label,
         scope: books[1]!.scope, line: 2, snippet: "Second matching line" }],
     }));
+    const librarianResult: DesktopLibrarianReview = {
+      packet: { schema_version: 1, project: "example", question: "first", terms: [], note: null,
+        scanned_notes: 2, matched_notes: 1, omitted_notes: 0,
+        evidence: [{ citation: 1, id: books[0]!.id, fingerprint: "sha256:hash", status: "draft",
+          line_start: 2, line_end: 2, excerpt: "Saved first fact.\n", excerpt_truncated: false }] },
+      review: { schema_version: 1, kind: "source_review", highlighted_citations: [], scanned_notes: 2,
+        matched_notes: 1, omitted_notes: 0, sources: { schema_version: 1, kind: "source_passages",
+          project: "example", question: "first", link_scope: "packet", matches: [{ citation: 1,
+            id: books[0]!.id, fingerprint: "sha256:hash", status: "draft", line_start: 2, line_end: 2,
+            partial_body: false, quote: "Saved first fact.\n", links: [], omitted_links: 0 }] } },
+    };
+    const inspectLibrarian = vi.fn(async () => librarianResult);
+    const followLibrarianSource = vi.fn(async () => ({ id: books[0]!.id, source: "# Checked first\n", links: [] }));
     vi.doMock("./api", () => ({
       loadLibraryWithRecovery: vi.fn(async () => library), loadDocumentWithRecovery, saveDocument, searchProject,
-      loadLocalNavigation, saveLocalNavigation,
+      loadLocalNavigation, saveLocalNavigation, inspectLibrarian, followLibrarianSource,
     }));
     vi.doMock("./scene", () => ({ mountLibraryScene: vi.fn(async () => ({
       aimedShelfId: () => null, select: vi.fn(), destroy: vi.fn(),
@@ -118,6 +132,27 @@ describe("local scene and shared editor integration", () => {
     await vi.waitFor(() => expect(loads).toHaveLength(4));
     loads[3]!.resolve({ id: books[1]!.id, source: "# Changed second\n" });
     await vi.waitFor(() => expect(document.querySelector<HTMLElement>("#search-panel")!.hidden).toBe(true));
+    click("#note-librarian");
+    const librarianQuestion = document.querySelector<HTMLInputElement>('#librarian-content [name="question"]')!;
+    expect(document.activeElement).toBe(librarianQuestion);
+    librarianQuestion.value = "first";
+    document.querySelector("#librarian-content form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(document.querySelector(".librarian-source")).not.toBeNull());
+    expect(inspectLibrarian).toHaveBeenCalledWith("/resolved/root", "example", "first", false);
+    click(".librarian-source > button");
+    await vi.waitFor(() => expect(documents).toHaveBeenLastCalledWith("# Checked first\n", true));
+    expect(followLibrarianSource).toHaveBeenCalledWith("/resolved/root", "example", librarianResult.packet, 1);
+    expect(loads).toHaveLength(4); // Checked activation never falls through to a recovery-running load.
+    expect(document.querySelector<HTMLElement>("#librarian-panel")!.hidden).toBe(true);
+    viewer.replaceSource("# Unsaved first\n");
+    click("#note-librarian");
+    expect(document.querySelector<HTMLElement>("#librarian-panel")!.hidden).toBe(false);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(document.querySelector<HTMLElement>("#librarian-panel")!.hidden).toBe(true);
+    expect(document.querySelector<HTMLElement>("#note-overlay")!.hidden).toBe(false);
+    expect(viewer.source).toBe("# Unsaved first\n");
+    expect(document.activeElement?.id).toBe("note-librarian");
+    click("#discard-note");
     click("#note-close");
     click("#scope-toggle");
     await vi.waitFor(() => expect(document.querySelector("#dashboard-title")!.textContent).toBe("Library status"));

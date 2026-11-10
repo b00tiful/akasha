@@ -13,6 +13,7 @@ import {
 } from "./api";
 import { NoteViewer, type ViewerMode } from "./editor";
 import { BacklinkPanel, type BacklinkBinding } from "./backlinks";
+import { LibrarianPanel } from "./librarian";
 import { renderFallback, renderLocalFallback } from "./fallback";
 import { localAkashaModel } from "./local-akasha-model";
 import { mountLocalAkasha, type LocalNavigation, type LocalSceneHandle } from "./local-akasha-scene";
@@ -83,6 +84,9 @@ const searchForm = required<HTMLFormElement>("search-form");
 const searchInput = required<HTMLInputElement>("search-input");
 const searchSummary = required<HTMLElement>("search-summary");
 const searchResults = required<HTMLElement>("search-results");
+const librarianDrawer = required<HTMLElement>("librarian-panel");
+const librarianToggle = required<HTMLButtonElement>("librarian-toggle");
+const librarianClose = required<HTMLButtonElement>("librarian-close");
 const settingsPanel = required<HTMLElement>("settings-panel");
 const settingsToggle = required<HTMLButtonElement>("settings-toggle");
 const settingsClose = required<HTMLButtonElement>("settings-close");
@@ -90,6 +94,15 @@ const reducedMotion = required<HTMLInputElement>("reduced-motion");
 const modeButtons = [...document.querySelectorAll<HTMLButtonElement>("[data-mode]")];
 
 let viewer: NoteViewer;
+const librarian = new LibrarianPanel(required<HTMLElement>("librarian-content"), async (document) => {
+  if (!library || viewer.dirty) return;
+  const book = allBooks(library.projection).find(book => book.id === document.id);
+  if (!book || book.scope.kind !== "project" || book.scope.project !== activeResolution?.project) {
+    throw new Error("Source is absent from the selected project. Reload the library.");
+  }
+  closeLibrarian();
+  await openBookFromInventory(book, document);
+});
 const backlinks = new BacklinkPanel(required<HTMLDetailsElement>("backlinks"),
   (binding, link, limit) => void activateBacklink(binding, link, limit));
 viewer = new NoteViewer(required<HTMLElement>("note-viewer"), updateEditActions,
@@ -133,6 +146,23 @@ inventoryToggle.addEventListener("click", () => toggleDrawer(inventoryPanel, inv
 inventoryClose.addEventListener("click", () => closeDrawer(inventoryPanel, inventoryToggle));
 searchToggle.addEventListener("click", toggleSearch);
 searchClose.addEventListener("click", closeSearch);
+librarianToggle.addEventListener("click", () => {
+  if (!library || !activeResolution) return;
+  const willOpen = librarianDrawer.hidden;
+  closeDrawer(inventoryPanel, inventoryToggle);
+  closeSearch();
+  closeDrawer(settingsPanel, settingsToggle);
+  if (willOpen) {
+    librarianDrawer.hidden = false;
+    librarianToggle.setAttribute("aria-expanded", "true");
+    librarian.focus();
+  } else closeLibrarian();
+});
+librarianClose.addEventListener("click", () => {
+  closeLibrarian();
+  (noteOverlay.hidden ? librarianToggle : required<HTMLButtonElement>("note-librarian")).focus();
+});
+required<HTMLButtonElement>("note-librarian").addEventListener("click", () => librarianToggle.click());
 searchForm.addEventListener("submit", (event) => {
   event.preventDefault();
   void runProjectSearch();
@@ -169,6 +199,21 @@ for (const button of modeButtons) {
 }
 
 window.addEventListener("keydown", (event) => {
+  if (!librarianDrawer.hidden) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeLibrarian();
+      (noteOverlay.hidden ? librarianToggle : required<HTMLButtonElement>("note-librarian")).focus();
+    } else if (event.key === "Tab") {
+      const controls = [...librarianDrawer.querySelectorAll<HTMLElement>('button:not(:disabled), input, summary')];
+      const first = controls[0], last = controls.at(-1);
+      if (first && last && ((event.shiftKey && document.activeElement === first) || (!event.shiftKey && document.activeElement === last))) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      }
+    }
+    return;
+  }
   if (localMode) {
     if (event.key === "Tab" && !noteOverlay.hidden) {
       const controls = [...noteOverlay.querySelectorAll<HTMLElement>('button:not(:disabled), summary, [tabindex="0"], .cm-content')]
@@ -201,7 +246,7 @@ window.addEventListener("keydown", (event) => {
     closeTopLayer();
     return;
   }
-  if (!noteOverlay.hidden || !inventoryPanel.hidden || !settingsPanel.hidden) {
+  if (!noteOverlay.hidden || !inventoryPanel.hidden || !settingsPanel.hidden || !librarianDrawer.hidden) {
     return;
   }
   const key = event.key.toLowerCase();
@@ -237,12 +282,15 @@ async function openLibrary(
 ): Promise<void> {
   setStatus("Checking pending recovery and validating through Akasha Core…");
   documentRequest++;
+  librarian.bind(null);
+  closeLibrarian();
   backlinks.bind(null);
   clearSearch();
   form.classList.add("is-loading");
   try {
     library = await loadLibraryWithRecovery(requestedResolution.root, requestedResolution.project);
     activeResolution = { root: library.projection.root, project: library.projection.selected_project };
+    librarian.bind(activeResolution);
     const navigationWarning = await hydrateLocalNavigation(library);
     rootInput.value = requestedResolution.root;
     projectInput.value = requestedResolution.project;
@@ -293,6 +341,7 @@ async function openLibrary(
   } catch (error) {
     library = null;
     activeResolution = null;
+    librarian.bind(null);
     aimedShelfId = null;
     activeShelfId = null;
     activeVolume = null;
@@ -391,6 +440,7 @@ async function switchScope(): Promise<void> {
   if (!library || switchingScope) return;
   if (viewer.dirty) { requireDirtyDecision("switching between local and global views"); return; }
   switchingScope = true;
+  closeLibrarian();
   scopeToggle.disabled = true;
   closeNote();
   closeDrawer(inventoryPanel, inventoryToggle);
@@ -627,6 +677,7 @@ async function selectBook(book: LibraryBook, loadedDocument?: LinkedLibraryDocum
     requireDirtyDecision("selecting another note");
     return;
   }
+  closeLibrarian();
   selectedId = book.id;
   backlinks.bind(null);
   const request = ++documentRequest;
@@ -810,6 +861,7 @@ function toggleDrawer(panel: HTMLElement, trigger: HTMLButtonElement): void {
   const willOpen = panel.hidden;
   closeDrawer(inventoryPanel, inventoryToggle);
   closeSearch();
+  closeLibrarian();
   closeDrawer(settingsPanel, settingsToggle);
   panel.hidden = !willOpen;
   trigger.setAttribute("aria-expanded", String(willOpen));
@@ -821,7 +873,10 @@ function closeDrawer(panel: HTMLElement, trigger: HTMLButtonElement): void {
 }
 
 function closeTopLayer(): void {
-  if (!noteOverlay.hidden) {
+  if (!librarianDrawer.hidden) {
+    closeLibrarian();
+    librarianToggle.focus();
+  } else if (!noteOverlay.hidden) {
     closeNote();
   } else if (!volumePanel.hidden) {
     void closeVolume();
@@ -845,6 +900,7 @@ function toggleSearch(): void {
   const willOpen = searchPanel.hidden;
   closeDrawer(inventoryPanel, inventoryToggle);
   closeSearch();
+  closeLibrarian();
   closeDrawer(settingsPanel, settingsToggle);
   searchPanel.hidden = !willOpen;
   searchToggle.setAttribute("aria-expanded", String(willOpen));
@@ -854,6 +910,12 @@ function toggleSearch(): void {
 function closeSearch(): void {
   searchPanel.hidden = true;
   searchToggle.setAttribute("aria-expanded", "false");
+}
+
+function closeLibrarian(): void {
+  if (!librarianDrawer.hidden) librarian.suspend();
+  librarianDrawer.hidden = true;
+  librarianToggle.setAttribute("aria-expanded", "false");
 }
 
 function clearSearch(): void {
@@ -1023,6 +1085,7 @@ function isEditable(book: LibraryBook): boolean {
 function updateEditActions(): void {
   if (!selectedId) backlinks.bind(null);
   backlinks.setDirty(viewer.dirty);
+  librarian.setDirty(viewer.dirty);
   saveButton.disabled = !viewer.editable || !viewer.dirty;
   discardButton.disabled = !viewer.dirty;
   editState.textContent = viewer.dirty ? "Unsaved changes" : "";

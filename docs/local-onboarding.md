@@ -464,6 +464,12 @@ root or repository. This is development review tooling, separate from the instal
 
 ## Direct local review and application
 
+After approved publication, open the same configured root/project in the desktop and choose
+**Librarian sources** from the toolbar or inspector. The [desktop source panel](local-librarian.md)
+finds saved passages, opens freshly checked full notes and optionally traces recorded claims to
+code. It preserves draft/unreviewed status. Review/correction and publication still use the
+explicit handoff below; browsing sources does not approve or publish a plan.
+
 After generation, review all metadata, claims, exact source excerpts, uncited sources and both
 projection outputs. This model-free command displays them again without running inference:
 

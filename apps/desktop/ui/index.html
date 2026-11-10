@@ -34,6 +34,7 @@
           <span class="dashboard-frame-corner chrome-frame-corner dashboard-frame-corner-se" aria-hidden="true"></span>
           <button id="dashboard-toggle" class="icon-button" type="button" aria-label="Toggle dashboard" aria-expanded="false" aria-pressed="false">◇</button>
           <button id="search-toggle" class="icon-button" type="button" aria-label="Search this project" aria-expanded="false">⌕</button>
+          <button id="librarian-toggle" class="icon-button" type="button" aria-label="Librarian sources" aria-expanded="false">§</button>
           <button id="inventory-toggle" class="icon-button" type="button" aria-label="Toggle exact inventory">▤</button>
           <button id="settings-toggle" class="icon-button" type="button" aria-label="Open library settings">⚙</button>
         </div>
@@ -168,6 +169,13 @@
           <div id="search-results" class="search-results"></div>
         </aside>
 
+        <aside id="librarian-panel" class="drawer librarian-drawer arcane-frame" role="dialog" aria-modal="true" aria-labelledby="librarian-title" hidden>
+          <header><div><p class="eyebrow">PROJECT MEMORY</p><h2 id="librarian-title">Librarian sources</h2></div>
+            <button id="librarian-close" class="icon-button" type="button" aria-label="Close librarian">×</button>
+          </header>
+          <div id="librarian-content"></div>
+        </aside>
+
         <aside id="settings-panel" class="drawer settings-drawer arcane-frame" aria-labelledby="settings-title" hidden>
           <header>
             <div>
@@ -209,6 +217,7 @@
                 <span id="edit-state" class="edit-state" aria-live="polite"></span>
                 <button id="discard-note" type="button" disabled>Discard</button>
                 <button id="save-note" type="button" disabled>Save</button>
+                <button id="note-librarian" type="button">Librarian sources</button>
                 <button id="note-close" type="button">Close</button>
               </div>
             </header>

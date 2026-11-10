@@ -1128,6 +1128,18 @@ kbd {
   left: 2%;
 }
 
+.librarian-drawer { right: 2%; width: 39%; overflow: auto; z-index: 70; }
+.librarian-form, .librarian-form > label { display: grid; gap: 0.6em; }
+.librarian-form { margin-top: 1em; }
+.librarian-form > .librarian-provenance { display: flex; align-items: center; }
+.librarian-provenance input { width: auto; }
+.librarian-form button, .librarian-source > button { padding: 0.55em; }
+#librarian-content { font-size: 0.8em; }
+.librarian-source { border-top: 1px solid var(--dim); padding: 1em 0; }
+.librarian-source > button { width: 100%; text-align: left; overflow-wrap: anywhere; }
+.librarian-source pre { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.librarian-source p { overflow-wrap: anywhere; }
+
 .search-drawer {
   left: 2%;
   display: grid;

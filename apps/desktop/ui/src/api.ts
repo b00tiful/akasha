@@ -1,4 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { DesktopLibrarianReview, LibrarianPacket } from "./librarian-types";
+
+/** Read-only, selected-project saved sources; repository inspection is explicit. */
+export function inspectLibrarian(root: string, project: string, question: string, provenance: boolean): Promise<DesktopLibrarianReview> {
+  return invoke("inspect_librarian", { root: optional(root), project, question, provenance });
+}
+
+export function followLibrarianSource(root: string, project: string, packet: LibrarianPacket, citation: number): Promise<LinkedLibraryDocument> {
+  return invoke("follow_librarian_source", { root: optional(root), project, packet, citation });
+}
 
 import type {
   DesktopLibrary,
