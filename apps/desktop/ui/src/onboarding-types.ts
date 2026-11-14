@@ -17,7 +17,7 @@ export interface OnboardingReview {
     };
     review: {
       requires_review: boolean;
-      notes: Array<{ path: string; fields: Record<string, unknown> }>;
+      notes: Array<{ path: string; wikilink: string; fields: Record<string, unknown> }>;
       uncited_sources: string[]; sampled_sources: unknown[]; uncited_focus_excerpts?: unknown[];
     };
   };

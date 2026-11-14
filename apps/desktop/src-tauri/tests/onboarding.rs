@@ -1120,3 +1120,368 @@ fn native_librarian_repairs_recorded_misses_with_reviewed_search_words() {
     )
     .unwrap();
 }
+
+/// Representative reviewed semantics, distinct from autonomous model completeness.
+async fn parcel_relationship_round_trip(live: bool) {
+    use akasha_desktop::explore_librarian_sources;
+    let fixture = Fixture::new(5);
+    let repo = fixture.base.join("repository");
+    fs::remove_file(repo.join("limits.rs")).unwrap();
+    copy(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../tests/fixtures/local-onboarding/parcel-pipeline"),
+        &repo,
+    );
+    // The fixture lockfile is build tooling, not part of the selected source packet.
+    let paths = [
+        "Cargo.toml",
+        "README.md",
+        "src/lib.rs",
+        "src/config.rs",
+        "src/queue.rs",
+        "src/delivery.rs",
+        "src/report.rs",
+        "tests/pipeline.rs",
+    ];
+    let prepared = prepare_onboarding_sources(
+        Some(fixture.root.clone()),
+        "example".into(),
+        selection("files", &paths, &[], false),
+    )
+    .unwrap();
+    let memory_before = snapshot(&fixture.root);
+    let code_before = snapshot(&repo);
+    let evidence = if live {
+        let path =
+            std::env::temp_dir().join(format!("akasha-parcel-acceptance-{}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        fs::write(
+            path.join("prepared.json"),
+            serde_json::to_vec_pretty(&prepared).unwrap(),
+        )
+        .unwrap();
+        Some(path)
+    } else {
+        None
+    };
+    if let Some(path) = &evidence {
+        let generated = akasha_desktop::onboarding_generation::generate_onboarding(
+            Some(fixture.root.clone()),
+            "example".into(),
+            prepared.packet_json.clone(),
+            akasha_desktop::inference::Profile::Vulkan,
+            akasha_desktop::inference::Cancellation::new(),
+        )
+        .await
+        .unwrap();
+        // Preserve the untouched model result before any correction or acceptance assertion.
+        fs::write(
+            path.join("generated.json"),
+            serde_json::to_vec_pretty(&generated).unwrap(),
+        )
+        .unwrap();
+    }
+    let packet: Value = serde_json::from_str(&prepared.packet_json).unwrap();
+    let claim = |text: &str, files: &[&str]| {
+        let sources = files
+            .iter()
+            .flat_map(|file| {
+                let source = packet["sources"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .position(|source| source["path"] == *file)
+                    .unwrap();
+                (1..=packet["sources"][source]["excerpts"]
+                    .as_array()
+                    .unwrap()
+                    .len())
+                    .map(move |excerpt| json!({"source":source+1,"excerpt":excerpt}))
+            })
+            .collect::<Vec<_>>();
+        json!({"kind":"fact","claim":text,"sources":sources})
+    };
+    let mut notes = Vec::new();
+    for slot in &prepared.identities.slots {
+        let claims = match slot.role.as_str() {
+            "context" => vec![
+                claim(
+                    "Parcel is a synthetic synchronous dispatch library combining a bounded unique-ID queue, stop-on-failure delivery and reporting; its README records no persistence or retry timer.",
+                    &["README.md"],
+                ),
+                claim(
+                    "The documented verification workflow is cargo test --offline; no deployment or benchmark has been performed according to the README.",
+                    &["README.md"],
+                ),
+                claim(
+                    "Cargo declares parcel-pipeline 0.1.0, edition 2024 and an independent workspace, with no declared dependencies.",
+                    &["Cargo.toml"],
+                ),
+            ],
+            "implementation" => vec![
+                claim(
+                    "Configuration defaults to capacity 2 and parses usize values in 1..=16; invalid syntax and out-of-range values refuse. Queue::new rejects zero but has no upper bound of 16.",
+                    &["src/config.rs", "src/queue.rs"],
+                ),
+                claim(
+                    "Queue::submit checks duplicate pending IDs before fullness: duplicates return Ok(false) even at capacity; a new ID at capacity returns Err(full) without insertion. Accepted IDs append at the back; front and acknowledge inspect/remove the head.",
+                    &["src/queue.rs"],
+                ),
+                claim(
+                    "delivery::flush sends from the queue head, acknowledges each success, and stops on the first false result without acknowledging that item. The failed head remains for a later explicit flush; sent counts this call and remaining is the final queue length.",
+                    &["src/delivery.rs"],
+                ),
+                claim(
+                    "The library exports config, delivery, queue and report modules. Report::render formats sent, failed and remaining as sent=N failed=BOOL remaining=N; delivery::flush returns that Report.",
+                    &["src/lib.rs", "src/report.rs", "src/delivery.rs"],
+                ),
+            ],
+            "verification" => vec![
+                claim(
+                    "configuration_boundaries asserts default 2, accepts 1/16, rejects 0/17/bad/leading-space 2, rejects Queue::new(0) and accepts Queue::new(17).",
+                    &["tests/pipeline.rs"],
+                ),
+                claim(
+                    "duplicate_precedes_full_check asserts that a capacity-one queue accepts a, returns Ok(false) for duplicate a, refuses new b as full and retains length one.",
+                    &["tests/pipeline.rs"],
+                ),
+                claim(
+                    "failure_preserves_head_and_resume_order observes sends a then b, sent=1 failed=true remaining=1, retained head b and duplicate b refusal; a later successful flush reports sent=1 failed=false remaining=0 and empties the queue.",
+                    &["tests/pipeline.rs"],
+                ),
+                claim(
+                    "empty_queue_does_not_send panics if its send callback runs and asserts sent=0 failed=false remaining=0. These tests check concrete inputs, not all possible send callbacks.",
+                    &["tests/pipeline.rs"],
+                ),
+            ],
+            _ => unreachable!(),
+        };
+        notes.push(json!({"slot":slot.slot,"evidence":claims}));
+    }
+    // Deliberately reorder the input: displayed/core review targets are canonical slot order.
+    notes.reverse();
+    let unlinked = json!({"schema_version":5,"notes":notes});
+    let baseline = review_onboarding_plan(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &prepared.packet_json,
+        &unlinked.to_string(),
+    )
+    .unwrap();
+    let mut corrected = unlinked.clone();
+    for (from, to) in [
+        ("context", "implementation"),
+        ("implementation", "verification"),
+    ] {
+        let from_slot = prepared
+            .identities
+            .slots
+            .iter()
+            .find(|slot| slot.role == from)
+            .unwrap();
+        let target_index = prepared
+            .identities
+            .slots
+            .iter()
+            .position(|slot| slot.role == to)
+            .unwrap();
+        let reference = &baseline.draft.review.notes[target_index].wikilink;
+        assert_eq!(
+            reference,
+            &format!(
+                "[[Projects/example/{}]]",
+                prepared.identities.slots[target_index].path.display()
+            )
+        );
+        let note = corrected["notes"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|note| note["slot"] == from_slot.slot)
+            .unwrap();
+        let text = note["evidence"][0]["claim"].as_str().unwrap().to_owned();
+        note["evidence"][0]["claim"] = format!("{text} Related: {reference}.").into();
+    }
+    let review = review_onboarding_plan(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &prepared.packet_json,
+        &corrected.to_string(),
+    )
+    .unwrap();
+    // The complete review repeats checked code per claim and exceeds the input budget.
+    let review_bytes = serde_json::to_vec(&review.draft.review).unwrap().len();
+    assert!(review_bytes > akasha_core::onboarding_local::MAX_LOCAL_ONBOARDING_BYTES);
+    assert!(review_bytes <= akasha_core::onboarding_local::MAX_LOCAL_ONBOARDING_REVIEW_BYTES);
+    assert!(review.draft.review.uncited_sources.is_empty());
+    assert!(review.draft.review.notes.iter().all(|note| note.fields["status"] == "draft" && note.fields["reviewed"] == "unreviewed"));
+    assert!(
+        publish_onboarding_plan(
+            Some(fixture.root.clone()),
+            "example".into(),
+            &prepared.packet_json,
+            &corrected.to_string(),
+            &baseline.draft.preview.preview_id
+        )
+        .is_err()
+    );
+    assert_eq!(snapshot(&fixture.root), memory_before);
+    let published = publish_onboarding_plan(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &prepared.packet_json,
+        &corrected.to_string(),
+        &review.draft.preview.preview_id,
+    )
+    .unwrap();
+    assert_eq!(published.created_notes.len(), 3);
+    let memory_after = snapshot(&fixture.root);
+    // Fresh preparation is mandatory after projection changes. The exact reviewed rerun is no-op.
+    let fresh = prepare_onboarding_sources(
+        Some(fixture.root.clone()),
+        "example".into(),
+        selection("files", &paths, &[], false),
+    )
+    .unwrap();
+    let rerun = review_onboarding_plan(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &fresh.packet_json,
+        &corrected.to_string(),
+    )
+    .unwrap();
+    let no_op = publish_onboarding_plan(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &fresh.packet_json,
+        &corrected.to_string(),
+        &rerun.draft.preview.preview_id,
+    )
+    .unwrap();
+    assert!(no_op.created_notes.is_empty());
+    assert_eq!(no_op.unchanged_notes.len(), 3);
+    assert_eq!(snapshot(&fixture.root), memory_after);
+    let initial =
+        inspect_librarian_sources(Some(fixture.root.clone()), "example".into(), "Parcel", true)
+            .unwrap();
+    assert_eq!(initial.packet.evidence.len(), 1);
+    let related = explore_librarian_sources(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &initial.packet,
+        1,
+        true,
+    )
+    .unwrap();
+    let implementation_id = baseline.draft.review.notes[1]
+        .wikilink
+        .trim_start_matches("[[")
+        .trim_end_matches("]]");
+    let behavior = related
+        .packet
+        .evidence
+        .iter()
+        .find(|source| source.id == implementation_id)
+        .unwrap();
+    let boundaries = explore_librarian_sources(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &related.packet,
+        behavior.citation,
+        true,
+    )
+    .unwrap();
+    let verification_id = baseline.draft.review.notes[2]
+        .wikilink
+        .trim_start_matches("[[")
+        .trim_end_matches("]]");
+    let assertion = boundaries
+        .packet
+        .evidence
+        .iter()
+        .find(|source| source.id == verification_id)
+        .unwrap();
+    let opened = open_librarian_source(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &boundaries.packet,
+        assertion.citation,
+    )
+    .unwrap();
+    assert!(opened.document.source.contains("Queue::new(17)"));
+    assert!(
+        opened
+            .document
+            .source
+            .contains("sent=1 failed=true remaining=1")
+    );
+    let mut queries = Vec::new();
+    for (question, expected) in [
+        ("duplicate", "before fullness"),
+        ("Does flush keep the failed head?", "without acknowledging"),
+        ("Configuration", "no upper bound of 16"),
+        ("render", "sent=N failed=BOOL remaining=N"),
+    ] {
+        let found =
+            inspect_librarian_sources(Some(fixture.root.clone()), "example".into(), question, true)
+                .unwrap();
+        assert!(
+            found
+                .review
+                .sources
+                .matches
+                .iter()
+                .any(|passage| passage.quote.contains(expected)),
+            "missing {question}: {expected}"
+        );
+        queries.push(found);
+    }
+    assert!(
+        queries
+            .iter()
+            .flat_map(|query| &query.review.provenance.as_ref().unwrap().notes)
+            .flat_map(|note| &note.claims)
+            .flat_map(|claim| &claim.sources)
+            .all(|source| source.freshness == "unchanged")
+    );
+    assert_eq!(snapshot(&fixture.root), memory_after);
+    assert_eq!(snapshot(&repo), code_before);
+    if let Some(evidence) = evidence {
+        for (name, value) in [
+            ("unlinked-plan", unlinked),
+            ("unlinked-review", serde_json::to_value(baseline).unwrap()),
+            ("corrected-plan", corrected),
+            ("review", serde_json::to_value(review).unwrap()),
+            ("published", serde_json::to_value(published).unwrap()),
+            ("rerun", serde_json::to_value(no_op).unwrap()),
+            ("initial", serde_json::to_value(initial).unwrap()),
+            ("related", serde_json::to_value(related).unwrap()),
+            ("boundaries", serde_json::to_value(boundaries).unwrap()),
+            ("opened", serde_json::to_value(opened).unwrap()),
+            ("queries", serde_json::to_value(queries).unwrap()),
+        ] {
+            fs::write(
+                evidence.join(format!("{name}.json")),
+                serde_json::to_vec_pretty(&value).unwrap(),
+            )
+            .unwrap();
+        }
+        copy(&repo, &evidence.join("repository"));
+        copy(&fixture.root, &evidence.join("memory"));
+        println!(
+            "Parcel native generation, reviewed relationships, no-op publication and cited retrieval PASS: {}",
+            evidence.display()
+        );
+    }
+}
+
+#[tokio::test]
+async fn parcel_reviewed_relationships_retrieve_multi_module_behavior_and_tests() {
+    parcel_relationship_round_trip(false).await;
+}
+
+#[tokio::test]
+#[ignore = "requires installed selected Qwen9B, loopback and Vulkan device"]
+async fn parcel_native_onboarding_relationship_acceptance() {
+    parcel_relationship_round_trip(true).await;
+}

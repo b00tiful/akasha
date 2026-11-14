@@ -11,7 +11,7 @@ function response(): OnboardingReview {
   return { draft: {
     proposal: { notes: [{ note_type: "entity", path: "limits.md", source: "---\nstatus: draft\nreviewed: unreviewed\n---\nThe limit is 37.\n" }], index: "# Index\n[[limits]]", roadmap: "# Roadmap\n[[limits]]" },
     preview: { ...binding, preview_id: id, notes: [{ path: "entities/limits.md", action: "create", evidence_claims: 1 }], index_changed: true, roadmap_changed: true, state_changed: true },
-    review: { requires_review: true, notes: [{ path: "limits.md", fields: { status: "draft", reviewed: "unreviewed" } }], uncited_sources: ["tests/missing.rs"], sampled_sources: [{ total_bytes: 35000, omitted_lines: [{ line_start: 17, line_end: 100 }] }] },
+    review: { requires_review: true, notes: [{ path: "limits.md", wikilink: "[[Projects/alpha/entities/limits.md]]", fields: { status: "draft", reviewed: "unreviewed" } }], uncited_sources: ["tests/missing.rs"], sampled_sources: [{ total_bytes: 35000, omitted_lines: [{ line_start: 17, line_end: 100 }] }] },
   }, identities: { slots: [{ slot: 1, role: "implementation", sources: [1] }] }, excerpts: [
     { source: 1, excerpt: 1, path: "src/limits.rs", line_start: 1, line_end: 2, text: "🌘 <script>unsafe()</script>\r\nconst LIMIT = 37;\r\n" },
     { source: 1, excerpt: 2, path: "src/limits.rs", line_start: 101, line_end: 101, text: "// omitted behavior\n" },
@@ -104,7 +104,7 @@ it("refuses input overflow and foreign results and separates commit from refresh
 it("binds metadata and paths to slot identities when the imported notes are reordered", async () => {
   const result = response();
   result.identities!.slots.push({ slot: 2, role: "verification", sources: [2] });
-  result.draft.review.notes.push({ path: "verification.md", fields: { entity: "verification" } });
+  result.draft.review.notes.push({ path: "verification.md", wikilink: "[[Projects/alpha/entities/verification.md]]", fields: { entity: "verification" } });
   review.mockResolvedValueOnce(result);
   const { host, files, load } = setup();
   files("{}", JSON.stringify({ schema_version: 5, notes: [
@@ -117,6 +117,21 @@ it("binds metadata and paths to slot identities when the imported notes are reor
   expect(notes[0]!.textContent).not.toContain("src/limits.rs");
   expect(notes[1]!.querySelector("h3")!.textContent).toBe("limits.md");
   expect(notes[1]!.textContent).not.toContain("tests/outside.rs");
+  // Targets come from the core review order, even when the editable plan is reordered.
+  const wording = notes[0]!.querySelector<HTMLTextAreaElement>('textarea[aria-label="Note 1 claim 1"]')!;
+  const insert = [...notes[0]!.querySelectorAll("button")].find(button => button.textContent === "Insert related note link")!;
+  insert.click();
+  expect(wording.value).toBe("A test assertion. Related: [[Projects/alpha/entities/limits.md]].");
+  expect(host.querySelector<HTMLInputElement>('[name="approval"]')!.disabled).toBe(true);
+  expect(insert.disabled).toBe(true);
+  const undo = [...notes[0]!.querySelectorAll("button")].find(button => button.textContent === "Undo link insertion")!;
+  undo.click(); expect(wording.value).toBe("A test assertion."); expect(insert.disabled).toBe(false);
+  insert.click(); wording.value = "Manual correction."; wording.dispatchEvent(new Event("input"));
+  expect(undo.disabled).toBe(true);
+  load(); await vi.waitFor(() => expect(review).toHaveBeenCalledTimes(2));
+  const submitted = JSON.parse(review.mock.calls[1]![3]);
+  expect(submitted.notes[0].evidence[0].claim).toBe("Manual correction.");
+  expect(submitted.notes[0].evidence[0].sources).toEqual([{ source: 2, excerpt: 1 }]);
 });
 
 function prepared() {

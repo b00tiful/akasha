@@ -16,6 +16,8 @@ use crate::state::content_fingerprint;
 use crate::validation::parse_leading_frontmatter_bytes;
 
 pub const MAX_LOCAL_ONBOARDING_BYTES: usize = 16_000;
+/// Review repeats checked excerpts per claim; input and prospective writes keep their 16 KB cap.
+pub const MAX_LOCAL_ONBOARDING_REVIEW_BYTES: usize = 65_536;
 pub const MAX_LOCAL_ONBOARDING_FILES: usize = 8;
 pub const MAX_LOCAL_ONBOARDING_FILE_BYTES: usize = 8_192;
 pub const MAX_LOCAL_ONBOARDING_SAMPLED_FILE_BYTES: usize = 262_144;
@@ -242,6 +244,8 @@ pub struct LocalOnboardingSampleReview {
 pub struct LocalNoteReview {
     pub note_type: String,
     pub path: PathBuf,
+    /// Exact root-relative reference to this checked proposed note, for explicit review edits.
+    pub wikilink: String,
     pub fields: serde_json::Map<String, serde_json::Value>,
     pub claims: Vec<LocalClaimReview>,
 }
@@ -564,6 +568,8 @@ pub fn compile_local_onboarding(
     let roadmap_link = relative(&resolved.project_dir.join(&config.project.roadmap))?;
     let mut index = packet.index.clone();
     let mut roadmap = packet.roadmap.clone();
+    let mut index_targets = projection_link_targets(&index)?;
+    let mut roadmap_targets = projection_link_targets(&roadmap)?;
     let mut notes = Vec::new();
     for note in plan.notes {
         if note.name.is_empty()
@@ -657,8 +663,12 @@ pub fn compile_local_onboarding(
             source: format!("---\n{frontmatter}\n---\n{body}"),
         });
         let link = format!("\n[[{target}]]\n");
-        index.push_str(&link);
-        roadmap.push_str(&link);
+        if index_targets.insert(PathBuf::from(&target)) {
+            index.push_str(&link);
+        }
+        if roadmap_targets.insert(PathBuf::from(&target)) {
+            roadmap.push_str(&link);
+        }
     }
     let proposal = LocalOnboardingProposal {
         notes,
@@ -667,6 +677,15 @@ pub fn compile_local_onboarding(
     };
     let json = serde_json::to_string(&proposal).map_err(|error| invalid(error.to_string()))?;
     preview_local_onboarding(request, packet, &json)
+}
+
+fn projection_link_targets(source: &str) -> Result<BTreeSet<PathBuf>, OnboardingBatchError> {
+    crate::wikilink::parse_wikilinks(source)
+        .map_err(|error| invalid(error.to_string()))?
+        .into_iter()
+        .filter_map(|link| link.target)
+        .map(|target| crate::project_validation::wikilink_target_path(target).map_err(invalid))
+        .collect()
 }
 
 fn quote_lines(
@@ -742,10 +761,11 @@ fn review_local_proposal(
     proposal: &LocalOnboardingProposal,
     index: &str,
     roadmap: &str,
+    note_links: &[String],
 ) -> Result<LocalOnboardingReview, OnboardingBatchError> {
     let mut notes = Vec::new();
     let mut cited = BTreeSet::new();
-    for note in &proposal.notes {
+    for (note, wikilink) in proposal.notes.iter().zip(note_links) {
         let parsed = parse_leading_frontmatter_bytes(note.source.as_bytes())
             .map_err(|e| invalid(e.to_string()))?;
         let claims = parsed.metadata["evidence"]
@@ -820,6 +840,7 @@ fn review_local_proposal(
         notes.push(LocalNoteReview {
             note_type: note.note_type.clone(),
             path: note.path.clone(),
+            wikilink: wikilink.clone(),
             fields,
             claims: reviewed_claims,
         });
@@ -886,7 +907,15 @@ fn review_local_proposal(
             })
             .collect(),
     };
-    bounded_json(&review)?;
+    if serde_json::to_vec(&review)
+        .map_err(|error| invalid(error.to_string()))?
+        .len()
+        > MAX_LOCAL_ONBOARDING_REVIEW_BYTES
+    {
+        return Err(invalid(
+            "local onboarding review exceeds 65536 serialized bytes; select fewer/smaller sources",
+        ));
+    }
     Ok(review)
 }
 
@@ -1266,13 +1295,21 @@ pub fn preview_local_onboarding(
     // projection links and coverage, so generated navigation cannot point at missing notes.
     let config = load_root_config(&preview.root)?;
     let mut targets = BTreeSet::new();
+    let mut note_links = Vec::new();
     for note in &proposal.notes {
         let note_type = config
             .project
             .note_types
             .get(&note.note_type)
             .ok_or_else(|| invalid("configured note type changed during local preview"))?;
-        targets.insert(preview.project_dir.join(&note_type.folder).join(&note.path));
+        let target = preview.project_dir.join(&note_type.folder).join(&note.path);
+        let relative = target
+            .strip_prefix(&preview.root)
+            .ok()
+            .and_then(Path::to_str)
+            .ok_or_else(|| invalid("review navigation is not root-relative UTF-8"))?;
+        note_links.push(format!("[[{relative}]]"));
+        targets.insert(target);
     }
     for (path, body) in [
         (&config.project.index, &proposal.index),
@@ -1312,6 +1349,7 @@ pub fn preview_local_onboarding(
         &proposal,
         &relative(&preview.project_dir.join(&config.project.index))?,
         &relative(&preview.project_dir.join(&config.project.roadmap))?,
+        &note_links,
     )?;
     // Shared validation may take time; observe drift once more before returning the draft.
     if fresh != rebuild_local_onboarding(request, packet)? {

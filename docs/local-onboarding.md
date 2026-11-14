@@ -22,6 +22,10 @@ The desktop provides **Review local onboarding** (toolbar **＋**) for source se
    claims. Supported excerpt-plan versions are 3/4/5. Generation grants no publication approval.
 4. Correct claim wording, kind, rationale and source choices. Browse captured excerpts to add a
    missing claim, or remove one within the existing bounds. Metadata and note identities stay fixed.
+   **Last checked source coverage** lists selected files without citations; preview again to refresh
+   it after edits. **Link another draft note** inserts a core-checked reference into the claim and
+   supports undo. Choose the related note after reading its sources; a link does not certify a
+   dependency or factual support. Linking clears approval like every other correction.
 5. Preview again. Inspect exact proposed note/index/roadmap Markdown, affected actions and current
    citation/sampling/focus gaps. Current desktop discovery displays its bounded inventory. Imported
    captures keep separate discovery omissions in `discovery.json`; imports do not rescan.
@@ -29,6 +33,9 @@ The desktop provides **Review local onboarding** (toolbar **＋**) for source se
    **Publish reviewed notes**. Rust recompiles and rechecks the exact approval before publication.
    Wait for the result: the modal prevents close/project changes during publication. Failed checks
    never retry or refresh approval automatically; an interrupted writer uses normal recovery.
+   After publication, an unchanged rerun requires fresh source preparation/preview and preserves
+   existing notes and projection bytes. Source review has a separate bounded output allowance;
+   packet, plan and proposal input limits remain unchanged.
 7. The library reloads after success. Open **Librarian sources** to inspect saved passages,
    optional recorded code and freshly checked full notes. Its optional **Find with local model**
    proposes search words from the question alone; **Refine search words** repairs vocabulary
@@ -63,6 +70,11 @@ desktop review. Source changes during generation still refuse compilation; appro
 [Interactive native-generation replay](../akasha/Research/evidence/2026-11-10-native-onboarding/demo.html)
 and [live native source-to-librarian acceptance](../akasha/Research/native_desktop_onboarding.md) distinguish
 actual native/model results from the offline replay's simulated publication.
+
+[Multi-module relationship-review replay](../akasha/Research/evidence/2026-11-14-onboarding-relationships/demo.html)
+shows incomplete raw generation, separate reviewed claims, explicit link insertion/undo and
+publication through checked librarian navigation. [Acceptance evidence](../akasha/Research/onboarding_relationship_review.md)
+keeps model completeness separate from the reviewed result.
 
 
 The development adapter can draft initial project knowledge with an explicit local GGUF model

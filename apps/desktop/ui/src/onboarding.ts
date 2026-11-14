@@ -149,6 +149,10 @@ export class OnboardingPanel {
     this.editor.replaceChildren();
     const plan = this.plan!, review = this.review!;
     const change = () => this.invalidate("Corrections changed. Preview again to refresh evidence checks and approval.");
+    const gaps = review.draft.review.uncited_sources;
+    this.editor.append(disclosure(`Last checked source coverage: ${gaps.length} uncited selected files`,
+      (gaps.length ? gaps.join("\n") : "Every selected file has a claim citation.") +
+      "\nCitation counts do not certify meaning or completeness. Preview again after corrections to refresh this report."));
     for (const [index, note] of plan.notes.entries()) {
       const section = element("section", undefined, "onboarding-note");
       const slot = review.identities?.slots.find(slot => slot.slot === note.slot);
@@ -182,6 +186,33 @@ export class OnboardingPanel {
         const remove = button("Remove claim", () => { if (note.evidence.length <= 1) return; note.evidence.splice(claimIndex, 1); change(); this.renderEditor(); });
         remove.dataset.limit = String(note.evidence.length <= 1);
         card.append(element("h4", `Claim ${claimIndex + 1}`), wording, kind, element("p", "Rationale (required for inference / unknown)"), rationale, remove);
+        const relatedNotes = review.draft.review.notes.filter((_, targetIndex) => targetIndex !== reviewIndex);
+        if (relatedNotes.length) {
+          const related = element("details"); related.append(element("summary", "Link another draft note"),
+            element("p", "Choose a related note after reviewing its sources. The reference is added to this claim; it does not certify a dependency or factual support."));
+          const target = document.createElement("select"); target.setAttribute("aria-label", "Related draft note");
+          for (const [targetIndex, candidate] of relatedNotes.entries()) {
+            const option = document.createElement("option"); option.value = String(targetIndex); option.textContent = candidate.path; target.append(option);
+          }
+          let previous: string | null = null;
+          const refresh = () => {
+            insert.dataset.limit = String(claim.claim.includes(relatedNotes[Number(target.value)]!.wikilink));
+            undo.dataset.limit = String(previous === null); this.controls();
+          };
+          const insert = button("Insert related note link", () => {
+            const reference = relatedNotes[Number(target.value)]!.wikilink;
+            if (claim.claim.includes(reference)) return;
+            previous = claim.claim; claim.claim = `${claim.claim.trimEnd()} Related: ${reference}.`;
+            wording.value = claim.claim; change(); refresh();
+          });
+          const undo = button("Undo link insertion", () => {
+            if (previous === null) return;
+            claim.claim = previous; previous = null; wording.value = claim.claim; change(); refresh();
+          });
+          target.addEventListener("change", refresh);
+          wording.addEventListener("input", () => { previous = null; refresh(); });
+          related.append(target, insert, undo); card.append(related); refresh();
+        }
         for (const excerpt of excerpts) {
           const label = document.createElement("label");
           const select = document.createElement("input"); select.type = "checkbox";

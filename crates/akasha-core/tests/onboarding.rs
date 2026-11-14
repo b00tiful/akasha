@@ -13,6 +13,39 @@ use sha2::{Digest, Sha256};
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
+#[test]
+fn repeated_claim_excerpts_keep_a_separate_bounded_review_output() {
+    use akasha_core::onboarding_local::{compile_local_onboarding, prepare_local_onboarding};
+    let fixture = Fixture::new("review-output-cap");
+    // Four distinct near-2 KB windows fit the ordinary source/packet limit. Repeating their
+    // references is cheap in a proposal but must not produce an unbounded review response.
+    let text = (0..64)
+        .map(|line| format!("// {line:03} {}\n", "x".repeat(112)))
+        .collect::<String>();
+    fs::write(fixture.resolution.cwd.join("input.rs"), text).unwrap();
+    let packet = prepare_local_onboarding(&fixture.resolution, &["input.rs".into()]).unwrap();
+    let references = packet.sources[0]
+        .excerpts
+        .iter()
+        .enumerate()
+        .map(|(index, _)| serde_json::json!({"source":1,"excerpt":index+1}))
+        .collect::<Vec<_>>();
+    assert_eq!(references.len(), 4);
+    let notes = (0..3).map(|note| serde_json::json!({"note_type":"entity","name":format!("review-{note}"),"fields":{"entity":format!("review-{note}"),"kind":"source-group","status":"draft","reviewed":"unreviewed"},"evidence":(0..4).map(|claim| serde_json::json!({"kind":"fact","claim":format!("Reviewed source {note}/{claim}"),"sources":references})).collect::<Vec<_>>()})).collect::<Vec<_>>();
+    let before = fixture.project_snapshot();
+    let error = compile_local_onboarding(
+        &fixture.resolution,
+        &packet,
+        &serde_json::json!({"schema_version":3,"notes":notes}).to_string(),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("review exceeds 65536"),
+        "{error}"
+    );
+    assert_eq!(fixture.project_snapshot(), before);
+}
+
 fn focused_source_text() -> String {
     (1..=400)
         .map(|line| match line {
@@ -320,6 +353,10 @@ fn content_only_slots_derive_metadata_and_preserve_explicit_reviewed_corrections
     }
     let draft = compile_local_onboarding(&f.resolution, &packet, &content.to_string()).unwrap();
     for (note, slot) in draft.review.notes.iter().zip(&identities.slots) {
+        assert_eq!(
+            note.wikilink,
+            format!("[[Projects/example/{}]]", slot.path.display())
+        );
         assert_eq!(note.fields["entity"], slot.name);
         assert_eq!(note.fields["kind"], "source-group");
         assert_eq!(note.fields["status"], "draft");
@@ -410,7 +447,11 @@ fn content_only_metadata_uses_custom_schema_identities_and_refuses_unknown_requi
         packet.preparation["project"].as_str().unwrap()
     );
     let content = serde_json::json!({"schema_version": 5, "notes": [{"slot": 1, "evidence": [{"kind": "unknown", "claim": "Behavior needs review.", "rationale": "Boundary test only.", "sources": []}]}]});
-    compile_local_onboarding(&f.resolution, &packet, &content.to_string()).unwrap();
+    let draft = compile_local_onboarding(&f.resolution, &packet, &content.to_string()).unwrap();
+    assert_eq!(
+        draft.review.notes[0].wikilink,
+        format!("[[Projects/example/{}]]", slot.path.display())
+    );
     fs::write(
         &path,
         config.replace("\"reviewed\",", "\"reviewed\", \"owner\","),
