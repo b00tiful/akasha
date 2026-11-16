@@ -11,7 +11,11 @@ The desktop provides **Review local onboarding** (toolbar **＋**) for source se
 2. On Linux x86-64, use **Install or verify local model files** to import the selected model and
    extracted pinned runtime from local files, or verify an existing installation.
    [Setup instructions](local-inference-setup.md). Then choose **Inspect model setup**, select
-   GPU automatic memory fitting or CPU, and **Generate draft locally**. The native desktop owns
+   GPU automatic memory fitting or CPU, then choose **Draft detail**. The default compact group
+   summary remains available; **One observation per file** requires a fact, inference or explicit
+   unknown for every selected file, within the same worker/request budgets. It considers each file,
+   but can still omit important behavior or produce incomplete wording. Unknowns remain uncited gaps.
+   Choose **Generate draft locally**. The native desktop owns
    the Qwen9B worker; its checked draft enters the claim editor directly. Nothing is downloaded.
    **Cancel generation**, closing the dialog, or changing project stops the owned request and
    discards late results. A new request waits for worker cleanup. The request has a fixed deadline.
@@ -75,6 +79,14 @@ actual native/model results from the offline replay's simulated publication.
 shows incomplete raw generation, separate reviewed claims, explicit link insertion/undo and
 publication through checked librarian navigation. [Acceptance evidence](../akasha/Research/onboarding_relationship_review.md)
 keeps model completeness separate from the reviewed result.
+
+[Per-file generation replay](../akasha/Research/evidence/2026-11-16-onboarding-per-file/demo.html)
+shows the explicit native mode, untouched raw observations, separate source corrections and
+four checked librarian lookups. The local compiler and both correction editors accept up to
+eight claims per note within unchanged byte limits; older binaries can reject larger plans
+and should be rebuilt. The development generator retains its existing compact grammar.
+[Acceptance](../akasha/Research/onboarding_per_file_observations.md) records the remaining raw
+semantic gap; one observation per file does not establish complete behavior coverage.
 
 
 The development adapter can draft initial project knowledge with an explicit local GGUF model
@@ -493,7 +505,7 @@ cite. **Add claim citing this excerpt** creates a blank fact with that exact han
 write the supported behavior in its claim field. **Add missing claim** starts without a source
 so you can choose evidence or record an explicit unknown with a rationale. The page never
 generates claim wording. You can **Remove claim** and **Undo removal** (the latest removal in
-each note). The existing 1–4 claims per note still applies: at four claims, remove one before
+each note). The existing 1–8 claims per note still applies: at eight claims, remove one before
 adding another; the final claim cannot be removed. Other edits survive additions/removals.
 New claims use the same type/rationale/source editor as original claims, and Rust compilation
 remains authoritative for all content, source, size and schema checks.

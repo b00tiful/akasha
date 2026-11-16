@@ -1,0 +1,112 @@
+{
+  "notes": [
+    {
+      "evidence": [
+        {
+          "claim": "The project is named 'parcel-pipeline', version 0.1.0, using Rust edition 2024, and is configured as a workspace.",
+          "kind": "fact",
+          "sources": [
+            {
+              "excerpt": 1,
+              "source": 1
+            }
+          ]
+        },
+        {
+          "claim": "Parcel is a synthetic synchronous dispatch library that uses bounded unique pending IDs, stop-on-failure dispatch, and a compact report, with no persistence or retry timer.",
+          "kind": "fact",
+          "sources": [
+            {
+              "excerpt": 1,
+              "source": 2
+            }
+          ]
+        }
+      ],
+      "slot": 1
+    },
+    {
+      "evidence": [
+        {
+          "claim": "The `capacity` function accepts an optional string input, defaults to 2 if absent, parses the string as a usize, and returns an error if the value is not within the inclusive range 1 to 16.",
+          "kind": "fact",
+          "sources": [
+            {
+              "excerpt": 1,
+              "source": 3
+            }
+          ]
+        },
+        {
+          "claim": "The flush function sends from the front, acknowledges only successful sends, and stops on a false callback without removing the failed head; Report.remaining is refreshed from the queue length.",
+          "kind": "fact",
+          "sources": [
+            {
+              "source": 4,
+              "excerpt": 1
+            }
+          ]
+        },
+        {
+          "claim": "The library exposes four modules: config, delivery, queue, and report.",
+          "kind": "fact",
+          "sources": [
+            {
+              "excerpt": 1,
+              "source": 5
+            }
+          ]
+        },
+        {
+          "claim": "Queue::new refuses zero capacity and has no upper bound of 16. Queue::submit checks duplicate IDs before fullness: duplicates return Ok(false), new IDs in a full queue return Err(\"full\"), and accepted IDs append at the back.",
+          "kind": "fact",
+          "sources": [
+            {
+              "source": 6,
+              "excerpt": 1
+            },
+            {
+              "source": 6,
+              "excerpt": 2
+            }
+          ]
+        },
+        {
+          "claim": "The `Report` struct tracks the count of sent items, a boolean flag for failure status, and the remaining item count, providing a string representation of these fields.",
+          "kind": "fact",
+          "sources": [
+            {
+              "excerpt": 1,
+              "source": 7
+            }
+          ]
+        }
+      ],
+      "slot": 2
+    },
+    {
+      "evidence": [
+        {
+          "claim": "Concrete tests assert capacity(None) == Ok(2), accept \"1\" and \"16\", reject \"0\", \"17\", \"bad\" and \" 2\", accept Queue::new(17), check duplicate-before-full behavior, preserve failed head \"b\", resume it successfully, and check that an empty queue never calls send.",
+          "kind": "fact",
+          "sources": [
+            {
+              "source": 8,
+              "excerpt": 1
+            },
+            {
+              "source": 8,
+              "excerpt": 2
+            },
+            {
+              "source": 8,
+              "excerpt": 3
+            }
+          ]
+        }
+      ],
+      "slot": 3
+    }
+  ],
+  "schema_version": 5
+}

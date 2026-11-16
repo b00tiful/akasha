@@ -15,17 +15,21 @@ export class OnboardingGenerator {
   private availability: InferenceAvailability | null = null;
   private readonly status: HTMLElement;
   private readonly profile: HTMLSelectElement;
+  private readonly mode: HTMLSelectElement;
   private readonly localSetup: LocalInferenceSetup;
   constructor(private readonly host: HTMLElement, private readonly busy: (running: boolean) => void, private readonly generated: (result: GeneratedOnboarding) => void) {
     host.innerHTML = `<h3>2. Generate a local draft</h3>
       <p>Optional local Qwen3.5-9B generation. Inspect model setup, choose a device, then generate from the selected sources. Claims still need your source review.</p>
       <button type="button" data-inference-setup>Inspect model setup</button>
       <label>Device <select name="inference-profile"><option value="vulkan">GPU · automatic memory fitting</option><option value="cpu">CPU · slower</option></select></label>
+      <label>Draft detail <select name="draft-mode"><option value="summary">Compact group summary</option><option value="per_file">One observation per file</option></select></label>
+      <p>Per-file drafting asks for a supported observation or an explicit unknown for every selected file. Source citations still need review; important behavior may remain missing.</p>
       <button type="button" data-generate>Generate draft locally</button>
       <button type="button" data-cancel-generation>Cancel generation</button>
       <p role="status" data-generation-status>Local generation is off until explicitly requested. Existing captured plans can still be imported.</p><div data-local-setup></div>`;
     this.status = host.querySelector("[data-generation-status]")!;
     this.profile = host.querySelector('[name="inference-profile"]')!;
+    this.mode = host.querySelector('[name="draft-mode"]')!;
     this.localSetup = new LocalInferenceSetup(host.querySelector("[data-local-setup]")!, available => { this.availability = available; this.controls(); }, running => { this.checking = running; this.controls(); });
     host.querySelector("[data-inference-setup]")!.addEventListener("click", () => void this.inspect());
     host.querySelector("[data-generate]")!.addEventListener("click", () => void this.generate());
@@ -50,6 +54,7 @@ export class OnboardingGenerator {
     this.host.querySelector<HTMLButtonElement>("[data-generate]")!.disabled = !this.binding || !this.packet || !installed || this.running || this.disabled || this.checking;
     this.host.querySelector<HTMLButtonElement>("[data-cancel-generation]")!.disabled = !this.running;
     this.profile.disabled = this.running || this.disabled || this.checking;
+    this.mode.disabled = this.running || this.disabled || this.checking;
     this.host.setAttribute("aria-busy", String(this.running || this.checking));
     this.localSetup?.setDisabled(this.running || this.checking || this.disabled);
   }
@@ -67,6 +72,7 @@ export class OnboardingGenerator {
   }
   private async generate(): Promise<void> {
     const binding = this.binding, packet = this.packet;
+    const mode = this.mode.value as "summary" | "per_file";
     if (!binding || !packet || this.running || this.disabled || this.checking) return;
     const generation = ++this.generation; this.running = true; this.busy(true); this.controls();
     this.status.textContent = "Verifying Qwen9B and the pinned runtime, then generating source-backed draft claims…";
@@ -75,11 +81,11 @@ export class OnboardingGenerator {
       id = await reserveLocalGeneration();
       if (generation !== this.generation || binding !== this.binding) { await cancelLocalGeneration(id); return; }
       this.requestId = id;
-      const result = await generateOnboarding(id, binding.root, binding.project, packet, this.profile.value as "vulkan" | "cpu");
+      const result = await generateOnboarding(id, binding.root, binding.project, packet, this.profile.value as "vulkan" | "cpu", mode);
       if (generation !== this.generation || binding !== this.binding) return;
       if (result.review.draft.preview.root !== binding.root || result.review.draft.preview.project !== binding.project) throw new Error("Generated draft belongs to another project or root.");
       this.generated(result);
-      this.status.textContent = `Generated ${result.metrics.length} source groups with Qwen9B. Worker stopped. Review every claim and its cited code before previewing and approving publication.`;
+      this.status.textContent = `Generated ${result.metrics.length} source groups with Qwen9B${mode === "per_file" ? ", one observation per file" : ""}. ${result.review.draft.review.uncited_sources.length} selected files remain uncited. Worker stopped. Review every claim and its cited code before previewing and approving publication.`;
     } catch (error) { if (generation === this.generation) this.status.textContent = `Generation unavailable: ${message(error)}`; }
     finally {
       if (id) await cancelLocalGeneration(id).catch(() => {});

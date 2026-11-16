@@ -1,0 +1,100 @@
+{
+  "notes": [
+    {
+      "evidence": [
+        {
+          "claim": "The project is named 'parcel-pipeline', version 0.1.0, using Rust edition 2024, and is configured as a workspace.",
+          "kind": "fact",
+          "sources": [
+            {
+              "excerpt": 1,
+              "source": 1
+            }
+          ]
+        },
+        {
+          "claim": "Parcel is a synthetic synchronous dispatch library that uses bounded unique pending IDs, stop-on-failure dispatch, and a compact report, with no persistence or retry timer.",
+          "kind": "fact",
+          "sources": [
+            {
+              "excerpt": 1,
+              "source": 2
+            }
+          ]
+        }
+      ],
+      "slot": 1
+    },
+    {
+      "evidence": [
+        {
+          "claim": "The `capacity` function accepts an optional string input, defaults to 2 if absent, parses the string as a usize, and returns an error if the value is not within the inclusive range 1 to 16.",
+          "kind": "fact",
+          "sources": [
+            {
+              "excerpt": 1,
+              "source": 3
+            }
+          ]
+        },
+        {
+          "claim": "The `flush` function iterates through the queue front-to-back, invoking a provided callback for each item; it marks the report as failed if the callback returns false and stops processing immediately.",
+          "kind": "fact",
+          "sources": [
+            {
+              "excerpt": 1,
+              "source": 4
+            }
+          ]
+        },
+        {
+          "claim": "The library exposes four modules: config, delivery, queue, and report.",
+          "kind": "fact",
+          "sources": [
+            {
+              "excerpt": 1,
+              "source": 5
+            }
+          ]
+        },
+        {
+          "claim": "The `Queue` struct enforces a non-zero capacity on creation, rejects duplicate submission IDs, and prevents adding items when the pending count reaches the configured capacity.",
+          "kind": "fact",
+          "sources": [
+            {
+              "excerpt": 1,
+              "source": 6
+            }
+          ]
+        },
+        {
+          "claim": "The `Report` struct tracks the count of sent items, a boolean flag for failure status, and the remaining item count, providing a string representation of these fields.",
+          "kind": "fact",
+          "sources": [
+            {
+              "excerpt": 1,
+              "source": 7
+            }
+          ]
+        }
+      ],
+      "slot": 2
+    },
+    {
+      "evidence": [
+        {
+          "claim": "The `capacity` function returns `Ok(2)` when called with `None`, accepts string values ",
+          "kind": "fact",
+          "sources": [
+            {
+              "excerpt": 1,
+              "source": 8
+            }
+          ]
+        }
+      ],
+      "slot": 3
+    }
+  ],
+  "schema_version": 5
+}

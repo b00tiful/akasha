@@ -1487,6 +1487,271 @@ async fn parcel_native_onboarding_relationship_acceptance() {
     parcel_relationship_round_trip(true).await;
 }
 
+/// Capture the unchanged output before semantic inspection or any publication.
+#[tokio::test]
+#[ignore = "requires installed selected Qwen9B, loopback and Vulkan device"]
+async fn per_file_native_onboarding_captures_parcel_observations() {
+    use akasha_desktop::onboarding_generation::{DraftMode, generate_onboarding_with_mode};
+    let fixture = Fixture::new(5);
+    let repo = fixture.base.join("repository");
+    fs::remove_file(repo.join("limits.rs")).unwrap();
+    copy(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../tests/fixtures/local-onboarding/parcel-pipeline"),
+        &repo,
+    );
+    let paths = [
+        "Cargo.toml",
+        "README.md",
+        "src/lib.rs",
+        "src/config.rs",
+        "src/queue.rs",
+        "src/delivery.rs",
+        "src/report.rs",
+        "tests/pipeline.rs",
+    ];
+    let prepared = prepare_onboarding_sources(
+        Some(fixture.root.clone()),
+        "example".into(),
+        selection("files", &paths, &[], false),
+    )
+    .unwrap();
+    let before = snapshot(&fixture.root);
+    let code_before = snapshot(&repo);
+    let evidence =
+        std::env::temp_dir().join(format!("akasha-per-file-acceptance-{}", std::process::id()));
+    fs::create_dir(&evidence).unwrap();
+    fs::write(
+        evidence.join("prepared.json"),
+        serde_json::to_vec_pretty(&prepared).unwrap(),
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    let generated = generate_onboarding_with_mode(
+        Some(fixture.root.clone()),
+        "example".into(),
+        prepared.packet_json.clone(),
+        akasha_desktop::inference::Profile::Vulkan,
+        akasha_desktop::inference::Cancellation::new(),
+        DraftMode::PerFile,
+    )
+    .await
+    .unwrap();
+    fs::write(
+        evidence.join("generated.json"),
+        serde_json::to_vec_pretty(&generated).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        evidence.join("timing.json"),
+        json!({"seconds":started.elapsed().as_secs_f64()}).to_string(),
+    )
+    .unwrap();
+    copy(&repo, &evidence.join("repository"));
+    copy(&fixture.root, &evidence.join("memory"));
+    println!("Per-file raw native capture: {}", evidence.display());
+    let plan: Value = serde_json::from_str(&generated.plan_json).unwrap();
+    assert_eq!(
+        plan["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|note| note["evidence"].as_array().unwrap().len())
+            .sum::<usize>(),
+        paths.len()
+    );
+    assert_eq!(generated.metrics.len(), prepared.identities.slots.len());
+    assert!(generated.review.draft.review.requires_review);
+    assert_eq!(snapshot(&fixture.root), before);
+    assert_eq!(snapshot(&repo), code_before);
+}
+
+#[test]
+fn per_file_reviewed_memory_publishes_retrieves_and_replays_without_changes() {
+    let fixture = Fixture::new(5);
+    let repo = fixture.base.join("repository");
+    fs::remove_file(repo.join("limits.rs")).unwrap();
+    let fixtures =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../tests/fixtures/local-onboarding");
+    copy(&fixtures.join("parcel-pipeline"), &repo);
+    let paths = [
+        "Cargo.toml",
+        "README.md",
+        "src/lib.rs",
+        "src/config.rs",
+        "src/queue.rs",
+        "src/delivery.rs",
+        "src/report.rs",
+        "tests/pipeline.rs",
+    ];
+    let prepared = prepare_onboarding_sources(
+        Some(fixture.root.clone()),
+        "example".into(),
+        selection("files", &paths, &[], false),
+    )
+    .unwrap();
+    let plan = fs::read_to_string(fixtures.join("parcel-per-file-reviewed-plan.json")).unwrap();
+    let raw = fs::read_to_string(fixtures.join("parcel-per-file-raw-plan.json")).unwrap();
+    let original = review_onboarding_plan(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &prepared.packet_json,
+        &raw,
+    )
+    .unwrap();
+    let review = review_onboarding_plan(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &prepared.packet_json,
+        &plan,
+    )
+    .unwrap();
+    assert!(review.draft.review.uncited_sources.is_empty());
+    assert_eq!(
+        review
+            .draft
+            .review
+            .notes
+            .iter()
+            .map(|n| n.claims.len())
+            .sum::<usize>(),
+        8
+    );
+    assert_eq!(review.draft.review.notes[1].claims.len(), 5);
+    let before = snapshot(&fixture.root);
+    let code_before = snapshot(&repo);
+    assert!(
+        publish_onboarding_plan(
+            Some(fixture.root.clone()),
+            "example".into(),
+            &prepared.packet_json,
+            &plan,
+            &original.draft.preview.preview_id
+        )
+        .is_err()
+    );
+    assert_eq!(snapshot(&fixture.root), before);
+    let published = publish_onboarding_plan(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &prepared.packet_json,
+        &plan,
+        &review.draft.preview.preview_id,
+    )
+    .unwrap();
+    assert_eq!(published.created_notes.len(), 3);
+    let after = snapshot(&fixture.root);
+    // Publication changes projections, so the old packet cannot authorize a second write.
+    assert!(
+        review_onboarding_plan(
+            Some(fixture.root.clone()),
+            "example".into(),
+            &prepared.packet_json,
+            &plan
+        )
+        .is_err()
+    );
+    let fresh = prepare_onboarding_sources(
+        Some(fixture.root.clone()),
+        "example".into(),
+        selection("files", &paths, &[], false),
+    )
+    .unwrap();
+    let rerun_review = review_onboarding_plan(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &fresh.packet_json,
+        &plan,
+    )
+    .unwrap();
+    let rerun = publish_onboarding_plan(
+        Some(fixture.root.clone()),
+        "example".into(),
+        &fresh.packet_json,
+        &plan,
+        &rerun_review.draft.preview.preview_id,
+    )
+    .unwrap();
+    assert_eq!(rerun.unchanged_notes.len(), 3);
+    assert_eq!(snapshot(&fixture.root), after);
+    let mut queries = Vec::new();
+    let mut opened = Vec::new();
+    for (question, expected) in [
+        ("capacity", "range 1 to 16"),
+        ("duplicate fullness", "checks duplicate IDs before fullness"),
+        ("flush failed head", "without removing the failed head"),
+        (
+            "Concrete tests Queue::new(17)",
+            "empty queue never calls send",
+        ),
+    ] {
+        let found =
+            inspect_librarian_sources(Some(fixture.root.clone()), "example".into(), question, true)
+                .unwrap();
+        let passage = found
+            .review
+            .sources
+            .matches
+            .iter()
+            .find(|p| p.quote.contains(expected))
+            .unwrap_or_else(|| panic!("Missing {question}: {expected}"));
+        let note = open_librarian_source(
+            Some(fixture.root.clone()),
+            "example".into(),
+            &found.packet,
+            passage.citation,
+        )
+        .unwrap();
+        assert!(note.document.source.contains(expected));
+        assert!(
+            found
+                .review
+                .provenance
+                .as_ref()
+                .unwrap()
+                .notes
+                .iter()
+                .flat_map(|n| &n.claims)
+                .flat_map(|c| &c.sources)
+                .all(|s| s.freshness == "unchanged")
+        );
+        opened.push(note);
+        queries.push(found);
+    }
+    assert_eq!(snapshot(&fixture.root), after);
+    assert_eq!(snapshot(&repo), code_before);
+    let evidence = std::env::temp_dir().join(format!(
+        "akasha-per-file-reviewed-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&evidence).unwrap();
+    for (name, value) in [
+        ("prepared", serde_json::to_value(prepared).unwrap()),
+        ("raw-review", serde_json::to_value(original).unwrap()),
+        ("review", serde_json::to_value(review).unwrap()),
+        ("published", serde_json::to_value(published).unwrap()),
+        ("rerun", serde_json::to_value(rerun).unwrap()),
+        ("queries", serde_json::to_value(queries).unwrap()),
+        ("opened", serde_json::to_value(opened).unwrap()),
+    ] {
+        fs::write(
+            evidence.join(format!("{name}.json")),
+            serde_json::to_vec_pretty(&value).unwrap(),
+        )
+        .unwrap();
+    }
+    copy(&fixture.root, &evidence.join("memory"));
+    copy(&repo, &evidence.join("repository"));
+    println!(
+        "Per-file reviewed publication and librarian acceptance: {}",
+        evidence.display()
+    );
+}
+
 async fn batch_onboarding_round_trip(live: bool) {
     let fixture = Fixture::new(5);
     let repo = fixture.base.join("repository");

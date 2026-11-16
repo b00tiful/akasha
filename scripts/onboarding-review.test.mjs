@@ -156,9 +156,9 @@ test("omitted behavior can be added from uncited excerpts and published for chec
   assert.equal(corrected.draft.review.notes[0].fields.reviewed, "unreviewed");
 });
 
-test("claim replacement preserves edits, supports undo and enforces 1–4 claims across schemas", async () => {
+test("claim replacement preserves edits, supports undo and enforces 1–8 claims across schemas", async () => {
   for (const version of [3, 4, 5]) {
-    const evidence = Array.from({ length: 4 }, (_, i) => ({ kind: "fact", claim: `Claim ${i + 1}`, sources: [{ source: 1, excerpt: 1 }] }));
+    const evidence = Array.from({ length: 8 }, (_, i) => ({ kind: "fact", claim: `Claim ${i + 1}`, sources: [{ source: 1, excerpt: 1 }] }));
     const note = version === 3 ? { name: "sample", fields: { status: "draft" }, evidence } : { slot: 1, evidence };
     const plan = { schema_version: version, notes: [note] };
     const packet = { preparation: { project: "sample" }, sources: ["allowed", "other"].map(path => ({ path, text: "code\n", excerpts: [{ byte_start: 0, byte_end: 5, line_start: 42, line_end: 42 }] })) };
@@ -176,14 +176,14 @@ test("claim replacement preserves edits, supports undo and enforces 1–4 claims
     page.find("Remove note 1 claim 2").click();
     page.find("Add claim to note 1 citing source 1 excerpt 1").click();
     assert.equal(page.find("Undo claim removal in note 1").disabled, true);
-    page.find("Add missing claim to note 1").click(); // Disabled: no fifth claim.
+    page.find("Add missing claim to note 1").click(); // Disabled: no ninth claim.
     page.document.getElementById("export").click();
     const exported = JSON.parse(await page.blobs[0].text());
-    assert.equal(exported.notes[0].evidence.length, 4);
+    assert.equal(exported.notes[0].evidence.length, 8);
     assert.equal(exported.notes[0].evidence[0].claim, "Keep this edit");
-    assert.deepEqual(exported.notes[0].evidence[3].sources, [{ source: 1, excerpt: 1 }]);
+    assert.deepEqual(exported.notes[0].evidence[7].sources, [{ source: 1, excerpt: 1 }]);
     assert.equal(exported.schema_version, version);
-    for (let i = 0; i < 3; i++) page.find("Remove note 1 claim 1").click();
+    for (let i = 0; i < 7; i++) page.find("Remove note 1 claim 1").click();
     assert.equal(page.find("Remove note 1 claim 1").disabled, true);
     page.find("Remove note 1 claim 1").click();
     page.document.getElementById("export").click();

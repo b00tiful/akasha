@@ -14,6 +14,46 @@ use sha2::{Digest, Sha256};
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn eight_per_file_claims_compile_with_exact_review_and_ninth_refuses_without_writes() {
+    use akasha_core::onboarding_local::{
+        compile_local_onboarding, plan_local_onboarding, prepare_local_onboarding,
+    };
+    let f = Fixture::new("eight-per-file-claims");
+    let paths = (0..8)
+        .map(|index| {
+            let path = format!("module{index}.rs");
+            fs::write(
+                f.resolution.cwd.join(&path),
+                format!("pub const VALUE: usize = {index};\n"),
+            )
+            .unwrap();
+            path
+        })
+        .collect::<Vec<_>>();
+    let before = f.project_snapshot();
+    let packet = prepare_local_onboarding(&f.resolution, &paths).unwrap();
+    let identities = plan_local_onboarding(&f.resolution, &packet).unwrap();
+    assert_eq!(identities.slots.len(), 1);
+    let claims = paths.iter().enumerate().map(|(index, path)| serde_json::json!({"kind":"fact","claim":format!("{path} sets VALUE to {index}."),"sources":[{"source":index+1,"excerpt":1}]})).collect::<Vec<_>>();
+    let mut plan = serde_json::json!({"schema_version":5,"notes":[{"slot":1,"evidence":claims}]});
+    let draft = compile_local_onboarding(&f.resolution, &packet, &plan.to_string()).unwrap();
+    assert!(draft.review.uncited_sources.is_empty());
+    assert_eq!(draft.review.notes[0].claims.len(), 8);
+    assert!(draft.review.requires_review);
+    for (index, claim) in draft.review.notes[0].claims.iter().enumerate() {
+        assert_eq!(claim.sources[0].path, paths[index]);
+    }
+    plan["notes"][0]["evidence"].as_array_mut().unwrap().push(serde_json::json!({"kind":"unknown","claim":"Another behavior is unknown.","rationale":"Not inspected.","sources":[]}));
+    assert!(
+        compile_local_onboarding(&f.resolution, &packet, &plan.to_string())
+            .unwrap_err()
+            .to_string()
+            .contains("1..=8 evidence claims")
+    );
+    assert_eq!(f.project_snapshot(), before);
+}
+
+#[test]
 fn discovery_batches_partition_all_128_sources_without_duplicates_or_writes() {
     use akasha_core::onboarding_discovery::{
         discover_local_onboarding, discover_local_onboarding_batch,

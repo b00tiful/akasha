@@ -165,11 +165,11 @@ export class OnboardingPanel {
       for (const excerpt of excerpts) {
         const details = disclosure(`${excerpt.path}:${excerpt.line_start}–${excerpt.line_end}`, excerpt.text);
         const add = button("Add claim citing this excerpt", () => {
-          if (note.evidence.length >= 4) return;
+          if (note.evidence.length >= 8) return;
           note.evidence.push({ kind: "fact", claim: "", sources: [{ source: excerpt.source, excerpt: excerpt.excerpt }] });
           change(); this.renderEditor();
         });
-        add.dataset.limit = String(note.evidence.length >= 4); details.append(add); browse.append(details);
+        add.dataset.limit = String(note.evidence.length >= 8); details.append(add); browse.append(details);
       }
       section.append(browse);
       for (const [claimIndex, claim] of note.evidence.entries()) {

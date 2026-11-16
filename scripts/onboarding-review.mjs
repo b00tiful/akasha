@@ -68,7 +68,7 @@ function reviewApp() {
     const undo = make("button", "Undo removal", controls); undo.type = "button"; undo.hidden = true;
     undo.setAttribute("aria-label", `Undo claim removal in note ${n + 1}`);
     const count = make("p", undefined, controls, "muted");
-    make("p", "Inspect the captured sources below to record omitted behavior. Each note allows 1–4 claims. Remove an unsupported claim before adding one when full. Fresh Rust compilation checks every export.", section, "muted");
+    make("p", "Inspect the captured sources below to record omitted behavior. Each note allows 1–8 claims. Remove an unsupported claim before adding one when full. Fresh Rust compilation checks every export.", section, "muted");
     const browser = make("details", undefined, section);
     make("summary", "Browse all captured source excerpts for this note", browser);
     make("p", "Only captured windows in this note's source group are available. Sampling and discovery gaps remain in the original coverage report above. A citation does not prove the claim's meaning.", browser, "muted");
@@ -85,23 +85,23 @@ function reviewApp() {
     const cards = make("div", undefined, section);
     let removed;
     const addClaim = sources => {
-      if (note.evidence.length >= 4) return;
+      if (note.evidence.length >= 8) return;
       note.evidence.push({ kind: "fact", claim: "", sources });
       changed(); renderClaims(note.evidence.length - 1);
     };
     add.addEventListener("click", () => addClaim([]));
     undo.addEventListener("click", () => {
-      if (!removed || note.evidence.length >= 4) return;
+      if (!removed || note.evidence.length >= 8) return;
       const index = removed.index;
       note.evidence.splice(index, 0, removed.claim); removed = undefined;
       changed(); renderClaims(index);
     });
     const renderClaims = focusIndex => {
       cards.replaceChildren();
-      count.textContent = `${note.evidence.length}/4 claims`;
-      add.disabled = note.evidence.length >= 4;
-      for (const [button, item] of sourceButtons) button.disabled = note.evidence.length >= 4 || !item.text.trim();
-      undo.hidden = !removed; undo.disabled = note.evidence.length >= 4;
+      count.textContent = `${note.evidence.length}/8 claims`;
+      add.disabled = note.evidence.length >= 8;
+      for (const [button, item] of sourceButtons) button.disabled = note.evidence.length >= 8 || !item.text.trim();
+      undo.hidden = !removed; undo.disabled = note.evidence.length >= 8;
       updateSummary();
       for (const [c, claim] of note.evidence.entries()) {
         const card = make("article", undefined, cards, "claim");

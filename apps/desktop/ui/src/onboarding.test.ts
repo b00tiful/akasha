@@ -67,8 +67,8 @@ it("enforces claim bounds and clears citations when a claim becomes unknown", as
   const { host, ready, load } = setup(); await ready();
   const add = () => [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Add claim citing this excerpt")!;
   const remove = () => [...host.querySelectorAll<HTMLButtonElement>("button")].filter(button => button.textContent === "Remove claim");
-  expect(remove()[0]!.disabled).toBe(true); add().click(); add().click(); add().click(); expect(add().disabled).toBe(true);
-  expect(host.querySelectorAll(".onboarding-claim")).toHaveLength(4); remove()[3]!.click(); expect(host.querySelectorAll(".onboarding-claim")).toHaveLength(3);
+  expect(remove()[0]!.disabled).toBe(true); for (let i = 0; i < 7; i++) add().click(); expect(add().disabled).toBe(true);
+  expect(host.querySelectorAll(".onboarding-claim")).toHaveLength(8); remove()[7]!.click(); expect(host.querySelectorAll(".onboarding-claim")).toHaveLength(7);
   const kind = host.querySelector<HTMLSelectElement>('[aria-label="Evidence kind"]')!; kind.value = "unknown"; kind.dispatchEvent(new Event("change"));
   load(); await vi.waitFor(() => expect(review).toHaveBeenCalledTimes(2)); expect(JSON.parse(review.mock.calls[1]![3]).notes[0].evidence[0].sources).toEqual([]);
 });
@@ -247,11 +247,26 @@ async function nativeReady(host: HTMLElement) {
   await vi.waitFor(() => expect(host.textContent).toContain("Exact SHA-256 checks"));
   return host.querySelector<HTMLButtonElement>("[data-generate]")!;
 }
+it("opts into per-file drafting, locks the choice during generation and reviews all eight claims", async () => {
+  const { host, approve, apply } = setup(); const start = await nativeReady(host);
+  const mode = host.querySelector<HTMLSelectElement>('[name="draft-mode"]')!;
+  expect(mode.value).toBe("summary"); mode.value = "per_file";
+  const expanded = structuredClone(plan);
+  expanded.notes[0]!.evidence = Array.from({ length: 8 }, (_, i) => ({ kind: "fact", claim: `File observation ${i + 1}`, sources: [{ source: 1, excerpt: 1 }] }));
+  reserve.mockResolvedValue("per-file");
+  let finish!: (value: unknown) => void; generate.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  start.click(); await vi.waitFor(() => expect(generate).toHaveBeenCalledWith("per-file", binding.root, binding.project, prepared().packet_json, "vulkan", "per_file"));
+  expect(mode.disabled).toBe(true);
+  finish({ plan_json: JSON.stringify(expanded), review: response(), metrics: [{}] });
+  await vi.waitFor(() => expect(host.textContent).toContain("one observation per file. 1 selected files remain uncited"));
+  expect(host.querySelectorAll(".onboarding-claim")).toHaveLength(8);
+  expect(mode.disabled).toBe(false); approve(); expect(apply.disabled).toBe(true); expect(publish).not.toHaveBeenCalled();
+});
 it("generates from exact selected packet and still requires fresh preview and explicit approval", async () => {
   const { host, load, approve, apply } = setup(); const start = await nativeReady(host);
   reserve.mockResolvedValue("native-1"); generate.mockResolvedValue({ plan_json: JSON.stringify(plan), review: response(), metrics: [{}] });
   start.click(); await vi.waitFor(() => expect(host.textContent).toContain("Worker stopped"));
-  expect(generate).toHaveBeenCalledWith("native-1", binding.root, binding.project, prepared().packet_json, "vulkan");
+  expect(generate).toHaveBeenCalledWith("native-1", binding.root, binding.project, prepared().packet_json, "vulkan", "summary");
   expect(host.querySelector('[aria-label="Note 1 claim 1"]')).not.toBeNull();
   approve(); expect(apply.disabled).toBe(true); expect(publish).not.toHaveBeenCalled();
   load(); await vi.waitFor(() => expect(host.textContent).toContain("Fresh preview ready")); approve(); expect(apply.disabled).toBe(false);

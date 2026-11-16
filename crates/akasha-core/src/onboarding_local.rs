@@ -601,8 +601,8 @@ pub fn compile_local_onboarding(
         }
         metadata.insert("schema_version".into(), 1.into());
         let mut claims = Vec::new();
-        if note.evidence.is_empty() || note.evidence.len() > 4 {
-            return Err(invalid("local plan notes require 1..=4 evidence claims"));
+        if note.evidence.is_empty() || note.evidence.len() > 8 {
+            return Err(invalid("local plan notes require 1..=8 evidence claims"));
         }
         for claim in note.evidence {
             let mut evidence =

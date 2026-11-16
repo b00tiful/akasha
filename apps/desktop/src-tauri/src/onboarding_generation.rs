@@ -10,12 +10,105 @@ use crate::{
 use akasha_core::onboarding_local::{
     LocalOnboardingPacket, LocalOnboardingSlot, plan_local_onboarding,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
 const POLICY: &str = include_str!("onboarding-policy.txt");
 const PLANNING_RULE: &str = "This is a filename-role group, not an inferred component. Return exactly this slot with evidence only. The host supplies all metadata. Summarize useful observed behavior from the supplied excerpts: implementation conditions, defaults, return values and boundaries; concrete test inputs/assertions; manifest requirements and overview scope. Prefer behavior over comments describing source selection. Do not generalize a test beyond its actual inputs. Cover distinct useful sources within the four-claim limit; report unknowns when partial source prevents a conclusion.";
+
+/// Ephemeral opt-in generation strategy. Existing callers retain the compact role summary.
+#[derive(Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftMode {
+    #[default]
+    Summary,
+    PerFile,
+}
+
+const PER_FILE_POLICY: &str = include_str!("onboarding-per-file-policy.txt");
+
+fn per_file_input(packet: &LocalOnboardingPacket, slot: &LocalOnboardingSlot) -> (Value, Value) {
+    let (mut input, _) = group_input(packet, slot);
+    input.as_object_mut().unwrap().remove("planned_note");
+    input["planning_rule"] = "Return observations with exactly one claim per supplied source handle. Read each source independently. Prefer concrete conditions, exceptions, state changes and test assertions over declarations or imports. Keep each claim concise and cite only that source's supporting excerpts. Use unknown with a rationale and no sources when no useful supported observation is possible. A file observation does not imply complete behavior coverage.".into();
+    let mut observations = serde_json::Map::new();
+    for (local, handle) in slot.sources.iter().enumerate() {
+        let source = object(
+            json!({"source":{"const":local+1},"excerpt":{"type":"integer","enum":(1..=packet.sources[handle-1].excerpts.len()).collect::<Vec<_>>()}}),
+        );
+        let text = json!({"type":"string","minLength":1,"maxLength":512});
+        let claims = ["fact", "inference", "unknown"].iter().map(|kind| {
+            let mut properties = json!({"kind":{"const":kind},"claim":text,"sources":{"type":"array","minItems":if *kind == "unknown" {0} else {1},"maxItems":if *kind == "unknown" {0} else {4},"items":source}});
+            if *kind != "fact" { properties["rationale"] = text.clone(); }
+            object(properties)
+        }).collect::<Vec<_>>();
+        observations.insert((local + 1).to_string(), json!({"oneOf":claims}));
+    }
+    (
+        input,
+        object(json!({"observations":object(observations.into())})),
+    )
+}
+
+fn remap_per_file(
+    answer: &str,
+    slot: &LocalOnboardingSlot,
+    packet: &LocalOnboardingPacket,
+) -> Result<Value, DesktopError> {
+    let value: Value = serde_json::from_str(answer)
+        .map_err(|_| inference::error("Invalid per-file draft JSON"))?;
+    let root = value
+        .as_object()
+        .ok_or_else(|| inference::error("Invalid per-file draft"))?;
+    let observations = value["observations"]
+        .as_object()
+        .filter(|items| root.len() == 1 && items.len() == slot.sources.len())
+        .ok_or_else(|| {
+            inference::error("Per-file draft must address every assigned source exactly once")
+        })?;
+    let mut claims = Vec::new();
+    for (local, handle) in slot.sources.iter().enumerate() {
+        let claim = observations
+            .get(&(local + 1).to_string())
+            .ok_or_else(|| inference::error("Missing per-file observation"))?;
+        let sources = claim["sources"]
+            .as_array()
+            .ok_or_else(|| inference::error("Invalid per-file sources"))?;
+        if sources
+            .iter()
+            .any(|source| source["source"].as_u64() != Some((local + 1) as u64))
+        {
+            return Err(inference::error(
+                "Per-file observation cites another source",
+            ));
+        }
+        let mut claim = claim.clone();
+        // Keep an unknown bound to its assigned path even though it has no evidence references.
+        // Only host-owned paths are inserted. Core still validates all text and claim fields.
+        if claim["kind"] == "unknown" {
+            if !sources.is_empty() {
+                return Err(inference::error(
+                    "Unknown observations cannot cite evidence",
+                ));
+            }
+            let text = claim["claim"]
+                .as_str()
+                .ok_or_else(|| inference::error("Invalid unknown claim"))?;
+            claim["claim"] = format!("{}: {text}", packet.sources[handle - 1].path).into();
+        } else if sources.is_empty() {
+            return Err(inference::error(
+                "Supported observations require their assigned source",
+            ));
+        }
+        claims.push(claim);
+    }
+    remap(
+        &json!({"schema_version":5,"notes":[{"slot":slot.slot,"evidence":claims}]}).to_string(),
+        slot,
+        packet,
+    )
+}
 
 #[derive(Serialize)]
 pub struct GeneratedOnboarding {
@@ -113,6 +206,25 @@ pub async fn generate_onboarding(
     profile: Profile,
     cancellation: Cancellation,
 ) -> Result<GeneratedOnboarding, DesktopError> {
+    generate_onboarding_with_mode(
+        root,
+        project,
+        packet_json,
+        profile,
+        cancellation,
+        DraftMode::Summary,
+    )
+    .await
+}
+
+pub async fn generate_onboarding_with_mode(
+    root: Option<PathBuf>,
+    project: String,
+    packet_json: String,
+    profile: Profile,
+    cancellation: Cancellation,
+    mode: DraftMode,
+) -> Result<GeneratedOnboarding, DesktopError> {
     cancellation.check()?;
     if packet_json.len() > 16000 {
         return Err(inference::error("Captured packet exceeds 16000 bytes"));
@@ -140,9 +252,21 @@ pub async fn generate_onboarding(
         let mut metrics = Vec::new();
         for slot in &identities.slots {
             cancellation.check()?;
-            let (input, schema) = group_input(&packet, slot);
-            let (answer, measurement) = worker.complete(&input, &schema, POLICY).await?;
-            notes.push(remap(&answer, slot, &packet)?);
+            let (input, schema, policy) = match mode {
+                DraftMode::Summary => {
+                    let (input, schema) = group_input(&packet, slot);
+                    (input, schema, POLICY)
+                }
+                DraftMode::PerFile => {
+                    let (input, schema) = per_file_input(&packet, slot);
+                    (input, schema, PER_FILE_POLICY)
+                }
+            };
+            let (answer, measurement) = worker.complete(&input, &schema, policy).await?;
+            notes.push(match mode {
+                DraftMode::Summary => remap(&answer, slot, &packet)?,
+                DraftMode::PerFile => remap_per_file(&answer, slot, &packet)?,
+            });
             metrics.push(measurement);
         }
         let plan_json = json!({"schema_version":5,"notes":notes}).to_string();
@@ -191,14 +315,16 @@ pub(crate) async fn generate_local_onboarding(
     project: String,
     packet_json: String,
     profile: Profile,
+    mode: Option<DraftMode>,
 ) -> Result<GeneratedOnboarding, DesktopError> {
     let lease = jobs.claim(&request_id)?;
-    generate_onboarding(
+    generate_onboarding_with_mode(
         root,
         project,
         packet_json,
         profile,
         lease.cancellation.clone(),
+        mode.unwrap_or_default(),
     )
     .await
 }
@@ -206,6 +332,81 @@ pub(crate) async fn generate_local_onboarding(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn per_file_protocol_requires_every_source_and_keeps_unknowns_uncited() {
+        let packet: LocalOnboardingPacket = serde_json::from_value(json!({"schema_version":2,"preparation":{},"sources":[{"path":"a.rs","fingerprint":"a","text":"a\n","lines":1,"excerpts":[{"byte_start":0,"byte_end":2,"line_start":1,"line_end":1}]},{"path":"b.rs","fingerprint":"b","text":"b\n","lines":1,"excerpts":[{"byte_start":0,"byte_end":2,"line_start":1,"line_end":1}]}],"index":"","roadmap":""})).unwrap();
+        let slot = LocalOnboardingSlot {
+            slot: 2,
+            role: "implementation".into(),
+            note_type: "entity".into(),
+            name: "group".into(),
+            path: "group.md".into(),
+            sources: vec![2, 1],
+            fields: Default::default(),
+            unresolved_fields: vec![],
+        };
+        let (input, schema) = per_file_input(&packet, &slot);
+        assert_eq!(input["sources"][0]["path"], "b.rs");
+        assert!(input.get("planned_note").is_none());
+        assert_eq!(
+            schema["properties"]["observations"]["required"],
+            json!(["1", "2"])
+        );
+        let fact = json!({"kind":"fact","claim":"b behavior","sources":[{"source":1,"excerpt":1}]});
+        let unknown = json!({"kind":"unknown","claim":"Behavior cannot be determined.","rationale":"Insufficient evidence.","sources":[]});
+        let answer = json!({"observations":{"1":fact,"2":unknown}});
+        let note = remap_per_file(&answer.to_string(), &slot, &packet).unwrap();
+        assert_eq!(note["slot"], 2);
+        assert_eq!(note["evidence"][0]["sources"][0]["source"], 2);
+        assert_eq!(
+            note["evidence"][1]["claim"],
+            "a.rs: Behavior cannot be determined."
+        );
+        assert_eq!(note["evidence"][1]["sources"], json!([]));
+        let mut cases = vec![json!({}), json!({"observations":[]})];
+        for key in ["1", "2"] {
+            let mut missing = answer.clone();
+            missing["observations"].as_object_mut().unwrap().remove(key);
+            cases.push(missing);
+        }
+        let mut extra = answer.clone();
+        extra["observations"]["3"] = fact.clone();
+        cases.push(extra);
+        let mut replaced = answer.clone();
+        replaced["observations"]
+            .as_object_mut()
+            .unwrap()
+            .remove("2");
+        replaced["observations"]["0"] = unknown;
+        cases.push(replaced);
+        let mut extra = answer.clone();
+        extra["metadata"] = json!({});
+        cases.push(extra);
+        for reference in [
+            json!({"source":2,"excerpt":1}),
+            json!({"source":1,"excerpt":0}),
+            json!({"source":1,"excerpt":2}),
+            json!({"source":1.5,"excerpt":1}),
+        ] {
+            let mut invalid = answer.clone();
+            invalid["observations"]["1"]["sources"] = json!([reference]);
+            cases.push(invalid);
+        }
+        let mut empty_fact = answer.clone();
+        empty_fact["observations"]["1"]["sources"] = json!([]);
+        cases.push(empty_fact);
+        let mut cited_unknown = answer;
+        cited_unknown["observations"]["2"]["sources"] = json!([{"source":2,"excerpt":1}]);
+        cases.push(cited_unknown);
+        for invalid in cases {
+            assert!(
+                remap_per_file(&invalid.to_string(), &slot, &packet).is_err(),
+                "{invalid}"
+            );
+        }
+        assert!(serde_json::from_str::<DraftMode>("\"automatic_publish\"").is_err());
+    }
+
     #[test]
     fn local_source_remapping_refuses_wrong_slot_handles_and_unexpected_fields() {
         let packet: LocalOnboardingPacket = serde_json::from_value(json!({"schema_version":2,"preparation":{},"sources":[{"path":"a.rs","fingerprint":"a","text":"a\n","lines":1,"excerpts":[{"byte_start":0,"byte_end":2,"line_start":1,"line_end":1}]},{"path":"b.rs","fingerprint":"b","text":"b\n","lines":1,"excerpts":[{"byte_start":0,"byte_end":2,"line_start":1,"line_end":1}]}],"index":"","roadmap":""})).unwrap();
