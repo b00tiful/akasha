@@ -295,6 +295,17 @@ fn focused_sampling_finds_off_position_behavior_with_original_coordinates_and_dr
     );
     assert_eq!(draft.review.uncited_focus_excerpts.len(), 1);
     assert_eq!(draft.review.uncited_focus_excerpts[0].line_start, 145);
+    assert_eq!(draft.review.excerpt_gaps.len(), 2);
+    for gap in &draft.review.excerpt_gaps {
+        let window = &source.excerpts[gap.excerpt - 1];
+        assert_eq!(
+            (gap.line_start, gap.line_end),
+            (window.line_start, window.line_end)
+        );
+        assert!(gap.uncited_lines.iter().all(
+            |range| range.line_start >= window.line_start && range.line_end <= window.line_end
+        ));
+    }
     let mut opening_only = plan.clone();
     opening_only["notes"][0]["evidence"][0]["sources"][0]["excerpt"] = 1.into();
     let neglected =
@@ -2015,6 +2026,18 @@ fn local_claim_review_checks_quotes_lines_and_rejects_untracked_prose() {
     assert_eq!(draft.schema_version, 2);
     assert!(draft.review.requires_review);
     assert_eq!(draft.review.uncited_sources, ["Cargo.toml"]);
+    let gap = draft
+        .review
+        .excerpt_gaps
+        .iter()
+        .find(|gap| gap.path == "input.rs")
+        .unwrap();
+    assert_eq!((gap.source, gap.excerpt), (2, 1));
+    assert_eq!(
+        serde_json::to_value(&gap.uncited_lines).unwrap(),
+        serde_json::json!([{"line_start":1,"line_end":2}])
+    );
+    assert!(draft.review.repeated_claims.is_empty());
     let claims = &draft.review.notes[0].claims;
     assert_eq!(claims[0].sources[0].line_start, 3);
     assert_eq!(claims[0].sources[0].line_end, 3);
@@ -2075,6 +2098,20 @@ fn local_claim_review_checks_quotes_lines_and_rejects_untracked_prose() {
     let blank =
         compile_local_onboarding(&fixture.resolution, &blank_packet, &plan.to_string()).unwrap();
     assert_eq!(blank.review.notes[0].claims[0].sources[0].line_end, 2);
+    assert_eq!(
+        serde_json::to_value(&blank.review.excerpt_gaps[0].uncited_lines).unwrap(),
+        serde_json::json!([{"line_start":3,"line_end":3}])
+    );
+    // Whitespace-only wording differences still identify redundant claim positions.
+    plan["notes"][0]["evidence"].as_array_mut().unwrap().push(serde_json::json!({"kind":"fact","claim":"The  source has a blank line.","sources":[{"source":1,"quote":"last"}]}));
+    let duplicates =
+        compile_local_onboarding(&fixture.resolution, &blank_packet, &plan.to_string()).unwrap();
+    assert!(duplicates.review.excerpt_gaps.is_empty());
+    assert_eq!(
+        duplicates.review.repeated_claims[0].note,
+        PathBuf::from("core.md")
+    );
+    assert_eq!(duplicates.review.repeated_claims[0].claims, [1, 2]);
     assert_eq!(fixture.project_snapshot(), before);
 }
 

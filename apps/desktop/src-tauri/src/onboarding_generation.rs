@@ -24,9 +24,45 @@ pub enum DraftMode {
     #[default]
     Summary,
     PerFile,
+    BehaviorMap,
 }
 
 const PER_FILE_POLICY: &str = include_str!("onboarding-per-file-policy.txt");
+const BEHAVIOR_POLICY: &str = include_str!("onboarding-behavior-policy.txt");
+
+// Every source gets room for one observation. Share the remaining eight-claim budget
+// by captured text size, rather than letting a verbose first file starve later files.
+fn behavior_quotas(packet: &LocalOnboardingPacket, slot: &LocalOnboardingSlot) -> Vec<usize> {
+    let mut quotas = vec![1; slot.sources.len()];
+    for _ in slot.sources.len()..8 {
+        let next = slot
+            .sources
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| quotas[*index] < 4)
+            .max_by_key(|(index, handle)| {
+                (
+                    packet.sources[**handle - 1].text.len() / (quotas[*index] + 1),
+                    std::cmp::Reverse(*index),
+                )
+            });
+        let Some((index, _)) = next else { break };
+        quotas[index] += 1;
+    }
+    quotas
+}
+
+fn behavior_input(packet: &LocalOnboardingPacket, slot: &LocalOnboardingSlot) -> (Value, Value) {
+    let (mut input, mut schema) = per_file_input(packet, slot);
+    input["planning_rule"] = "For every source return an array of distinct, complete observations, from one up to its claim_limit. Describe operations with their conditions and results; include error precedence, retained/changed state and boundary assertions when visible. Use short complete sentences and separate independent behaviors. For tests, cover distinct concrete scenarios across all supplied excerpts without generalizing. For manifests and overviews record only useful scope/configuration. Never pad to the limit or repeat declarations. An unknown with rationale and no citations is valid. Cite only that file's excerpts covering the entire observation, including adjacent windows when needed.".into();
+    input["source_role"] = slot.role.clone().into();
+    for (index, quota) in behavior_quotas(packet, slot).iter().enumerate() {
+        input["sources"][index]["claim_limit"] = (*quota).into();
+        let item = &mut schema["properties"]["observations"]["properties"][(index + 1).to_string()];
+        *item = json!({"type":"array","minItems":1,"maxItems":quota,"items":item.clone()});
+    }
+    (input, schema)
+}
 
 fn per_file_input(packet: &LocalOnboardingPacket, slot: &LocalOnboardingSlot) -> (Value, Value) {
     let (mut input, _) = group_input(packet, slot);
@@ -56,6 +92,15 @@ fn remap_per_file(
     slot: &LocalOnboardingSlot,
     packet: &LocalOnboardingPacket,
 ) -> Result<Value, DesktopError> {
+    remap_observations(answer, slot, packet, false)
+}
+
+fn remap_observations(
+    answer: &str,
+    slot: &LocalOnboardingSlot,
+    packet: &LocalOnboardingPacket,
+    behavior: bool,
+) -> Result<Value, DesktopError> {
     let value: Value = serde_json::from_str(answer)
         .map_err(|_| inference::error("Invalid per-file draft JSON"))?;
     let root = value
@@ -68,40 +113,55 @@ fn remap_per_file(
             inference::error("Per-file draft must address every assigned source exactly once")
         })?;
     let mut claims = Vec::new();
+    let quotas = behavior_quotas(packet, slot);
     for (local, handle) in slot.sources.iter().enumerate() {
-        let claim = observations
+        let observation = observations
             .get(&(local + 1).to_string())
             .ok_or_else(|| inference::error("Missing per-file observation"))?;
-        let sources = claim["sources"]
-            .as_array()
-            .ok_or_else(|| inference::error("Invalid per-file sources"))?;
-        if sources
-            .iter()
-            .any(|source| source["source"].as_u64() != Some((local + 1) as u64))
-        {
-            return Err(inference::error(
-                "Per-file observation cites another source",
-            ));
-        }
-        let mut claim = claim.clone();
-        // Keep an unknown bound to its assigned path even though it has no evidence references.
-        // Only host-owned paths are inserted. Core still validates all text and claim fields.
-        if claim["kind"] == "unknown" {
-            if !sources.is_empty() {
+        let items = if behavior {
+            observation
+                .as_array()
+                .filter(|items| !items.is_empty() && items.len() <= quotas[local])
+                .ok_or_else(|| {
+                    inference::error("Behavior observations exceed their source claim limit")
+                })?
+                .iter()
+                .collect::<Vec<_>>()
+        } else {
+            vec![observation]
+        };
+        for claim in items {
+            let sources = claim["sources"]
+                .as_array()
+                .ok_or_else(|| inference::error("Invalid per-file sources"))?;
+            if sources
+                .iter()
+                .any(|source| source["source"].as_u64() != Some((local + 1) as u64))
+            {
                 return Err(inference::error(
-                    "Unknown observations cannot cite evidence",
+                    "Per-file observation cites another source",
                 ));
             }
-            let text = claim["claim"]
-                .as_str()
-                .ok_or_else(|| inference::error("Invalid unknown claim"))?;
-            claim["claim"] = format!("{}: {text}", packet.sources[handle - 1].path).into();
-        } else if sources.is_empty() {
-            return Err(inference::error(
-                "Supported observations require their assigned source",
-            ));
+            let mut claim = claim.clone();
+            // Keep an unknown bound to its assigned path even though it has no evidence references.
+            // Only host-owned paths are inserted. Core still validates all text and claim fields.
+            if claim["kind"] == "unknown" {
+                if !sources.is_empty() {
+                    return Err(inference::error(
+                        "Unknown observations cannot cite evidence",
+                    ));
+                }
+                let text = claim["claim"]
+                    .as_str()
+                    .ok_or_else(|| inference::error("Invalid unknown claim"))?;
+                claim["claim"] = format!("{}: {text}", packet.sources[handle - 1].path).into();
+            } else if sources.is_empty() {
+                return Err(inference::error(
+                    "Supported observations require their assigned source",
+                ));
+            }
+            claims.push(claim);
         }
-        claims.push(claim);
     }
     remap(
         &json!({"schema_version":5,"notes":[{"slot":slot.slot,"evidence":claims}]}).to_string(),
@@ -252,6 +312,41 @@ pub async fn generate_onboarding_with_mode(
         let mut metrics = Vec::new();
         for slot in &identities.slots {
             cancellation.check()?;
+            if matches!(mode, DraftMode::BehaviorMap) {
+                let mut evidence = Vec::new();
+                for (handle, quota) in slot.sources.iter().zip(behavior_quotas(&packet, slot)) {
+                    cancellation.check()?;
+                    // No neighboring source text enters this completion. Preserve the original
+                    // packet handle when assembling the ordinary core-owned slot afterwards.
+                    let isolated = LocalOnboardingSlot {
+                        slot: slot.slot,
+                        role: slot.role.clone(),
+                        note_type: slot.note_type.clone(),
+                        name: slot.name.clone(),
+                        path: slot.path.clone(),
+                        sources: vec![*handle],
+                        fields: slot.fields.clone(),
+                        unresolved_fields: slot.unresolved_fields.clone(),
+                    };
+                    let (mut input, mut schema) = behavior_input(&packet, &isolated);
+                    input["sources"][0]["claim_limit"] = quota.into();
+                    schema["properties"]["observations"]["properties"]["1"]["maxItems"] =
+                        quota.into();
+                    let (answer, measurement) =
+                        worker.complete(&input, &schema, BEHAVIOR_POLICY).await?;
+                    let note = remap_observations(&answer, &isolated, &packet, true)?;
+                    let claims = note["evidence"].as_array().unwrap();
+                    if claims.len() > quota {
+                        return Err(inference::error(
+                            "Behavior draft exceeds its source claim limit",
+                        ));
+                    }
+                    evidence.extend(claims.iter().cloned());
+                    metrics.push(measurement);
+                }
+                notes.push(json!({"slot":slot.slot,"evidence":evidence}));
+                continue;
+            }
             let (input, schema, policy) = match mode {
                 DraftMode::Summary => {
                     let (input, schema) = group_input(&packet, slot);
@@ -261,11 +356,13 @@ pub async fn generate_onboarding_with_mode(
                     let (input, schema) = per_file_input(&packet, slot);
                     (input, schema, PER_FILE_POLICY)
                 }
+                DraftMode::BehaviorMap => unreachable!("handled with source-isolated completions"),
             };
             let (answer, measurement) = worker.complete(&input, &schema, policy).await?;
             notes.push(match mode {
                 DraftMode::Summary => remap(&answer, slot, &packet)?,
                 DraftMode::PerFile => remap_per_file(&answer, slot, &packet)?,
+                DraftMode::BehaviorMap => unreachable!("handled with source-isolated completions"),
             });
             metrics.push(measurement);
         }
@@ -363,6 +460,26 @@ mod tests {
             "a.rs: Behavior cannot be determined."
         );
         assert_eq!(note["evidence"][1]["sources"], json!([]));
+        let (behavior_input, behavior_schema) = behavior_input(&packet, &slot);
+        assert_eq!(behavior_input["sources"][0]["claim_limit"], 4);
+        assert_eq!(
+            behavior_schema["properties"]["observations"]["properties"]["1"]["maxItems"],
+            4
+        );
+        let behavior =
+            json!({"observations":{"1":[fact.clone(), fact.clone()],"2":[unknown.clone()]}});
+        let mapped = remap_observations(&behavior.to_string(), &slot, &packet, true).unwrap();
+        assert_eq!(mapped["evidence"].as_array().unwrap().len(), 3);
+        assert_eq!(mapped["evidence"][1]["sources"][0]["source"], 2);
+        assert_eq!(
+            mapped["evidence"][2]["claim"],
+            "a.rs: Behavior cannot be determined."
+        );
+        for value in [json!([]), json!(vec![fact.clone(); 5]), fact.clone()] {
+            let mut invalid = behavior.clone();
+            invalid["observations"]["1"] = value;
+            assert!(remap_observations(&invalid.to_string(), &slot, &packet, true).is_err());
+        }
         let mut cases = vec![json!({}), json!({"observations":[]})];
         for key in ["1", "2"] {
             let mut missing = answer.clone();
@@ -399,12 +516,44 @@ mod tests {
         cited_unknown["observations"]["2"]["sources"] = json!([{"source":2,"excerpt":1}]);
         cases.push(cited_unknown);
         for invalid in cases {
+            // The behavior strategy must reject the same missing/foreign/altered handles.
+            let mut behavior = invalid.clone();
+            if let Some(observations) = behavior["observations"].as_object_mut() {
+                for value in observations.values_mut() {
+                    *value = json!([value.clone()]);
+                }
+            }
+            assert!(
+                remap_observations(&behavior.to_string(), &slot, &packet, true).is_err(),
+                "{behavior}"
+            );
             assert!(
                 remap_per_file(&invalid.to_string(), &slot, &packet).is_err(),
                 "{invalid}"
             );
         }
         assert!(serde_json::from_str::<DraftMode>("\"automatic_publish\"").is_err());
+        let mut slot = slot;
+        for count in 1..=8 {
+            let mut packet = packet.clone();
+            packet.sources = (0..count)
+                .map(|i| {
+                    let mut source = packet.sources[0].clone();
+                    source.text = "x".repeat((i + 1) * 100);
+                    source
+                })
+                .collect();
+            slot.sources = (1..=count).collect();
+            let quotas = behavior_quotas(&packet, &slot);
+            assert_eq!(quotas.len(), count);
+            assert!(quotas.iter().all(|q| (1..=4).contains(q)));
+            assert_eq!(quotas.iter().sum::<usize>(), 8.min(count * 4));
+            slot.sources.reverse();
+            assert_eq!(
+                behavior_quotas(&packet, &slot).iter().sum::<usize>(),
+                quotas.iter().sum::<usize>()
+            );
+        }
     }
 
     #[test]

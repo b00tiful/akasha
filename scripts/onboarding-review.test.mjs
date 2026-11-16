@@ -91,7 +91,10 @@ test("untrusted source/claim text cannot break out of the page or change executa
   const packet = { preparation: { project: hostile }, sources: [{ path: hostile, fingerprint: "test", text: hostile,
     excerpts: [{ byte_start: 0, byte_end: Buffer.byteLength(hostile), line_start: 1, line_end: 1 }] }] };
   const plan = { schema_version: 3, notes: [{ name: hostile, evidence: [claim] }] };
-  const draft = { review: { requires_review: true, notes: [{ path: hostile, fields: { reviewed: "unreviewed" } }], uncited_sources: [] } };
+  const draft = { review: { requires_review: true, notes: [{ path: hostile, fields: { reviewed: "unreviewed" } }], uncited_sources: [],
+    excerpt_gaps: [{ source: 1, excerpt: 1, path: hostile, line_start: 1, line_end: 1, uncited_lines: [{ line_start: 1, line_end: 1 }] }],
+    repeated_claims: [{ note: hostile, claims: [1, 2] }],
+  } };
   const discovery = { coverage: { omitted: [], excluded_entries: 0, implementation_groups: [
     { directory: "packages/api", candidates: 2, selected: 1 },
     { directory: hostile, candidates: 1, selected: 0 },
@@ -104,6 +107,8 @@ test("untrusted source/claim text cannot break out of the page or change executa
   assert(page.all.some(node => node.tagName === "p" && node.textContent.includes(`No implementation file selected: ${hostile}`)));
   assert.equal(page.document.getElementById("project").textContent, hostile);
   assert(page.all.some(node => node.tagName === "pre" && node.textContent.includes(hostile)));
+  assert(page.all.some(node => node.tagName === "pre" && node.textContent.startsWith("Uncited selected lines:")));
+  assert(page.all.some(node => node.tagName === "p" && node.textContent.includes(`Repeated claim wording in ${hostile}: claims 1, 2`)));
   page.document.getElementById("export").click();
   assert.equal(JSON.parse(await page.blobs[0].text()).notes[0].evidence[0].claim, hostile);
   const kind = page.all.find(node => node.tagName === "select"); kind.value = "unknown"; kind.listeners.change();
@@ -126,6 +131,9 @@ test("omitted behavior can be added from uncited excerpts and published for chec
   const packet = JSON.parse(readFileSync(join(saved, "packet.json")));
   const excerpt = packet.sources[0].excerpts.findIndex(e => packet.sources[0].text.slice(e.byte_start, e.byte_end).includes("self.waypoints.is_empty()")) + 1;
   assert(excerpt > 1, "the missing behavior must be in a different, uncited excerpt");
+  const plain = spawnSync(resolve("target/debug/akasha"), ["--root", f.root, "--project", "first-run", "local-onboarding-compile", "--packet", join(saved, "packet.json"), "--plan", join(saved, "plan.json")], { encoding: "utf8" });
+  assert.equal(plain.status, 0, plain.stderr); assert.equal(plain.stderr, "");
+  assert(plain.stdout.includes("Uncited selected lines: src/lib.rs:"));
   const page = openPage(readFileSync(join(saved, "review.html"), "utf8"));
   page.find(`Add claim to note 1 citing source 1 excerpt ${excerpt}`).click();
   const claim = page.find("Claim text for note 1 claim 2");

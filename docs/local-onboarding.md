@@ -15,6 +15,10 @@ The desktop provides **Review local onboarding** (toolbar **＋**) for source se
    summary remains available; **One observation per file** requires a fact, inference or explicit
    unknown for every selected file, within the same worker/request budgets. It considers each file,
    but can still omit important behavior or produce incomplete wording. Unknowns remain uncited gaps.
+   Experimental **Behavior and boundaries per file** reads files independently and allows several
+   short observations within the same note limit, worker and deadline. More completions can cost
+   more time. Preserved native runs still omit behavior or repeat claims; this is not automatic
+   semantic acceptance. Compact summary remains the default.
    Choose **Generate draft locally**. The native desktop owns
    the Qwen9B worker; its checked draft enters the claim editor directly. Nothing is downloaded.
    **Cancel generation**, closing the dialog, or changing project stops the owned request and
@@ -33,6 +37,11 @@ The desktop provides **Review local onboarding** (toolbar **＋**) for source se
 5. Preview again. Inspect exact proposed note/index/roadmap Markdown, affected actions and current
    citation/sampling/focus gaps. Current desktop discovery displays its bounded inventory. Imported
    captures keep separate discovery omissions in `discovery.json`; imports do not rescan.
+   The checked report also identifies repeated claim wording and every captured source window
+   containing uncited lines, including partially cited windows. **Review next uncited window**
+   opens the exact captured code; add a claim from that excerpt or repair existing citations.
+   These are citation-accounting aids. Citing every line does not prove factual support or
+   complete behavior coverage. Reports stay labeled last checked until the next preview.
 6. Save or Discard unsaved note edits, paste the full displayed preview ID, and choose
    **Publish reviewed notes**. Rust recompiles and rechecks the exact approval before publication.
    Wait for the result: the modal prevents close/project changes during publication. Failed checks
@@ -87,6 +96,14 @@ eight claims per note within unchanged byte limits; older binaries can reject la
 and should be rebuilt. The development generator retains its existing compact grammar.
 [Acceptance](../akasha/Research/onboarding_per_file_observations.md) records the remaining raw
 semantic gap; one observation per file does not establish complete behavior coverage.
+
+[Gap and duplicate review replay](../akasha/Research/evidence/2026-11-16-onboarding-behavior/demo.html)
+shows the untouched file-isolated draft, visible repeated claims and missing windows, source
+navigation, separate corrections and checked publication/librarian openings.
+[Evidence](../akasha/Research/onboarding_behavior_map.md) preserves both failed automatic semantic
+attempts; no further tuning or automatic publication is implied. Additive optional review JSON
+fields `excerpt_gaps` and `repeated_claims` require updated clients to display; persisted input,
+proposal and canonical note formats remain compatible.
 
 
 The development adapter can draft initial project knowledge with an explicit local GGUF model

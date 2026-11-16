@@ -153,6 +153,8 @@ export class OnboardingPanel {
     this.editor.append(disclosure(`Last checked source coverage: ${gaps.length} uncited selected files`,
       (gaps.length ? gaps.join("\n") : "Every selected file has a claim citation.") +
       "\nCitation counts do not certify meaning or completeness. Preview again after corrections to refresh this report."));
+    const excerptGaps = review.draft.review.excerpt_gaps ?? [], repeated = review.draft.review.repeated_claims ?? [];
+    this.editor.append(element("p", `Last checked draft: ${excerptGaps.length} source windows contain uncited lines; ${repeated.length} repeated-claim groups. These checks do not establish factual support. Preview again after edits.`));
     for (const [index, note] of plan.notes.entries()) {
       const section = element("section", undefined, "onboarding-note");
       const slot = review.identities?.slots.find(slot => slot.slot === note.slot);
@@ -160,16 +162,32 @@ export class OnboardingPanel {
       const reviewIndex = slot ? review.identities!.slots.indexOf(slot) : index;
       const reviewed = review.draft.review.notes[reviewIndex]!;
       section.append(element("h3", reviewed.path), disclosure("Recorded metadata", JSON.stringify(reviewed.fields, null, 2)));
+      for (const duplicate of repeated.filter(item => item.note === reviewed.path)) {
+        section.append(element("p", `Repeated wording in last checked claims ${duplicate.claims.join(", ")}. Review or replace redundant claims using the captured sources.`));
+      }
       const excerpts = review.excerpts.filter(excerpt => !slot || slot.sources.includes(excerpt.source));
       const browse = element("details"); browse.append(element("summary", "Browse captured source excerpts"));
       for (const excerpt of excerpts) {
-        const details = disclosure(`${excerpt.path}:${excerpt.line_start}–${excerpt.line_end}`, excerpt.text);
+        const gap = excerptGaps.find(item => item.source === excerpt.source && item.excerpt === excerpt.excerpt);
+        const details = disclosure(`${excerpt.path}:${excerpt.line_start}–${excerpt.line_end}${gap ? " · uncited lines to review" : ""}`, excerpt.text);
+        if (gap) {
+          details.dataset.excerptGap = "true";
+          details.append(element("p", `Uncited selected lines: ${gap.uncited_lines.map(range => `${range.line_start}–${range.line_end}`).join(", ")}. A citation elsewhere in this file does not cover these lines.`));
+        }
         const add = button("Add claim citing this excerpt", () => {
           if (note.evidence.length >= 8) return;
           note.evidence.push({ kind: "fact", claim: "", sources: [{ source: excerpt.source, excerpt: excerpt.excerpt }] });
           change(); this.renderEditor();
+          this.editor.querySelector<HTMLTextAreaElement>(`[aria-label="Note ${index + 1} claim ${note.evidence.length}"]`)?.focus();
         });
         add.dataset.limit = String(note.evidence.length >= 8); details.append(add); browse.append(details);
+      }
+      if (browse.querySelector("[data-excerpt-gap]")) {
+        section.append(button("Review next uncited window", () => {
+          const target = browse.querySelector<HTMLDetailsElement>("[data-excerpt-gap]")!;
+          (browse as HTMLDetailsElement).open = true; target.open = true;
+          target.querySelector("summary")?.focus(); target.scrollIntoView?.({ block: "nearest" });
+        }));
       }
       section.append(browse);
       for (const [claimIndex, claim] of note.evidence.entries()) {
@@ -239,7 +257,7 @@ export class OnboardingPanel {
     this.preview.append(element("p", `Update index: ${draft.preview.index_changed}; roadmap: ${draft.preview.roadmap_changed}; state: ${draft.preview.state_changed}`));
     for (const note of draft.proposal.notes) this.preview.append(disclosure(`Exact proposed ${note.path}`, note.source));
     this.preview.append(disclosure("Exact proposed index", draft.proposal.index), disclosure("Exact proposed roadmap", draft.proposal.roadmap),
-      disclosure("Coverage and sampling gaps", JSON.stringify({ uncited_sources: draft.review.uncited_sources, sampled_sources: draft.review.sampled_sources, uncited_focus_excerpts: draft.review.uncited_focus_excerpts ?? [] }, null, 2)));
+      disclosure("Coverage and sampling gaps", JSON.stringify({ uncited_sources: draft.review.uncited_sources, sampled_sources: draft.review.sampled_sources, uncited_focus_excerpts: draft.review.uncited_focus_excerpts ?? [], excerpt_gaps: draft.review.excerpt_gaps ?? [], repeated_claims: draft.review.repeated_claims ?? [] }, null, 2)));
   }
   private async apply(): Promise<void> {
     const binding = this.binding, planJson = this.approvedPlan, previewId = this.review?.draft.preview.preview_id;

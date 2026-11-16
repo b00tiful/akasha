@@ -22,8 +22,8 @@ export class OnboardingGenerator {
       <p>Optional local Qwen3.5-9B generation. Inspect model setup, choose a device, then generate from the selected sources. Claims still need your source review.</p>
       <button type="button" data-inference-setup>Inspect model setup</button>
       <label>Device <select name="inference-profile"><option value="vulkan">GPU · automatic memory fitting</option><option value="cpu">CPU · slower</option></select></label>
-      <label>Draft detail <select name="draft-mode"><option value="summary">Compact group summary</option><option value="per_file">One observation per file</option></select></label>
-      <p>Per-file drafting asks for a supported observation or an explicit unknown for every selected file. Source citations still need review; important behavior may remain missing.</p>
+      <label>Draft detail <select name="draft-mode"><option value="summary">Compact group summary</option><option value="per_file">One observation per file</option><option value="behavior_map">Behavior and boundaries per file</option></select></label>
+      <p>Behavior drafting gives each file room for distinct conditions, state changes and test scenarios. Per-file modes retain an observation or explicit unknown for every selected file. Review citations and missing behavior before publication.</p>
       <button type="button" data-generate>Generate draft locally</button>
       <button type="button" data-cancel-generation>Cancel generation</button>
       <p role="status" data-generation-status>Local generation is off until explicitly requested. Existing captured plans can still be imported.</p><div data-local-setup></div>`;
@@ -72,7 +72,7 @@ export class OnboardingGenerator {
   }
   private async generate(): Promise<void> {
     const binding = this.binding, packet = this.packet;
-    const mode = this.mode.value as "summary" | "per_file";
+    const mode = this.mode.value as "summary" | "per_file" | "behavior_map";
     if (!binding || !packet || this.running || this.disabled || this.checking) return;
     const generation = ++this.generation; this.running = true; this.busy(true); this.controls();
     this.status.textContent = "Verifying Qwen9B and the pinned runtime, then generating source-backed draft claims…";
@@ -85,7 +85,7 @@ export class OnboardingGenerator {
       if (generation !== this.generation || binding !== this.binding) return;
       if (result.review.draft.preview.root !== binding.root || result.review.draft.preview.project !== binding.project) throw new Error("Generated draft belongs to another project or root.");
       this.generated(result);
-      this.status.textContent = `Generated ${result.metrics.length} source groups with Qwen9B${mode === "per_file" ? ", one observation per file" : ""}. ${result.review.draft.review.uncited_sources.length} selected files remain uncited. Worker stopped. Review every claim and its cited code before previewing and approving publication.`;
+      this.status.textContent = `Generated ${result.review.draft.review.notes.length} draft notes with Qwen9B${mode === "per_file" ? ", one observation per file" : mode === "behavior_map" ? ", behavior and boundaries per file" : ""}. ${result.review.draft.review.uncited_sources.length} selected files remain uncited. Worker stopped. Review every claim and its cited code before previewing and approving publication.`;
     } catch (error) { if (generation === this.generation) this.status.textContent = `Generation unavailable: ${message(error)}`; }
     finally {
       if (id) await cancelLocalGeneration(id).catch(() => {});

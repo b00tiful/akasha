@@ -281,6 +281,34 @@ pub(crate) fn render_local_onboarding_draft(
         draft.preview.proposal_id,
         draft.preview.preview_id
     );
+    for gap in &draft.review.excerpt_gaps {
+        let ranges = gap
+            .uncited_lines
+            .iter()
+            .map(|range| format!("{}-{}", range.line_start, range.line_end))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(
+            text,
+            "Uncited selected lines: {}:{ranges} (source {}, excerpt {}); inspect before approval",
+            librarian_display(&gap.path),
+            gap.source,
+            gap.excerpt
+        );
+    }
+    for duplicate in &draft.review.repeated_claims {
+        let positions = duplicate
+            .claims
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(
+            text,
+            "Repeated claim wording: {} — claims {positions}; review redundancy",
+            librarian_display(&duplicate.note.to_string_lossy())
+        );
+    }
     for gap in &draft.review.uncited_focus_excerpts {
         let _ = writeln!(
             text,

@@ -1491,6 +1491,27 @@ async fn parcel_native_onboarding_relationship_acceptance() {
 #[tokio::test]
 #[ignore = "requires installed selected Qwen9B, loopback and Vulkan device"]
 async fn per_file_native_onboarding_captures_parcel_observations() {
+    capture_parcel_observations(
+        akasha_desktop::onboarding_generation::DraftMode::PerFile,
+        "per-file",
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "requires installed selected Qwen9B, loopback and Vulkan device"]
+async fn behavior_map_native_onboarding_captures_parcel_observations() {
+    capture_parcel_observations(
+        akasha_desktop::onboarding_generation::DraftMode::BehaviorMap,
+        "behavior-map",
+    )
+    .await;
+}
+
+async fn capture_parcel_observations(
+    mode: akasha_desktop::onboarding_generation::DraftMode,
+    label: &str,
+) {
     use akasha_desktop::onboarding_generation::{DraftMode, generate_onboarding_with_mode};
     let fixture = Fixture::new(5);
     let repo = fixture.base.join("repository");
@@ -1518,8 +1539,14 @@ async fn per_file_native_onboarding_captures_parcel_observations() {
     .unwrap();
     let before = snapshot(&fixture.root);
     let code_before = snapshot(&repo);
-    let evidence =
-        std::env::temp_dir().join(format!("akasha-per-file-acceptance-{}", std::process::id()));
+    let evidence = std::env::temp_dir().join(format!(
+        "akasha-{label}-acceptance-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     fs::create_dir(&evidence).unwrap();
     fs::write(
         evidence.join("prepared.json"),
@@ -1533,7 +1560,7 @@ async fn per_file_native_onboarding_captures_parcel_observations() {
         prepared.packet_json.clone(),
         akasha_desktop::inference::Profile::Vulkan,
         akasha_desktop::inference::Cancellation::new(),
-        DraftMode::PerFile,
+        mode,
     )
     .await
     .unwrap();
@@ -1549,18 +1576,28 @@ async fn per_file_native_onboarding_captures_parcel_observations() {
     .unwrap();
     copy(&repo, &evidence.join("repository"));
     copy(&fixture.root, &evidence.join("memory"));
-    println!("Per-file raw native capture: {}", evidence.display());
+    println!("{label} raw native capture: {}", evidence.display());
     let plan: Value = serde_json::from_str(&generated.plan_json).unwrap();
+    let count = plan["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|note| note["evidence"].as_array().unwrap().len())
+        .sum::<usize>();
+    if matches!(mode, DraftMode::PerFile) {
+        assert_eq!(count, paths.len());
+    } else {
+        assert!(count >= paths.len());
+    }
+    assert!(generated.review.draft.review.uncited_sources.is_empty());
     assert_eq!(
-        plan["notes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|note| note["evidence"].as_array().unwrap().len())
-            .sum::<usize>(),
-        paths.len()
+        generated.metrics.len(),
+        if matches!(mode, DraftMode::BehaviorMap) {
+            paths.len()
+        } else {
+            prepared.identities.slots.len()
+        }
     );
-    assert_eq!(generated.metrics.len(), prepared.identities.slots.len());
     assert!(generated.review.draft.review.requires_review);
     assert_eq!(snapshot(&fixture.root), before);
     assert_eq!(snapshot(&repo), code_before);
@@ -1568,6 +1605,15 @@ async fn per_file_native_onboarding_captures_parcel_observations() {
 
 #[test]
 fn per_file_reviewed_memory_publishes_retrieves_and_replays_without_changes() {
+    reviewed_parcel_round_trip("parcel-per-file-raw-plan.json", "per-file");
+}
+
+#[test]
+fn behavior_map_review_detects_gaps_and_duplicates_before_checked_publication() {
+    reviewed_parcel_round_trip("parcel-behavior-raw-plan.json", "behavior-map");
+}
+
+fn reviewed_parcel_round_trip(raw_file: &str, label: &str) {
     let fixture = Fixture::new(5);
     let repo = fixture.base.join("repository");
     fs::remove_file(repo.join("limits.rs")).unwrap();
@@ -1591,7 +1637,7 @@ fn per_file_reviewed_memory_publishes_retrieves_and_replays_without_changes() {
     )
     .unwrap();
     let plan = fs::read_to_string(fixtures.join("parcel-per-file-reviewed-plan.json")).unwrap();
-    let raw = fs::read_to_string(fixtures.join("parcel-per-file-raw-plan.json")).unwrap();
+    let raw = fs::read_to_string(fixtures.join(raw_file)).unwrap();
     let original = review_onboarding_plan(
         Some(fixture.root.clone()),
         "example".into(),
@@ -1599,6 +1645,23 @@ fn per_file_reviewed_memory_publishes_retrieves_and_replays_without_changes() {
         &raw,
     )
     .unwrap();
+    if label == "behavior-map" {
+        assert!(original.draft.review.uncited_sources.is_empty());
+        assert_eq!(original.draft.review.excerpt_gaps.len(), 3);
+        assert_eq!(original.draft.review.repeated_claims.len(), 1);
+        assert_eq!(
+            original.draft.review.repeated_claims[0].claims,
+            [1, 2, 3, 4]
+        );
+        assert!(
+            original
+                .draft
+                .review
+                .excerpt_gaps
+                .iter()
+                .any(|gap| gap.path == "tests/pipeline.rs" && gap.excerpt == 3)
+        );
+    }
     let review = review_onboarding_plan(
         Some(fixture.root.clone()),
         "example".into(),
@@ -1607,6 +1670,8 @@ fn per_file_reviewed_memory_publishes_retrieves_and_replays_without_changes() {
     )
     .unwrap();
     assert!(review.draft.review.uncited_sources.is_empty());
+    assert!(review.draft.review.excerpt_gaps.is_empty());
+    assert!(review.draft.review.repeated_claims.is_empty());
     assert_eq!(
         review
             .draft
@@ -1721,7 +1786,7 @@ fn per_file_reviewed_memory_publishes_retrieves_and_replays_without_changes() {
     assert_eq!(snapshot(&fixture.root), after);
     assert_eq!(snapshot(&repo), code_before);
     let evidence = std::env::temp_dir().join(format!(
-        "akasha-per-file-reviewed-{}-{}",
+        "akasha-{label}-reviewed-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1747,7 +1812,7 @@ fn per_file_reviewed_memory_publishes_retrieves_and_replays_without_changes() {
     copy(&fixture.root, &evidence.join("memory"));
     copy(&repo, &evidence.join("repository"));
     println!(
-        "Per-file reviewed publication and librarian acceptance: {}",
+        "{label} reviewed publication and librarian acceptance: {}",
         evidence.display()
     );
 }

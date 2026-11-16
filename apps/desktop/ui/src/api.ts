@@ -154,6 +154,6 @@ export function verifyInferenceAsset(requestId: string, asset: import("./inferen
 }
 export function reserveLocalGeneration(): Promise<string> { return invoke("reserve_local_generation"); }
 export function cancelLocalGeneration(requestId: string): Promise<void> { return invoke("cancel_local_generation", { requestId }); }
-export function generateOnboarding(requestId: string, root: string, project: string, packetJson: string, profile: "vulkan" | "cpu", mode: "summary" | "per_file" = "summary"): Promise<import("./onboarding-types").GeneratedOnboarding> {
+export function generateOnboarding(requestId: string, root: string, project: string, packetJson: string, profile: "vulkan" | "cpu", mode: "summary" | "per_file" | "behavior_map" = "summary"): Promise<import("./onboarding-types").GeneratedOnboarding> {
   return invoke("generate_local_onboarding", { requestId, root: optional(root), project, packetJson, profile, mode });
 }

@@ -19,6 +19,8 @@ export interface OnboardingReview {
       requires_review: boolean;
       notes: Array<{ path: string; wikilink: string; fields: Record<string, unknown> }>;
       uncited_sources: string[]; sampled_sources: unknown[]; uncited_focus_excerpts?: unknown[];
+      excerpt_gaps?: Array<{ source: number; excerpt: number; path: string; line_start: number; line_end: number; uncited_lines: Array<{ line_start: number; line_end: number }> }>;
+      repeated_claims?: Array<{ note: string; claims: number[] }>;
     };
   };
   identities: { slots: Array<{ slot: number; role: string; sources: number[] }> } | null;

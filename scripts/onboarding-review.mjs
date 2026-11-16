@@ -37,6 +37,8 @@ function reviewApp() {
   make("p", listed.length ? `Selected but uncited: ${listed.map(s => typeof s === "string" ? s : s.path).join(", ")}` : "Every selected file is cited. This does not establish complete coverage or factual support.", coverage);
   for (const source of data.draft.review.sampled_sources ?? []) make("pre", JSON.stringify(source, null, 2), coverage);
   for (const window of data.draft.review.uncited_focus_excerpts ?? []) make("pre", JSON.stringify(window, null, 2), coverage);
+  for (const window of data.draft.review.excerpt_gaps ?? []) make("pre", `Uncited selected lines: ${JSON.stringify(window, null, 2)}`, coverage);
+  for (const duplicate of data.draft.review.repeated_claims ?? []) make("p", `Repeated claim wording in ${duplicate.note}: claims ${duplicate.claims.join(", ")}. Review redundancy.`, coverage);
   if (data.discovery) {
     make("p", `Discovery omitted ${data.discovery.coverage.omitted.length} candidates and excluded ${data.discovery.coverage.excluded_entries} entries.`, coverage);
     const groups = data.discovery.coverage.implementation_groups;

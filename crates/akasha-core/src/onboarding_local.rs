@@ -221,6 +221,29 @@ pub struct LocalOnboardingReview {
     /// Matching text windows with no overlapping claim citation, not a semantic coverage score.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub uncited_focus_excerpts: Vec<LocalFocusExcerptGap>,
+    /// Captured windows containing lines outside the union of checked claim citations.
+    /// This is citation accounting, never a semantic completeness verdict.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub excerpt_gaps: Vec<LocalOnboardingExcerptGap>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub repeated_claims: Vec<LocalRepeatedClaims>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LocalOnboardingExcerptGap {
+    pub source: usize,
+    pub excerpt: usize,
+    pub path: String,
+    pub line_start: usize,
+    pub line_end: usize,
+    pub uncited_lines: Vec<LocalOnboardingLineRange>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LocalRepeatedClaims {
+    pub note: PathBuf,
+    /// One-based positions within this checked note; wording is whitespace-normalized only.
+    pub claims: Vec<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -874,9 +897,73 @@ fn review_local_proposal(
             }
         }
     }
+    let mut excerpt_gaps = Vec::new();
+    for (source_index, source) in packet.sources.iter().enumerate() {
+        let mut ranges = notes
+            .iter()
+            .flat_map(|note| &note.claims)
+            .flat_map(|claim| &claim.sources)
+            .filter(|reference| reference.path == source.path)
+            .map(|reference| (reference.line_start, reference.line_end))
+            .collect::<Vec<_>>();
+        ranges.sort_unstable();
+        for (excerpt_index, excerpt) in source.excerpts.iter().enumerate() {
+            let mut next = excerpt.line_start;
+            let mut uncited_lines = Vec::new();
+            for &(start, end) in &ranges {
+                if end < next || start > excerpt.line_end {
+                    continue;
+                }
+                if start > next {
+                    uncited_lines.push(LocalOnboardingLineRange {
+                        line_start: next,
+                        line_end: start - 1,
+                    });
+                }
+                next = next.max(end + 1);
+                if next > excerpt.line_end {
+                    break;
+                }
+            }
+            if next <= excerpt.line_end {
+                uncited_lines.push(LocalOnboardingLineRange {
+                    line_start: next,
+                    line_end: excerpt.line_end,
+                });
+            }
+            if !uncited_lines.is_empty() {
+                excerpt_gaps.push(LocalOnboardingExcerptGap {
+                    source: source_index + 1,
+                    excerpt: excerpt_index + 1,
+                    path: source.path.clone(),
+                    line_start: excerpt.line_start,
+                    line_end: excerpt.line_end,
+                    uncited_lines,
+                });
+            }
+        }
+    }
+    let mut repeated_claims = Vec::new();
+    for note in &notes {
+        let mut wording = BTreeMap::<String, Vec<usize>>::new();
+        for (index, claim) in note.claims.iter().enumerate() {
+            wording
+                .entry(claim.claim.split_whitespace().collect::<Vec<_>>().join(" "))
+                .or_default()
+                .push(index + 1);
+        }
+        repeated_claims.extend(wording.into_values().filter(|claims| claims.len() > 1).map(
+            |claims| LocalRepeatedClaims {
+                note: note.path.clone(),
+                claims,
+            },
+        ));
+    }
     let review = LocalOnboardingReview {
         requires_review: true,
         uncited_focus_excerpts,
+        excerpt_gaps,
+        repeated_claims,
         notes,
         uncited_sources: packet
             .sources

@@ -37,6 +37,34 @@ function setup() {
   return { host, panel, published, files, load, approval, approve, apply, ready };
 }
 beforeEach(() => { review.mockReset(); publish.mockReset(); prepare.mockReset(); review.mockResolvedValue(response()); availability.mockReset(); reserve.mockReset(); cancel.mockReset(); generate.mockReset(); cancel.mockResolvedValue(undefined); });
+it("shows checked duplicate wording and uncited windows even when every file is cited, then refreshes after repair", async () => {
+  const result = response();
+  result.draft.review.uncited_sources = [];
+  result.draft.review.excerpt_gaps = [{ source: 1, excerpt: 2, path: "src/limits.rs", line_start: 101, line_end: 101, uncited_lines: [{ line_start: 101, line_end: 101 }] }];
+  result.draft.review.repeated_claims = [{ note: "limits.md", claims: [1, 2] }];
+  review.mockResolvedValue(result);
+  const { host, files, load, approve, apply } = setup();
+  files(); load(); await vi.waitFor(() => expect(host.textContent).toContain("Fresh preview ready"));
+  expect(host.textContent).toContain("0 uncited selected files");
+  expect(host.textContent).toContain("1 source windows contain uncited lines; 1 repeated-claim groups");
+  expect(host.textContent).toContain("Repeated wording in last checked claims 1, 2");
+  approve(); expect(apply.disabled).toBe(false);
+  const next = [...host.querySelectorAll("button")].find(button => button.textContent === "Review next uncited window")!;
+  next.click(); const window = host.querySelector<HTMLDetailsElement>("[data-excerpt-gap]")!;
+  expect(window.open).toBe(true); expect(window.parentElement!.hasAttribute("open")).toBe(true);
+  expect(apply.disabled).toBe(false); // Reading a checked window does not edit the draft.
+  window.querySelector<HTMLButtonElement>("button")!.click();
+  expect(apply.disabled).toBe(true);
+  const added = host.querySelector<HTMLTextAreaElement>('[aria-label="Note 1 claim 2"]')!;
+  expect(document.activeElement).toBe(added);
+  added.value = "Captured missing behavior."; added.dispatchEvent(new Event("input"));
+  const fresh = response(); fresh.draft.review.uncited_sources = [];
+  review.mockResolvedValue(fresh); load();
+  await vi.waitFor(() => expect(host.textContent).toContain("0 source windows contain uncited lines; 0 repeated-claim groups"));
+  expect(host.textContent).not.toContain("Repeated wording in last checked");
+  expect(JSON.parse(review.mock.calls.at(-1)![3]).notes[0].evidence[1].sources).toEqual([{ source: 1, excerpt: 2 }]);
+  expect(publish).not.toHaveBeenCalled();
+});
 it("renders literal source, metadata and gaps and requires full-ID explicit publication", async () => {
   const { host, ready, approve, apply, published } = setup();
   expect(review).not.toHaveBeenCalled(); expect(publish).not.toHaveBeenCalled(); await ready();
@@ -247,18 +275,18 @@ async function nativeReady(host: HTMLElement) {
   await vi.waitFor(() => expect(host.textContent).toContain("Exact SHA-256 checks"));
   return host.querySelector<HTMLButtonElement>("[data-generate]")!;
 }
-it("opts into per-file drafting, locks the choice during generation and reviews all eight claims", async () => {
+it.each(["per_file", "behavior_map"] as const)("opts into %s drafting, locks the choice during generation and reviews all eight claims", async modeName => {
   const { host, approve, apply } = setup(); const start = await nativeReady(host);
   const mode = host.querySelector<HTMLSelectElement>('[name="draft-mode"]')!;
-  expect(mode.value).toBe("summary"); mode.value = "per_file";
+  expect(mode.value).toBe("summary"); mode.value = modeName;
   const expanded = structuredClone(plan);
   expanded.notes[0]!.evidence = Array.from({ length: 8 }, (_, i) => ({ kind: "fact", claim: `File observation ${i + 1}`, sources: [{ source: 1, excerpt: 1 }] }));
   reserve.mockResolvedValue("per-file");
   let finish!: (value: unknown) => void; generate.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
-  start.click(); await vi.waitFor(() => expect(generate).toHaveBeenCalledWith("per-file", binding.root, binding.project, prepared().packet_json, "vulkan", "per_file"));
+  start.click(); await vi.waitFor(() => expect(generate).toHaveBeenCalledWith("per-file", binding.root, binding.project, prepared().packet_json, "vulkan", modeName));
   expect(mode.disabled).toBe(true);
   finish({ plan_json: JSON.stringify(expanded), review: response(), metrics: [{}] });
-  await vi.waitFor(() => expect(host.textContent).toContain("one observation per file. 1 selected files remain uncited"));
+  await vi.waitFor(() => expect(host.textContent).toContain(`${modeName === "per_file" ? "one observation per file" : "behavior and boundaries per file"}. 1 selected files remain uncited`));
   expect(host.querySelectorAll(".onboarding-claim")).toHaveLength(8);
   expect(mode.disabled).toBe(false); approve(); expect(apply.disabled).toBe(true); expect(publish).not.toHaveBeenCalled();
 });
