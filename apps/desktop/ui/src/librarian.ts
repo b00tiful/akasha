@@ -294,7 +294,9 @@ function text(tag: string, value: string): HTMLElement {
 
 function renderProvenance(note: LibrarianNoteProvenance): HTMLElement {
   const details = document.createElement("details");
-  details.append(text("summary", `Repository evidence: ${note.evidence_state} / ${note.claims.length} associated claims`));
+  const uninspected = new Set(note.claims.flatMap(claim => claim.sources.filter(source => source.excerpt_state === "file_budget").map(source => source.path))).size;
+  details.append(text("summary", `Repository evidence: ${note.evidence_state} / ${note.claims.length} associated claims${uninspected ? ` / ${uninspected} files not inspected` : ""}`));
+  if (uninspected) details.append(text("p", "The code-file inspection budget was reached. Saved passages remain available; these additional files have no checked freshness or code excerpt. Narrow the question or explore this note's related sources for a smaller review."));
   if (note.unmatched_claims) details.append(text("p", `${note.unmatched_claims} recorded claims outside this exact passage or ambiguously associated.`));
   for (const claim of note.claims) {
     details.append(text("p", `${claim.recorded_kind} / note line ${claim.note_line}: ${claim.claim}`));

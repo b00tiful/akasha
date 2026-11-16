@@ -12,6 +12,7 @@ export class OnboardingSourcePicker {
   private readonly paths: HTMLTextAreaElement;
   private readonly focusTerms: HTMLTextAreaElement;
   private readonly sampling: HTMLInputElement;
+  private readonly batches: HTMLInputElement;
   private readonly mode: HTMLSelectElement;
   private readonly status: HTMLElement;
   private readonly output: HTMLElement;
@@ -23,16 +24,18 @@ export class OnboardingSourcePicker {
       <label>Directories or files, one per line <textarea name="source-paths" rows="3" placeholder="src&#10;docs&#10;tests"></textarea></label>
       <label>Optional literal focus terms, one per line <textarea name="source-focus" rows="2"></textarea></label>
       <label><input name="source-sampling" type="checkbox"> Allow partial windows from large files</label>
+      <label><input name="source-batches" type="checkbox"> Divide all eligible directory sources into review batches</label>
       <button type="button" data-prepare-sources>Inspect selected sources</button>
       <button type="button" data-cancel-sources disabled>Cancel source inspection</button>
       <p role="status" data-source-status>Choose directories or files to begin. Nothing is scanned automatically.</p><div data-source-output></div>`;
     this.paths = host.querySelector('[name="source-paths"]')!;
     this.focusTerms = host.querySelector('[name="source-focus"]')!;
     this.sampling = host.querySelector('[name="source-sampling"]')!;
+    this.batches = host.querySelector('[name="source-batches"]')!;
     this.mode = host.querySelector('[name="source-mode"]')!;
     this.status = host.querySelector('[data-source-status]')!;
     this.output = host.querySelector('[data-source-output]')!;
-    for (const input of [this.paths, this.focusTerms, this.sampling, this.mode]) input.addEventListener("input", () => {
+    for (const input of [this.paths, this.focusTerms, this.sampling, this.batches, this.mode]) input.addEventListener("input", () => {
       if (this.disabled) return;
       this.clear(); this.replaced(null); this.status.textContent = "Selection changed. Inspect again before generating a draft.";
     });
@@ -44,6 +47,7 @@ export class OnboardingSourcePicker {
     if (this.binding?.root === binding?.root && this.binding?.project === binding?.project) return;
     this.binding = binding; this.clear(); this.paths.value = ""; this.focusTerms.value = "";
     this.sampling.checked = false; this.mode.value = "discover";
+    this.batches.checked = false;
     this.status.textContent = "Choose directories or files to begin. Nothing is scanned automatically.";
   }
   setDisabled(disabled: boolean): void { this.disabled = disabled; this.controls(); }
@@ -57,13 +61,15 @@ export class OnboardingSourcePicker {
   private controls(): void {
     for (const input of this.host.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement>("input, textarea, select, button")) input.disabled = this.disabled || !this.binding || this.busy;
     this.host.querySelector<HTMLButtonElement>("[data-cancel-sources]")!.disabled = !this.busy || this.disabled;
+    this.batches.disabled ||= this.mode.value !== "discover";
     this.host.setAttribute("aria-busy", String(this.busy));
   }
-  private async prepare(): Promise<void> {
+  private async prepare(batch = 1): Promise<void> {
     const binding = this.binding;
     if (!binding || this.busy || this.disabled) return;
     const lines = (value: string) => value.split(/\r?\n/u).map(line => line.trim()).filter(Boolean);
     const selection: OnboardingSelection = { mode: this.mode.value as OnboardingSelection["mode"], paths: lines(this.paths.value), focus: lines(this.focusTerms.value), sample_large_files: this.sampling.checked };
+    if (selection.mode === "discover" && this.batches.checked) selection.batch = batch;
     this.replaced(null); this.clear();
     const generation = ++this.generation; this.busy = true; this.controls();
     this.status.textContent = "Inspecting bounded sources and rebuilding their exact identities…";
@@ -80,6 +86,16 @@ export class OnboardingSourcePicker {
   private render(result: OnboardingSources): void {
     const paths = [...new Set(result.excerpts.map(excerpt => excerpt.path))];
     this.output.append(node("h4", `${paths.length} selected files · ${result.identities.slots.length} planned notes`));
+    if (result.batch) {
+      const batch = result.batch;
+      this.output.append(node("h4", `Batch ${batch.current} of ${batch.packets.length}`), node("p", "Directory coverage below counts files assigned across all batches. Assignment does not mean reviewed or published; sampled files still have unknown lines. Each batch needs its own generation, review and approval. Switching batches clears the current draft and refreshes source identities."));
+      for (const [index, paths] of batch.packets.entries()) {
+        const button = node("button", `${index + 1 === batch.current ? "Reload" : "Inspect"} batch ${index + 1} (${paths.length} files)`) as HTMLButtonElement;
+        button.type = "button"; button.dataset.sourceBatch = String(index + 1);
+        button.addEventListener("click", () => void this.prepare(index + 1));
+        this.output.append(button, details(`Batch ${index + 1} files`, paths.join("\n")));
+      }
+    }
     const useFiles = node("button", "Use selected paths as an editable file list") as HTMLButtonElement;
     useFiles.type = "button"; useFiles.addEventListener("click", () => {
       this.mode.value = "files"; this.paths.value = paths.join("\n"); this.clear(); this.replaced(null);

@@ -143,6 +143,45 @@ function sourceControls(host: HTMLElement) {
   const set = (value: string) => { paths.value = value; paths.dispatchEvent(new Event("input")); };
   return { paths, inspect, set };
 }
+it("inspects all-source batches through Rust and invalidates the prior draft and approval on navigation", async () => {
+  const packets = [["src/limits.rs"], ["src/other.rs"]];
+  prepare.mockResolvedValue({ ...prepared(), batch: { current: 1, packets } });
+  const { host, load, approve, apply } = setup(); const { set, inspect } = sourceControls(host);
+  set("src"); host.querySelector<HTMLInputElement>('[name="source-batches"]')!.checked = true;
+  inspect.click(); await vi.waitFor(() => expect(host.textContent).toContain("Batch 1 of 2"));
+  expect(prepare.mock.calls[0]![2]).toMatchObject({ mode: "discover", batch: 1 });
+  const input = host.querySelector<HTMLInputElement>('[name="plan"]')!;
+  Object.defineProperty(input, "files", { value: [{ size: 500, text: async () => JSON.stringify(plan) }] }); input.dispatchEvent(new Event("change"));
+  load(); await vi.waitFor(() => expect(host.textContent).toContain("Fresh preview ready"));
+  approve(); expect(apply.disabled).toBe(false);
+  let finish!: (value: ReturnType<typeof prepared> & { batch: { current: number; packets: string[][] } }) => void;
+  prepare.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  host.querySelector<HTMLButtonElement>('[data-source-batch="2"]')!.click();
+  expect(apply.disabled).toBe(true); expect(host.querySelector(".onboarding-claim")).toBeNull();
+  expect(prepare.mock.calls[1]![2]).toMatchObject({ mode: "discover", batch: 2 });
+  finish({ ...prepared(), packet_json: '{"batch":2}', batch: { current: 2, packets } });
+  await vi.waitFor(() => expect(host.textContent).toContain("Batch 2 of 2"));
+  expect(host.querySelector<HTMLTextAreaElement>('[aria-label="Exact source packet"]')!.value).toBe('{"batch":2}');
+  expect(host.textContent).toContain("Assignment does not mean reviewed or published");
+  expect(host.textContent).toContain("Each batch needs its own generation, review and approval");
+});
+it("ignores late batch navigation after source edits and never adds batch controls to exact files", async () => {
+  prepare.mockResolvedValue({ ...prepared(), batch: { current: 1, packets: [["src/a.rs"], ["src/b.rs"]] } });
+  const { host } = setup(); const { set, inspect } = sourceControls(host);
+  set("src"); host.querySelector<HTMLInputElement>('[name="source-batches"]')!.checked = true; inspect.click();
+  await vi.waitFor(() => expect(host.textContent).toContain("Batch 1 of 2"));
+  let finish!: (value: ReturnType<typeof prepared>) => void;
+  prepare.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  host.querySelector<HTMLButtonElement>('[data-source-batch="2"]')!.click();
+  set("replacement"); finish(prepared()); await Promise.resolve(); await Promise.resolve();
+  expect(host.querySelector('[aria-label="Exact source packet"]')).toBeNull();
+  const mode = host.querySelector<HTMLSelectElement>('[name="source-mode"]')!;
+  mode.value = "files"; mode.dispatchEvent(new Event("input"));
+  expect(host.querySelector<HTMLInputElement>('[name="source-batches"]')!.disabled).toBe(true);
+  prepare.mockResolvedValue({ ...prepared(), coverage: null }); inspect.click();
+  await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(3));
+  expect(prepare.mock.calls[2]![2]).not.toHaveProperty("batch");
+});
 it("starts from native sources, exposes omissions and retains the exact packet for plan-only import", async () => {
   prepare.mockResolvedValue(prepared());
   const { host, load, approve, apply } = setup(); const { set, inspect } = sourceControls(host);

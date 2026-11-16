@@ -74,6 +74,9 @@ enum Command {
     LocalOnboardingDiscover {
         #[arg(long = "directory", required = true)]
         directories: Vec<String>,
+        /// Partition the scoped inventory and select this one-based batch (1..128).
+        #[arg(long)]
+        batch: Option<usize>,
         /// Select first/middle/last excerpts from files over 8 KiB (up to 256 KiB).
         #[arg(long)]
         sample_large_files: bool,
@@ -527,6 +530,7 @@ fn run(cli: Cli) -> Result<(), u8> {
         }
         Command::LocalOnboardingDiscover {
             directories,
+            batch,
             sample_large_files,
             focus,
         } => {
@@ -536,7 +540,15 @@ fn run(cli: Cli) -> Result<(), u8> {
             } else {
                 akasha_core::onboarding_discovery::discover_local_onboarding
             };
-            let discovery = if focus.is_empty() {
+            let discovery = if let Some(batch) = batch {
+                akasha_core::onboarding_discovery::discover_local_onboarding_batch(
+                    &request,
+                    &directories,
+                    &focus,
+                    sample_large_files,
+                    batch,
+                )
+            } else if focus.is_empty() {
                 discover(&request, &directories)
             } else {
                 akasha_core::onboarding_discovery::discover_local_onboarding_focused(

@@ -87,6 +87,27 @@ pub(crate) fn render_local_onboarding_discovery(
         coverage.selected.len(),
         coverage.excluded_entries
     );
+    if let Some(batch) = &discovery.batch {
+        let _ = writeln!(
+            text,
+            "Batch {}/{}: {} files in this packet. Selected/group counts below describe assignment across all batches, not review or publication. Sampled files still have unknown lines.",
+            batch.current,
+            batch.packets.len(),
+            discovery.packet.sources.len()
+        );
+        for (index, paths) in batch.packets.iter().enumerate() {
+            let _ = writeln!(
+                text,
+                "Batch {}: {}",
+                index + 1,
+                paths
+                    .iter()
+                    .map(|p| librarian_display(p))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
     if let Some(focus) = &discovery.packet.focus {
         let _ = writeln!(
             text,

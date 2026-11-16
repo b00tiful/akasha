@@ -1026,6 +1026,7 @@ mod linux {
                     paths: vec!["limits.rs".into()],
                     focus: vec![],
                     sample_large_files: false,
+                    batch: None,
                 },
             )
             .unwrap();

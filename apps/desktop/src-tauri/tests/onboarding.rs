@@ -289,6 +289,7 @@ fn selection(mode: &str, paths: &[&str], focus: &[&str], sampling: bool) -> Desk
         paths: paths.iter().map(|s| (*s).into()).collect(),
         focus: focus.iter().map(|s| (*s).into()).collect(),
         sample_large_files: sampling,
+        batch: None,
     }
 }
 
@@ -1484,4 +1485,294 @@ async fn parcel_reviewed_relationships_retrieve_multi_module_behavior_and_tests(
 #[ignore = "requires installed selected Qwen9B, loopback and Vulkan device"]
 async fn parcel_native_onboarding_relationship_acceptance() {
     parcel_relationship_round_trip(true).await;
+}
+
+async fn batch_onboarding_round_trip(live: bool) {
+    let fixture = Fixture::new(5);
+    let repo = fixture.base.join("repository");
+    fs::remove_file(repo.join("limits.rs")).unwrap();
+    copy(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../tests/fixtures/local-onboarding/relay-service"),
+        &repo,
+    );
+    let claims = BTreeMap::from([
+        (
+            "Cargo.toml",
+            "Cargo declares relay-service version 0.1.0 with Rust edition 2024 and an independent workspace.",
+        ),
+        (
+            "README.md",
+            "Relay is a synthetic in-memory message relay with separate configuration, queue, codec, retry policy, storage, dispatch and metrics modules; no network listener or background retry worker is implemented.",
+        ),
+        (
+            "src/lib.rs",
+            "The library exports backoff, codec, config, dispatch, metrics, queue and store modules.",
+        ),
+        (
+            "src/config.rs",
+            "Configuration sets QUEUE_CAPACITY to 12 and MAX_PAYLOAD_BYTES to 256.",
+        ),
+        (
+            "src/backoff.rs",
+            "Backoff permits attempts 0, 1 and 2 with delays of 100, 200 and 400 milliseconds; attempts at least 3 return None.",
+        ),
+        (
+            "src/codec.rs",
+            "Codec encode rejects empty payloads and text above 256 bytes; valid text bytes are preserved exactly.",
+        ),
+        (
+            "src/queue.rs",
+            "Queue push rejects duplicate messages and insertion at capacity, otherwise appending at the tail; ack removes the head.",
+        ),
+        (
+            "src/dispatch.rs",
+            "Dispatch drain encodes and stores valid queue heads then acknowledges them; the first invalid head blocks drain without acknowledgment, leaving it and later messages queued.",
+        ),
+        (
+            "src/metrics.rs",
+            "Metrics records stored, blocked and remaining for the current drain, counting only successfully encoded and stored messages.",
+        ),
+        (
+            "src/store.rs",
+            "Store append adds encoded records to a public in-memory vector; no disk persistence is implemented.",
+        ),
+        (
+            "tests/backoff.rs",
+            "The retry_boundaries test checks 100, 200 and 400 milliseconds for attempts 0, 1 and 2, then None for 3 and u32::MAX.",
+        ),
+        (
+            "tests/codec.rs",
+            "The payload_byte_boundaries test rejects empty and 257-byte payloads, accepts 256 bytes, and checks exact Unicode bytes for 世界.",
+        ),
+        (
+            "tests/queue.rs",
+            "The deduplication_and_capacity test fills a capacity-one queue, refuses a duplicate and another message, then accepts the other message after acknowledgment.",
+        ),
+        (
+            "tests/dispatch.rs",
+            "The invalid_head_stops_without_loss test stores one valid message, reports blocked and two remaining, retains the empty head and checks the exact stored bytes.",
+        ),
+        (
+            "docs/architecture.md",
+            "Architecture routes queue dispatch through codec to process-local storage with metrics; dispatch does not call backoff or schedule retries.",
+        ),
+        (
+            "docs/operations.md",
+            "Operations runs scripts/check.sh for four boundary test suites; removing or correcting an invalid queue head is an explicit caller decision.",
+        ),
+        (
+            "docs/limitations.md",
+            "Limitations state there is no durable persistence, authentication, network transport or automatic retry scheduling; a process restart loses queue and store state.",
+        ),
+        (
+            "scripts/check.sh",
+            "The check script enables shell error handling, changes to the package directory and invokes cargo test --offline.",
+        ),
+    ]);
+    let before = snapshot(&fixture.root);
+    let code_before = snapshot(&repo);
+    let select = |batch| {
+        let mut selection = selection("discover", &["."], &[], false);
+        selection.batch = Some(batch);
+        prepare_onboarding_sources(Some(fixture.root.clone()), "example".into(), selection)
+    };
+    let first = select(1).unwrap();
+    let assignment = first.batch.as_ref().unwrap().packets.clone();
+    assert_eq!(assignment.iter().flatten().count(), claims.len());
+    assert!(assignment.len() >= 3);
+    assert_eq!(
+        first.coverage.as_ref().unwrap().selected.len(),
+        claims.len()
+    );
+    assert!(first.coverage.as_ref().unwrap().omitted.is_empty());
+    assert_eq!(snapshot(&fixture.root), before);
+    assert!(select(0).is_err());
+    assert!(select(assignment.len() + 1).is_err());
+    let mut invalid = selection("files", &["src/lib.rs"], &[], false);
+    invalid.batch = Some(1);
+    assert!(
+        prepare_onboarding_sources(Some(fixture.root.clone()), "example".into(), invalid).is_err()
+    );
+    let evidence = live.then(|| {
+        let path =
+            std::env::temp_dir().join(format!("akasha-batch-acceptance-{}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        path
+    });
+    let mut captures = vec![];
+    let mut published_paths = std::collections::BTreeSet::new();
+    let mut plans = Vec::new();
+    for index in 1..=assignment.len() {
+        // Publication changes projections. Obtain a new packet for each batch, never reuse a
+        // pre-publication packet or assume its freshness from a displayed batch number.
+        let prepared = select(index).unwrap();
+        assert_eq!(prepared.batch.as_ref().unwrap().packets, assignment);
+        let memory_before = snapshot(&fixture.root);
+        let generated = if live {
+            Some(
+                akasha_desktop::onboarding_generation::generate_onboarding(
+                    Some(fixture.root.clone()),
+                    "example".into(),
+                    prepared.packet_json.clone(),
+                    akasha_desktop::inference::Profile::Vulkan,
+                    akasha_desktop::inference::Cancellation::new(),
+                )
+                .await
+                .unwrap(),
+            )
+        } else {
+            None
+        };
+        assert_eq!(snapshot(&fixture.root), memory_before);
+        let packet: akasha_core::onboarding_local::LocalOnboardingPacket =
+            serde_json::from_str(&prepared.packet_json).unwrap();
+        let notes = prepared.identities.slots.iter().map(|slot| {
+            let evidence = slot.sources.iter().map(|handle| {
+                let source = &packet.sources[handle - 1];
+                json!({"kind":"fact", "claim":claims[source.path.as_str()], "sources":source.excerpts.iter().enumerate().map(|(i,_)| json!({"source":handle,"excerpt":i+1})).collect::<Vec<_>>()})
+            }).collect::<Vec<_>>();
+            json!({"slot":slot.slot,"evidence":evidence})
+        }).collect::<Vec<_>>();
+        let plan = json!({"schema_version":5,"notes":notes}).to_string();
+        let review = review_onboarding_plan(
+            Some(fixture.root.clone()),
+            "example".into(),
+            &prepared.packet_json,
+            &plan,
+        )
+        .unwrap();
+        assert!(review.draft.review.uncited_sources.is_empty());
+        assert!(
+            publish_onboarding_plan(
+                Some(fixture.root.clone()),
+                "example".into(),
+                &prepared.packet_json,
+                &plan,
+                "wrong-preview"
+            )
+            .is_err()
+        );
+        assert_eq!(snapshot(&fixture.root), memory_before);
+        let published = publish_onboarding_plan(
+            Some(fixture.root.clone()),
+            "example".into(),
+            &prepared.packet_json,
+            &plan,
+            &review.draft.preview.preview_id,
+        )
+        .unwrap();
+        for path in &published.created_notes {
+            assert!(published_paths.insert(path.clone()));
+        }
+        // A now-stale packet cannot be used to authorize a rerun after projection changes.
+        assert!(
+            review_onboarding_plan(
+                Some(fixture.root.clone()),
+                "example".into(),
+                &prepared.packet_json,
+                &plan
+            )
+            .is_err()
+        );
+        plans.push(plan.clone());
+        captures.push(json!({"batch":index,"prepared":prepared,"raw_generated":generated,"reviewed_plan":serde_json::from_str::<Value>(&plan).unwrap(),"review":review,"published":published}));
+    }
+    let memory_after = snapshot(&fixture.root);
+    let mut queries = vec![];
+    for (question, expected) in [
+        ("Backoff", "400 milliseconds"),
+        ("restart", "loses queue and store state"),
+        ("duplicate", "rejects duplicate messages"),
+        ("payload_byte_boundaries", "257-byte"),
+        ("invalid_head_stops_without_loss", "two remaining"),
+    ] {
+        let found =
+            inspect_librarian_sources(Some(fixture.root.clone()), "example".into(), question, true)
+                .unwrap();
+        assert!(
+            found
+                .review
+                .sources
+                .matches
+                .iter()
+                .any(|p| p.quote.contains(expected)),
+            "Missing {question}: {expected}"
+        );
+        let source = found
+            .packet
+            .evidence
+            .iter()
+            .find(|p| p.excerpt.contains(expected))
+            .unwrap();
+        let opened = open_librarian_source(
+            Some(fixture.root.clone()),
+            "example".into(),
+            &found.packet,
+            source.citation,
+        )
+        .unwrap();
+        assert!(opened.document.source.contains(expected));
+        queries
+            .push(json!({"question":question,"expected":expected,"review":found,"opened":opened}));
+    }
+    for (index, plan) in plans.iter().enumerate() {
+        let prepared = select(index + 1).unwrap();
+        let review = review_onboarding_plan(
+            Some(fixture.root.clone()),
+            "example".into(),
+            &prepared.packet_json,
+            plan,
+        )
+        .unwrap();
+        let result = publish_onboarding_plan(
+            Some(fixture.root.clone()),
+            "example".into(),
+            &prepared.packet_json,
+            plan,
+            &review.draft.preview.preview_id,
+        )
+        .unwrap();
+        assert!(result.created_notes.is_empty());
+        assert_eq!(
+            result.unchanged_notes.len(),
+            prepared.identities.slots.len()
+        );
+        assert!(result.updated_projections.is_empty());
+    }
+    assert_eq!(snapshot(&fixture.root), memory_after);
+    assert_eq!(snapshot(&repo), code_before);
+    if let Some(evidence) = evidence {
+        for (name, value) in [
+            ("batches", json!(captures)),
+            ("queries", json!(queries)),
+            (
+                "result",
+                json!({"files":claims.len(),"batches":assignment.len(),"notes":published_paths.len(),"queries":5,"rerun_byte_preserving":true,"repository_unchanged":true}),
+            ),
+        ] {
+            fs::write(
+                evidence.join(format!("{name}.json")),
+                serde_json::to_vec_pretty(&value).unwrap(),
+            )
+            .unwrap();
+        }
+        copy(&repo, &evidence.join("repository"));
+        copy(&fixture.root, &evidence.join("memory"));
+        println!(
+            "Native batch onboarding, reviewed publication and cited librarian retrieval PASS: {}",
+            evidence.display()
+        );
+    }
+}
+
+#[tokio::test]
+async fn discovery_batches_publish_all_sources_and_librarian_recovers_cross_batch_facts() {
+    batch_onboarding_round_trip(false).await;
+}
+
+#[tokio::test]
+#[ignore = "requires installed selected Qwen9B, loopback and Vulkan device"]
+async fn native_batch_onboarding_acceptance() {
+    batch_onboarding_round_trip(true).await;
 }

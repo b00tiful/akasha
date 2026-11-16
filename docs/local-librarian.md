@@ -49,7 +49,11 @@ distinguishes actual native/model checks from the offline replay's simulated nat
 Enable **Inspect recorded repository evidence** to see onboarding claims' fact/inference/unknown
 labels, rationales and original code windows. This explicitly reads recorded references in the
 selected project's registered repository; it defaults off. Changed or unavailable code is labeled
-and withheld. Exact bytes and matching hashes do not establish that a claim is correct.
+and withheld. Complete review reads at most eight distinct referenced files. Additional valid
+references are labeled `not_inspected / file_budget`, have no checked freshness or code excerpt,
+and leave saved passages/navigation available. Narrow the question or explore a note for a
+smaller review. Other claim/reference/report limits still refuse; selected-only CLI provenance
+keeps its strict overflow error. Exact bytes and matching hashes do not establish correctness.
 
 **Open** rechecks the citation packet and full note fingerprint before loading the existing
 editor. Stale/altered packets or pending journals refuse without recovery or writes. Inspection

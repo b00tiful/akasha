@@ -54,7 +54,7 @@ pub fn review_librarian_provenance(
     let mut review = review_librarian_sources(request, packet, selection)?;
     let all = serde_json::json!({ "selections": review.sources.matches.iter()
         .map(|item| serde_json::json!({ "citation": item.citation })).collect::<Vec<_>>() });
-    let report = inspect_librarian_provenance(request, packet, &all.to_string())?;
+    let report = inspect_provenance(request, packet, &all.to_string(), true)?;
     review.sources = report.sources;
     review.provenance = Some(LibrarianReviewProvenance {
         association: report.association,
@@ -120,6 +120,15 @@ pub fn inspect_librarian_provenance(
     packet: &LibrarianPacket,
     selection: &str,
 ) -> Result<LibrarianProvenance, NoteLinksError> {
+    inspect_provenance(request, packet, selection, false)
+}
+
+fn inspect_provenance(
+    request: &ResolveRequest,
+    packet: &LibrarianPacket,
+    selection: &str,
+    report_file_gaps: bool,
+) -> Result<LibrarianProvenance, NoteLinksError> {
     let sources = check_librarian_sources(request, packet, selection)?;
     let resolved = resolve_project(request).map_err(ProjectValidationError::from)?;
     let mut cache = BTreeMap::new();
@@ -170,8 +179,13 @@ pub fn inspect_librarian_provenance(
                     let mut evidence = Vec::new();
                     for reference in &claim.sources {
                         evidence.push(
-                            inspect_reference(&resolved.repository_dir, reference, &mut cache)
-                                .map_err(|message| invalid(&path, message))?,
+                            inspect_reference(
+                                &resolved.repository_dir,
+                                reference,
+                                &mut cache,
+                                report_file_gaps,
+                            )
+                            .map_err(|message| invalid(&path, message))?,
                         );
                     }
                     note.claims.push(LibrarianClaimProvenance {
@@ -261,6 +275,7 @@ fn inspect_reference(
     repository: &Path,
     reference: &PersistentEvidenceSource,
     cache: &mut BTreeMap<String, Observation>,
+    report_file_gaps: bool,
 ) -> Result<LibrarianRepositoryEvidence, &'static str> {
     let mut result = LibrarianRepositoryEvidence {
         path: reference.path.clone(),
@@ -288,6 +303,13 @@ fn inspect_reference(
     }
     if !cache.contains_key(&reference.path) {
         if cache.len() == MAX_FILES {
+            if report_file_gaps {
+                // Do not observe this path or imply its freshness. Retain the canonical claim
+                // and exact recorded reference so the operator can make a narrower request.
+                result.freshness = "not_inspected";
+                result.excerpt_state = "file_budget";
+                return Ok(result);
+            }
             return Err("provenance exceeds 8 repository files; narrow the selection");
         }
         cache.insert(

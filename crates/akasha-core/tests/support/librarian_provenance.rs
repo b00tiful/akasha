@@ -313,14 +313,73 @@ fn provenance_total_file_claim_and_reference_limits_fail_before_display() {
                 .contains("provenance exceeds")
         );
         let packet = prepare_librarian(&f.request, "core", &[], Some(ID)).unwrap();
-        assert!(
-            review_librarian_provenance(&f.request, &packet, r#"{"selections":[]}"#)
-                .unwrap_err()
-                .to_string()
-                .contains("provenance exceeds")
-        );
+        let review = review_librarian_provenance(&f.request, &packet, r#"{"selections":[]}"#);
+        if mode == "files" {
+            let review = review.unwrap();
+            assert!(
+                review
+                    .sources
+                    .matches
+                    .iter()
+                    .any(|p| p.quote.contains("Claim 0."))
+            );
+            let sources = &review.provenance.unwrap().notes[0].claims[0].sources;
+            assert_eq!(sources.len(), 9);
+            assert_eq!(
+                sources
+                    .iter()
+                    .filter(|s| s.freshness == "unchanged")
+                    .count(),
+                8
+            );
+            let uninspected = &sources[8];
+            assert_eq!(uninspected.path, "source-8.rs");
+            assert_eq!(uninspected.freshness, "not_inspected");
+            assert_eq!(uninspected.excerpt_state, "file_budget");
+            assert!(uninspected.observed_fingerprint.is_none());
+            assert!(uninspected.excerpt.is_none());
+        } else {
+            assert!(
+                review
+                    .unwrap_err()
+                    .to_string()
+                    .contains("provenance exceeds")
+            );
+        }
         assert_eq!(before, link_fixture_snapshot(&f.root));
     }
+}
+
+#[test]
+fn complete_review_file_gaps_keep_invalid_paths_untrusted_and_cached_files_available() {
+    let f = fixture("complete-review-file-gaps");
+    let mut references = Vec::new();
+    for index in 0..8 {
+        let path = format!("source-{index}.rs");
+        fs::write(f.request.cwd.join(&path), "x").unwrap();
+        references.push(reference(&path, b"x", 1, 1));
+    }
+    references.push(reference("never-opened.rs", b"x", 1, 1));
+    references.push(reference("../escape.rs", b"x", 1, 1));
+    references.push(references[0].clone());
+    record(
+        &f,
+        Some(json!([{"kind":"fact","claim":"Core recorded claim.","sources":references}])),
+        "Core recorded claim.",
+    );
+    let packet = prepare_librarian(&f.request, "core", &[], Some(ID)).unwrap();
+    let review = review_librarian_provenance(&f.request, &packet, r#"{"selections":[]}"#).unwrap();
+    let sources = &review.provenance.as_ref().unwrap().notes[0].claims[0].sources;
+    assert_eq!(sources[8].freshness, "not_inspected");
+    assert_eq!(sources[9].freshness, "invalid_reference");
+    assert_eq!(sources[10].freshness, "unchanged");
+    let highlighted =
+        review_librarian_provenance(&f.request, &packet, r#"{"selections":[{"citation":1}]}"#)
+            .unwrap();
+    assert_eq!(
+        serde_json::to_value(review.provenance).unwrap(),
+        serde_json::to_value(highlighted.provenance).unwrap()
+    );
 }
 
 #[test]

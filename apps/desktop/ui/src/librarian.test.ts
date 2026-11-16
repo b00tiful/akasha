@@ -160,6 +160,23 @@ it("renders empty and changed-code results explicitly and requires opt-in for re
   expect(host.textContent).not.toContain("const LIMIT");
 });
 
+it("retains passages and navigation while clearly reporting uninspected code-file references", async () => {
+  const response = result();
+  const source = response.review.provenance!.notes[0]!.claims[0]!.sources[0]!;
+  source.freshness = "not_inspected"; source.excerpt_state = "file_budget";
+  source.observed_fingerprint = null; source.excerpt = null;
+  inspect.mockResolvedValue(response);
+  const { host, submit, open, activate } = panel();
+  host.querySelector<HTMLInputElement>('[name="provenance"]')!.checked = true; submit();
+  await vi.waitFor(() => expect(host.querySelector("article")).not.toBeNull());
+  expect(host.textContent).toContain("1 files not inspected");
+  expect(host.textContent).toContain("no checked freshness or code excerpt");
+  expect(host.textContent).toContain("not_inspected / file_budget");
+  expect(host.querySelectorAll("pre")).toHaveLength(1);
+  const document = { id, source: "# Core\n", links: [] }; follow.mockResolvedValue(document); open();
+  await vi.waitFor(() => expect(activate).toHaveBeenCalledWith(document));
+});
+
 it("retains failed-refresh evidence but disables stale and detached controls", async () => {
   inspect.mockResolvedValueOnce(result());
   const { host, submit, activate } = panel();

@@ -2,7 +2,8 @@
 use std::path::PathBuf;
 
 use akasha_core::onboarding_discovery::{
-    LocalSourceCoverage, discover_local_onboarding, discover_local_onboarding_focused,
+    LocalSourceBatch, LocalSourceCoverage, discover_local_onboarding,
+    discover_local_onboarding_batch, discover_local_onboarding_focused,
     discover_local_onboarding_sampled,
 };
 use akasha_core::onboarding_local::{
@@ -40,6 +41,8 @@ pub struct DesktopSourceSelection {
     pub paths: Vec<String>,
     pub focus: Vec<String>,
     pub sample_large_files: bool,
+    #[serde(default)]
+    pub batch: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -53,6 +56,7 @@ pub struct DesktopOnboardingSources {
     pub sampled_sources: Vec<akasha_core::onboarding_local::LocalOnboardingSampleReview>,
     /// Discovery inventory describes its automatic selection only, never a later manual subset.
     pub coverage: Option<LocalSourceCoverage>,
+    pub batch: Option<LocalSourceBatch>,
 }
 
 pub fn prepare_onboarding_sources(
@@ -72,9 +76,20 @@ pub fn prepare_onboarding_sources(
         ));
     }
     let request = request(root, Some(project.clone()))?;
-    let (packet, coverage) = match selection.mode.as_str() {
+    if selection.mode != "discover" && selection.batch.is_some() {
+        return Err(input_error("Batch selection requires directory discovery"));
+    }
+    let (packet, coverage, batch) = match selection.mode.as_str() {
         "discover" => {
-            let discovery = if selection.focus.is_empty() {
+            let discovery = if let Some(batch) = selection.batch {
+                discover_local_onboarding_batch(
+                    &request,
+                    &selection.paths,
+                    &selection.focus,
+                    selection.sample_large_files,
+                    batch,
+                )
+            } else if selection.focus.is_empty() {
                 let discover = if selection.sample_large_files {
                     discover_local_onboarding_sampled
                 } else {
@@ -90,7 +105,7 @@ pub fn prepare_onboarding_sources(
                 )
             }
             .map_err(onboarding_error)?;
-            (discovery.packet, Some(discovery.coverage))
+            (discovery.packet, Some(discovery.coverage), discovery.batch)
         }
         "files" => (
             if selection.focus.is_empty() {
@@ -109,6 +124,7 @@ pub fn prepare_onboarding_sources(
                 )
             }
             .map_err(onboarding_error)?,
+            None,
             None,
         ),
         _ => return Err(input_error("Choose directory discovery or explicit files")),
@@ -149,6 +165,7 @@ pub fn prepare_onboarding_sources(
         excerpts: source_excerpts(&packet),
         sampled_sources,
         coverage,
+        batch,
     })
 }
 

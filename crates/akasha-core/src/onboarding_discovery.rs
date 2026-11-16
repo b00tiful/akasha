@@ -23,6 +23,15 @@ pub struct LocalOnboardingDiscovery {
     pub schema_version: u32,
     pub packet: LocalOnboardingPacket,
     pub coverage: LocalSourceCoverage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batch: Option<LocalSourceBatch>,
+}
+
+/// Assignment describes inspected sources, never generated, reviewed or published knowledge.
+#[derive(Debug, Serialize)]
+pub struct LocalSourceBatch {
+    pub current: usize,
+    pub packets: Vec<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -197,7 +206,7 @@ pub fn discover_local_onboarding(
     request: &ResolveRequest,
     directories: &[String],
 ) -> Result<LocalOnboardingDiscovery, OnboardingBatchError> {
-    discover_local_onboarding_mode(request, directories, false, &[])
+    discover_local_onboarding_mode(request, directories, false, &[], None)
 }
 
 /// Same scoped discovery, with explicit partial coverage for larger eligible sources.
@@ -205,7 +214,7 @@ pub fn discover_local_onboarding_sampled(
     request: &ResolveRequest,
     directories: &[String],
 ) -> Result<LocalOnboardingDiscovery, OnboardingBatchError> {
-    discover_local_onboarding_mode(request, directories, true, &[])
+    discover_local_onboarding_mode(request, directories, true, &[], None)
 }
 
 /// Prioritize literal focus matches within each role, keeping overview/manifest context.
@@ -220,6 +229,32 @@ pub fn discover_local_onboarding_focused(
         directories,
         sample_large_files,
         &checked_focus(terms)?,
+        None,
+    )
+}
+
+/// Inspect the bounded inventory once and partition eligible sources into ordinary checked
+/// packets. Return one freshly rebuilt packet and the complete assignment; no generation/write.
+pub fn discover_local_onboarding_batch(
+    request: &ResolveRequest,
+    directories: &[String],
+    terms: &[String],
+    sample_large_files: bool,
+    batch: usize,
+) -> Result<LocalOnboardingDiscovery, OnboardingBatchError> {
+    if !(1..=MAX_CANDIDATES).contains(&batch) {
+        return Err(invalid("discovery batch must be between 1 and 128"));
+    }
+    discover_local_onboarding_mode(
+        request,
+        directories,
+        sample_large_files,
+        &if terms.is_empty() {
+            Vec::new()
+        } else {
+            checked_focus(terms)?
+        },
+        Some(batch),
     )
 }
 
@@ -228,6 +263,7 @@ fn discover_local_onboarding_mode(
     directories: &[String],
     sample_large_files: bool,
     terms: &[String],
+    batch: Option<usize>,
 ) -> Result<LocalOnboardingDiscovery, OnboardingBatchError> {
     if directories.is_empty() || directories.len() > 8 {
         return Err(invalid(
@@ -245,6 +281,8 @@ fn discover_local_onboarding_mode(
             sample_large_files,
         });
     }
+    let empty_packet = packet.clone();
+    let mut packets = Vec::new();
     let file_limit = if sample_large_files {
         MAX_LOCAL_ONBOARDING_SAMPLED_FILE_BYTES
     } else {
@@ -477,7 +515,7 @@ fn discover_local_onboarding_mode(
             let path = paths.remove(index);
             let metadata = fs::symlink_metadata(repository.join(&path))
                 .map_err(|e| io_error(&repository.join(&path), e))?;
-            let reason = if packet.sources.len() == MAX_LOCAL_ONBOARDING_FILES {
+            let reason = if batch.is_none() && packet.sources.len() == MAX_LOCAL_ONBOARDING_FILES {
                 Some("file_limit")
             } else if metadata.len() > file_limit as u64 {
                 Some("file_too_large")
@@ -514,7 +552,15 @@ fn discover_local_onboarding_mode(
                 });
                 continue;
             }
+            if batch.is_some() && packet.sources.len() == MAX_LOCAL_ONBOARDING_FILES {
+                packets.push(std::mem::replace(&mut packet, empty_packet.clone()));
+            }
             packet.sources.push(source);
+            if batch.is_some() && bounded_json(&packet).is_err() && packet.sources.len() > 1 {
+                let source = packet.sources.pop().expect("just inserted source");
+                packets.push(std::mem::replace(&mut packet, empty_packet.clone()));
+                packet.sources.push(source);
+            }
             if bounded_json(&packet).is_err() {
                 packet.sources.pop();
                 coverage.omitted.push(LocalSourceOmission {
@@ -543,7 +589,7 @@ fn discover_local_onboarding_mode(
             }
         }
     }
-    if packet.sources.is_empty() {
+    if packet.sources.is_empty() && packets.is_empty() {
         return Err(invalid(
             "no eligible sources fit; choose different directories or explicit files",
         ));
@@ -558,7 +604,9 @@ fn discover_local_onboarding_mode(
             "no focus matches fit in the selected sources; choose different terms or narrower directories",
         ));
     }
-    packet.sources.sort_by(|a, b| a.path.cmp(&b.path));
+    if !packet.sources.is_empty() {
+        packets.push(packet);
+    }
     coverage.selected.sort_by(|a, b| a.path.cmp(&b.path));
     coverage.omitted.sort_by(|a, b| a.path.cmp(&b.path));
     coverage.implementation_groups = implementation_groups
@@ -571,14 +619,32 @@ fn discover_local_onboarding_mode(
             },
         )
         .collect();
-    if packet != rebuild_local_onboarding(request, &packet)? {
-        return Err(invalid(
-            "discovered inputs changed during selection; discover again",
-        ));
+    for packet in &mut packets {
+        packet.sources.sort_by(|a, b| a.path.cmp(&b.path));
+        if *packet != rebuild_local_onboarding(request, packet)? {
+            return Err(invalid(
+                "discovered inputs changed during selection; discover again",
+            ));
+        }
+    }
+    let batch = batch.map(|current| LocalSourceBatch {
+        current,
+        packets: packets
+            .iter()
+            .map(|packet| packet.sources.iter().map(|s| s.path.clone()).collect())
+            .collect(),
+    });
+    let index = batch.as_ref().map_or(0, |batch| batch.current - 1);
+    if index >= packets.len() {
+        return Err(invalid(format!(
+            "discovery batch does not exist; {} batches available",
+            packets.len()
+        )));
     }
     Ok(LocalOnboardingDiscovery {
         schema_version: 1,
-        packet,
+        packet: packets.swap_remove(index),
         coverage,
+        batch,
     })
 }

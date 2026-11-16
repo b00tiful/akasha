@@ -14,6 +14,149 @@ use sha2::{Digest, Sha256};
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn discovery_batches_partition_all_128_sources_without_duplicates_or_writes() {
+    use akasha_core::onboarding_discovery::{
+        discover_local_onboarding, discover_local_onboarding_batch,
+    };
+    use akasha_core::onboarding_local::plan_local_onboarding;
+    let f = Fixture::new("discovery-batches");
+    let dir = f.resolution.cwd.join("batch-input");
+    fs::create_dir(&dir).unwrap();
+    for index in 0..128 {
+        fs::write(
+            dir.join(format!("module{index:03}.rs")),
+            format!("pub const VALUE: usize = {index};\n"),
+        )
+        .unwrap();
+    }
+    let before = f.project_snapshot();
+    let scopes = &["batch-input".into()];
+    let default = discover_local_onboarding(&f.resolution, scopes).unwrap();
+    assert_eq!(default.packet.sources.len(), 8);
+    assert!(default.batch.is_none());
+    assert!(
+        serde_json::to_value(default)
+            .unwrap()
+            .get("batch")
+            .is_none()
+    );
+    let first = discover_local_onboarding_batch(&f.resolution, scopes, &[], false, 1).unwrap();
+    let assignment = &first.batch.as_ref().unwrap().packets;
+    assert_eq!(assignment.len(), 16);
+    assert_eq!(first.coverage.selected.len(), 128);
+    assert!(first.coverage.omitted.is_empty());
+    let mut paths = std::collections::BTreeSet::new();
+    for index in 1..=assignment.len() {
+        let result =
+            discover_local_onboarding_batch(&f.resolution, scopes, &[], false, index).unwrap();
+        assert_eq!(&result.batch.as_ref().unwrap().packets, assignment);
+        assert_eq!(result.packet.sources.len(), 8);
+        assert!(serde_json::to_vec(&result.packet).unwrap().len() <= 16_000);
+        plan_local_onboarding(&f.resolution, &result.packet).unwrap();
+        for source in result.packet.sources {
+            assert!(paths.insert(source.path));
+        }
+    }
+    assert_eq!(paths.len(), 128);
+    for index in [0, 17, 129, usize::MAX] {
+        assert!(discover_local_onboarding_batch(&f.resolution, scopes, &[], false, index).is_err());
+    }
+    fs::write(dir.join("overflow.rs"), "pub fn overflow() {}\n").unwrap();
+    assert!(
+        discover_local_onboarding_batch(&f.resolution, scopes, &[], false, 1)
+            .unwrap_err()
+            .to_string()
+            .contains("128 candidates")
+    );
+    assert_eq!(f.project_snapshot(), before);
+}
+
+#[test]
+fn discovery_batches_split_on_serialized_budget_and_report_real_omissions() {
+    use akasha_core::onboarding_discovery::discover_local_onboarding_batch;
+    use akasha_core::onboarding_local::plan_local_onboarding;
+    let f = Fixture::new("discovery-byte-batches");
+    let dir = f.resolution.cwd.join("batch-input");
+    fs::create_dir(&dir).unwrap();
+    for index in 0..5 {
+        // Escaping makes the serialized packet larger than its raw source bytes.
+        fs::write(
+            dir.join(format!("module{index}.rs")),
+            (0..70)
+                .map(|_| format!("// {}\n", "\\\"".repeat(35)))
+                .collect::<String>(),
+        )
+        .unwrap();
+    }
+    fs::write(dir.join("empty.rs"), "").unwrap();
+    fs::write(dir.join("invalid.rs"), [255]).unwrap();
+    fs::write(dir.join("huge.rs"), "x".repeat(262_145)).unwrap();
+    fs::write(dir.join(".secret.rs"), "never selected").unwrap();
+    let result =
+        discover_local_onboarding_batch(&f.resolution, &["batch-input".into()], &[], false, 1)
+            .unwrap();
+    let batch = result.batch.as_ref().unwrap();
+    assert!(batch.packets.len() > 1);
+    assert_eq!(batch.packets.iter().flatten().count(), 5);
+    assert_eq!(result.coverage.omitted.len(), 3);
+    assert!(
+        result
+            .coverage
+            .omitted
+            .iter()
+            .all(|s| !matches!(s.reason.as_str(), "file_limit" | "packet_budget"))
+    );
+    assert_eq!(result.coverage.excluded_entries, 1);
+    for index in 1..=batch.packets.len() {
+        let result = discover_local_onboarding_batch(
+            &f.resolution,
+            &["batch-input".into()],
+            &[],
+            false,
+            index,
+        )
+        .unwrap();
+        assert!(serde_json::to_vec(&result.packet).unwrap().len() <= 16_000);
+        plan_local_onboarding(&f.resolution, &result.packet).unwrap();
+    }
+    fs::write(dir.join("module0.rs"), "changed\n").unwrap();
+    assert!(plan_local_onboarding(&f.resolution, &result.packet).is_err());
+}
+
+#[test]
+fn discovery_batches_preserve_literal_focus_and_partial_line_coverage() {
+    use akasha_core::onboarding_discovery::discover_local_onboarding_batch;
+    let f = Fixture::new("discovery-focused-batches");
+    let dir = f.resolution.cwd.join("batch-input");
+    fs::create_dir(&dir).unwrap();
+    for index in 0..10 {
+        fs::write(dir.join(format!("module{index}.rs")), focused_source_text()).unwrap();
+    }
+    fs::write(dir.join("unrelated.rs"), "pub fn unrelated() {}\n").unwrap();
+    let scopes = &["batch-input".into()];
+    let result =
+        discover_local_onboarding_batch(&f.resolution, scopes, &["LEASE".into()], true, 1).unwrap();
+    assert_eq!(result.coverage.selected.len(), 10);
+    assert!(
+        result
+            .coverage
+            .omitted
+            .iter()
+            .any(|s| s.path.ends_with("unrelated.rs") && s.reason == "focus_no_match")
+    );
+    for index in 1..=result.batch.as_ref().unwrap().packets.len() {
+        let result =
+            discover_local_onboarding_batch(&f.resolution, scopes, &["LEASE".into()], true, index)
+                .unwrap();
+        assert_eq!(result.packet.schema_version, 4);
+        for source in result.packet.sources {
+            assert!(source.text.contains("LEASE_SECONDS"));
+            assert!(!source.sampling.unwrap().omitted_lines.is_empty());
+        }
+    }
+}
+
+#[test]
 fn repeated_claim_excerpts_keep_a_separate_bounded_review_output() {
     use akasha_core::onboarding_local::{compile_local_onboarding, prepare_local_onboarding};
     let fixture = Fixture::new("review-output-cap");

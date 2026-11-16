@@ -31,8 +31,10 @@ export interface OnboardingResult {
 
 export interface OnboardingSelection {
   mode: "discover" | "files"; paths: string[]; focus: string[]; sample_large_files: boolean;
+  batch?: number;
 }
 export interface OnboardingSources {
+  batch?: { current: number; packets: string[][] } | null;
   root: string; project: string; packet_json: string;
   identities: { slots: Array<{ slot: number; role: string; sources: number[]; path: string; fields: Record<string, string>; unresolved_fields?: string[] }> };
   excerpts: OnboardingReview["excerpts"];

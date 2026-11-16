@@ -296,6 +296,21 @@ explicit component groups retain their behavior. Draft/proposal/publication form
 
 ## Bounded directory discovery
 
+To cover a larger scoped inventory, enable **Divide all eligible directory sources into review
+batches** in the desktop picker before inspection. Batch buttons show assigned files and load
+fresh packet excerpts. Review/publish each batch separately; switching clears the current draft
+and approval. Assignment does not mean reviewed or published, and sampled files still contain
+unknown lines. Nothing generates or writes automatically.
+
+The CLI equivalent adds `--batch 1` (then `--batch 2`, etc.) to the discovery command below.
+JSON adds `batch: {current, packets: [path arrays]}` and returns just the selected `packet`.
+In this mode coverage counts aggregate assignment across all batches. Save the `packet` value
+alone for the existing `--packet FILE` runner. Each packet keeps the eight-file/16,000-byte cap;
+all existing scan/source/focus bounds remain. Missing/out-of-range batches fail explicitly.
+Reinspect after publication or source changes: fresh projections can change assignments. No
+persistent progress or complete semantic/line coverage is claimed.
+[Inspect the recorded multi-batch native workflow](../akasha/Research/evidence/2026-11-16-onboarding-batches/demo.html).
+
 Replace `--source`/`--components` with one or more `--discover DIRECTORY` arguments to let Rust
 select complete files within explicit directories. For a small repository use `--discover .`;
 for a larger one select narrow, non-overlapping directories, such as `--discover src/parser
